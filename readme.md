@@ -33,9 +33,9 @@ For example: `(ekp-param-set 7 3 2 5 2 1 0 2 0)` sets the above parameters accor
 
 If not manually configured, the default values follow KP algorithm recommendations for spaces between latin words:
 
-- The ideal width is set to the pixel width of a space character
-- The stretchable width defaults to 1/2 of the ideal width
-- The Shrinkable width defaults to 1/3 of the ideal width
+- The ideal width is set to the pixel width of a space character.
+- The stretchable width defaults to 1/2 of the ideal width.
+- The shrinkable width defaults to 1/3 of the ideal width.
 
 For spaces between latin word and CJK character: `ekp-mws-ideal-pixel = ekp-lws-ideal-pixel - 2` while maintaining the same stretch/shrink proportions.
 
