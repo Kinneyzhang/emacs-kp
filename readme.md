@@ -1,3 +1,5 @@
+[中文文档](./readme_zh.md)
+
 ## Introduction
 Emacs-kp implements the knuth-plass typesetting algorithm, but its capabilities extend beyond English typesetting. Through further optimization of the algorithm, it achieves hybrid typesetting for both CJK and Latin-based languages.
 
