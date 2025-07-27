@@ -50,6 +50,7 @@
 ;; (ekp-test-justify nil "fr" "Cascadia Next SC" 666)
 ;; (ekp-test-justify nil "de_DE" "Cascadia Next SC" 666)
 ;; (ekp-test-justify "zh" "en_US" "Noto Serif" 689)
+;; (ekp-test-justify "zh" nil nil 250)
 
 ;;; FIXME: font size also affect!
 
@@ -76,4 +77,4 @@
           (goto-char (point-min))
           (sit-for 0.00001))))))
 
-(ekp-test-demo 400 800 1)
+;; (ekp-test-demo 400 800 1)
