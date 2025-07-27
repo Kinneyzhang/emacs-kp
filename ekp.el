@@ -142,10 +142,12 @@
                               pure-word))
                    (num (length word-lst)))
               (when left-punct
-                (setf (car word-lst) (concat left-punct (car word-lst))))
+                (setf (car word-lst) (concat left-punct
+                                             (car word-lst))))
               (when right-punct
-                (setf (car (last word-lst)) (concat (car (last word-lst))
-                                                    right-punct)))
+                (setf (car (last word-lst))
+                      (concat (car (last word-lst))
+                              right-punct)))
               (push word-lst new-boxes)
               (dotimes (i num)
                 (when (< i (1- num))

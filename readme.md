@@ -1,27 +1,28 @@
-## 介绍
-emcas-kp 实现了 knuth-plass 的排版算法，单其功能不局限于算法本身。原本的KP算法实现了对英文的排版，emacs-kp对其进行了进一步的拓展，实现了 CJK 语言与 latin 系语言的混合混合排版。
+## Introduction
+Emacs-kp implements the knuth-plass typesetting algorithm, but its capabilities extend beyond English typesetting. Through further optimization of the algorithm, it achieves hybrid typesetting for both CJK and Latin-based languages.
 
-## 演示
-先来看一下排版效果的 demo：
+## Demo
+First, let's look at a demo of the typesetting effect:
 
 ![ekp-demo](./images/ekp-demo-with-cache.gif)
 
-## 局限
-目前只支持 CJK 与任意一种拉丁系语言的混合排版，不支持多种拉丁系语言混合排版的场景。原因是无法精确判断单词属于哪种语言，从而对其进行 hyphen 断词。
+## Limitations
+Currently, it only supports hybrid typesetting between CJK and one Latin-based language. Mixed typesetting with multiple Latin-based languages is not supported. This limitation arises because the system cannot precisely determine which language a word belongs to in order to perform hyphenation.
 
-## 用法
+## Usage
 
-### 配置项
-`ekp-latin-lang` 用来设置文本中主要的拉丁系的语言，dictionary 下可以看到所有支持的语言。
+### Configuration
 
-### 核心函数
+`ekp-latin-lang` is used to set the primary Latin-based language in the text. The default setting is "en_US". All supported languages can be found in the "dictionaries" directory. The language name must match the name following "hyph_" in the dictionary files. Test cases include examples of German and French typesetting. Other languages have not been tested extensively but should theoretically work; however, finer customization may be required.
 
-提供了两个函数:
+### Core Functions
+
+Two functions are provided:
 
 ```(ekp-pixel-justify string line-pixel)```
 
-将文本 STRING 按照每行像素宽度为 LINE-PIXEL 排版，返回排版后的文本。
+Formats the text STRING to fit a pixel width of LINE-PIXEL per line and returns the justified text.
 
 ```(ekp-pixel-range-justify string min-pixel max-pixel)```
 
-在 MIN-PIXEL 到 MAX-PIXEL 的返回内寻找最优排版，返回一个 cons-cell，car 是排版后的文本，cdr 是最优排版效果的像素值。
+Searches for optimal typesetting within the range of MIN-PIXEL to MAX-PIXEL. Returns a cons-cell where the car is the formatted text and the cdr is the pixel value achieving the best typesetting result.
