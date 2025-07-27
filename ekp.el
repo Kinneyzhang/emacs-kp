@@ -74,8 +74,8 @@
   (let* ((lws-pixel (ekp-word-spacing-pixel string))
          (mws-pixel (- lws-pixel 2)))
     (ekp-param-set
-     lws-pixel (round (* lws-pixel 0.5)) (round (* lws-pixel 0.33))
-     mws-pixel (round (* mws-pixel 0.5)) (round (* mws-pixel 0.33))
+     lws-pixel (round (* lws-pixel 0.5)) (round (* lws-pixel 0.333))
+     mws-pixel (round (* mws-pixel 0.5)) (round (* mws-pixel 0.333))
      0 2 0)))
 
 (defun ekp-param-set ( lws-ideal lws-stretch lws-shrink

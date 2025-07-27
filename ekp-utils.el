@@ -76,13 +76,11 @@
   (if-let ((font-family (ekp-monospace-p string)))
       (string-pixel-width
        (propertize " " 'face `(:family ,font-family)))
-    ;; font is not monospace, use the pixel of letter n
-    ;; as word spacing pixel
     (let* ((letter (ekp-get-latin-letter string))
            (font-family (ekp-font-family letter)))
       (string-pixel-width
        (propertize
-        "n" 'face `(:family ,font-family))))))
+        " " 'face `(:family ,font-family))))))
 
 (defun ekp-latin-font (string)
   (if-let ((letter (ekp-get-latin-letter string)))
