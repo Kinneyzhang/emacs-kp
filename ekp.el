@@ -108,6 +108,20 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; 正确版本：包含完整字符集和组合标记
+(defvar ekp-latin-regexp
+  (concat
+   "["                               ; 开始字符集
+   "A-Za-z'-"                          ; 基础拉丁字母
+   "\300-\326\330-\366\370-\417"     ; ISO-8859-1补充
+   "\u00C0-\u00D6\u00D8-\u00F6"      ; Unicode基本补充
+   "\u00F8-\u00FF\u0100-\u024F"      ; 扩展A/B
+   "\u1E00-\u1EFF"                   ; 扩展附加
+   "\uA780-\uA7F9"                   ; 拉丁扩展-D
+   "]"                               ; 闭合字符集
+   )
+  "正则表达式匹配所有拉丁字符及其变体，包括组合变音符")
+
 (defun ekp-split-string (string)
   ;; return (boxes-vector . hyphen-positions-vector)
   (let* ((boxes (ekp-split-to-boxes string))
@@ -115,7 +129,11 @@
          new-boxes idxs)
     (dolist (box (append boxes nil))
       (save-match-data
-        (if (string-match "^\\([\"']*\\)\\([a-zA-z']+\\)\\([.,\"']*\\)$" box)
+        (if (string-match
+             (format
+              "^\\([[{<„‚¿¡*@\"']*\\)\\(%s+\\)\\([]}>.,*?\"']*\\)$"
+              ekp-latin-regexp)
+             box)
             (let* ((pure-word (match-string 2 box))
                    (left-punct (match-string 1 box))
                    (right-punct (match-string 3 box))
@@ -144,50 +162,56 @@
       (cons (vconcat boxes-lst)
             (vconcat (nreverse idxs))))))
 
+(defun ekp-str-type (str)
+  "STR should be single letter string."
+  (cond
+   ;; a half-width cjk punct
+   ((or (string= "“" str) (string= "”" str)) 'cjk)
+   ((= (string-width str) 1) 'latin)
+   ((= (string-width str) 2)
+    (if (ekp-cjk-fw-punct-p (string-to-char str))
+        'cjk-punct
+      'cjk))
+   (t (error "Abnormal string width %s for %s"
+             (string-width str) str))))
+
 (defun ekp-box-type (box)
   (unless (or (null box) (string-empty-p box))
-    (let* ((str (substring box -1))
-           (width (string-width str)))
-      (cond ((= width 1) 'latin)
-            ((= width 2)
-             (let ((char (string-to-char str)))
-               (if (ekp-cjk-punct-p char)
-                   'cjk-punct
-                 'cjk)))
-            (_ (error "Abnormal string width %s for %s" width str))))))
+    (cons (ekp-str-type (substring box 0 1))
+          (ekp-str-type (substring box -1)))))
 
-(defun ekp-glue-type (curr prev prev-prev)
+(defun ekp-glue-type (prev-box-type curr-box-type)
   "Lws means whitespace between latin words; cws means
 whitespace between cjk words; mws means whitespace between
 cjk and latin words; nws means no whitespace."
-  (if prev
-      (cond
-       ((and (eq prev 'latin) (eq curr 'latin)) 'lws)
-       ((and (eq prev 'cjk) (eq curr 'cjk)) 'cws)
-       ((or (and (eq prev 'cjk) (eq curr 'latin))
-            (and (eq prev 'latin) (eq curr 'cjk)))
-        'mws)
-       ((null curr) 'nws)
-       ((or (eq prev 'cjk-punct) (eq curr 'cjk-punct)) 'cws))
-    ;; prev is nil, determined by prev-prev
-    (when prev-prev
-      (ekp-glue-type prev-prev curr nil))))
+  (let ((before (cdr prev-box-type))
+        (after (car curr-box-type)))
+    (if before
+        (cond
+         ((and (eq before 'latin) (eq after 'latin)) 'lws)
+         ((and (eq before 'cjk) (eq after 'cjk)) 'cws)
+         ((or (and (eq before 'cjk) (eq after 'latin))
+              (and (eq before 'latin) (eq after 'cjk)))
+          'mws)
+         ((or (eq before 'cjk-punct) (eq after 'cjk-punct)) 'cws))
+      'nws)))
 
 (defun ekp--glues-types (boxes boxes-types hyphen_positions)
+  "Set type of all glue in boxes using `ekp-glue-type',
+set type to 'nws for each glue after position in hyphen_positions."
   ;; IMPORTANT!
   (let* ((num (length boxes))
          (glues-types (make-vector num nil))
-         prev-type prev-prev-type)
+         prev-box-type curr-box-type)
     ;; set hyphen position to 'nws
     (dolist (i (append hyphen_positions nil))
       (aset glues-types (1+ i) 'nws))
     (dotimes (i num)
       (unless (aref glues-types i)
-        (let ((curr-type (aref boxes-types i)))
-          (aset glues-types i (ekp-glue-type
-                              curr-type prev-type prev-prev-type))
-          (setq prev-prev-type prev-type)
-          (setq prev-type curr-type))))
+        (let ((curr-box-type (aref boxes-types i)))
+          (aset glues-types
+                i (ekp-glue-type prev-box-type curr-box-type))
+          (setq prev-box-type curr-box-type))))
     glues-types))
 
 (defun ekp-glue-ideal-pixel (type)
@@ -431,8 +455,9 @@ return the value of KEY in plist."
                       (aset gaps (1- k)
                             (ekp--gaps-list
                              (seq-drop (cl-subseq glues-types i (1- k)) 1)))
-                      (elog-debug "1-k:%s; rests:%S" (1- k)
-                                  (aref rests (1- k)))))
+                      ;; (elog-debug "1-k:%s; rests:%S" (1- k)
+                      ;;             (aref rests (1- k)))
+                      ))
                   (throw 'break nil))
                 
                 (when (or (<= min-pixel line-pixel max-pixel)
@@ -456,7 +481,7 @@ return the value of KEY in plist."
                                     (progn
                                       ;; add extra cost of hypen
                                       (cl-incf hyphen-line-count)
-                                      (+ cost (* 100 hyphen-line-count)))
+                                      (+ cost (* 1000 hyphen-line-count)))
                                   (setq hyphen-line-count 0)
                                   cost)))))
                          (total-cost (+ (aref costs i) line-cost)))
@@ -547,8 +572,8 @@ So the length of line glues is: line-boxes-num + 1"
                                           (ekp-glue-ideal-pixel
                                            (aref glues-types start)))))))
                (t
-                (elog-debug "-----------------")
-                (elog-debug "glues-types:%s" line-glues-types)
+                ;; (elog-debug "-----------------")
+                ;; (elog-debug "glues-types:%s" line-glues-types)
                 (let ((max-pixel (- (aref max-prefixs end)
                                     (aref max-prefixs start)
                                     (ekp-glue-max-pixel
@@ -556,12 +581,12 @@ So the length of line glues is: line-boxes-num + 1"
                   ;; ends with hyphen
                   (when (ekp-hyphenate-p glues-types end)
                     (cl-incf max-pixel (ekp-hyphen-pixel string)))
-                  (elog-debug "start:%s; end:%s; max:%s" start end max-pixel)
+                  ;; (elog-debug "start:%s; end:%s; max:%s" start end max-pixel)
                   (if (< max-pixel line-pixel)
                       (progn
                         ;; 行尾直接断行的情况
-                        (elog-debug "暴力断行 i:%s pixel:%s"
-                                    i (- line-pixel max-pixel))
+                        ;; (elog-debug "暴力断行 i:%s pixel:%s"
+                        ;;             i (- line-pixel max-pixel))
                         (append '(0)
                                 (mapcar #'ekp-glue-max-pixel line-glues-types)
                                 (list (- line-pixel max-pixel))))
@@ -572,12 +597,13 @@ So the length of line glues is: line-boxes-num + 1"
                                            (aref glues-types start)))))
                       ;; ideal-pixel 包含第一个box之前的glue
                       ;; (elog-debug "boxes:%S" (cl-subseq boxes start end))
-                      (elog-debug "line:%s; ideal:%s; rest:%s; stored-rest:%s"
-                                  line-pixel ideal-pixel (- line-pixel ideal-pixel)
-                                  (nth i (ekp-dp-data string line-pixel :rests))))
+                      ;; (elog-debug "line:%s; ideal:%s; rest:%s; stored-rest:%s"
+                      ;;             line-pixel ideal-pixel (- line-pixel ideal-pixel)
+                      ;;             (nth i (ekp-dp-data string line-pixel :rests)))
+                      )
                     (let* ((lines-rests (ekp-dp-data string line-pixel :rests))
                            (curr-rest-pixel (nth i lines-rests)))
-                      (elog-debug "curr-rest-pixel:%s" curr-rest-pixel)
+                      ;; (elog-debug "curr-rest-pixel:%s" curr-rest-pixel)
                       (cond
                        ((= curr-rest-pixel 0)
                         (append '(0) (mapcar #'ekp-glue-ideal-pixel
@@ -586,7 +612,8 @@ So the length of line glues is: line-boxes-num + 1"
                        (t
                         (let* ((lines-gaps (ekp-dp-data string line-pixel :gaps))
                                (line-gaps (nth i lines-gaps))
-                               (_ (elog-debug "line-gaps:%S" line-gaps))
+                               (_ ;; (elog-debug "line-gaps:%S" line-gaps)
+                                )
                                (latin-gaps (nth 0 line-gaps))
                                (mix-gaps (nth 1 line-gaps))
                                (cjk-gaps (nth 2 line-gaps))
@@ -602,10 +629,10 @@ So the length of line glues is: line-boxes-num + 1"
                             (if (< (- line-rest-pixel latin-max-pixel) 0)
                                 (when (> latin-gaps 0)
                                   ;; only stretch latin glues
-                                  (elog-debug "latin-gap-pixel:%s"
-                                              (/ line-rest-pixel latin-gaps))
-                                  (elog-debug "latin-extra-gaps:%s"
-                                              (% line-rest-pixel latin-gaps))
+                                  ;; (elog-debug "latin-gap-pixel:%s"
+                                  ;;             (/ line-rest-pixel latin-gaps))
+                                  ;; (elog-debug "latin-extra-gaps:%s"
+                                  ;;             (% line-rest-pixel latin-gaps))
                                   (setq latin-gap-pixel (/ line-rest-pixel latin-gaps))
                                   (setq latin-extra-gaps (% line-rest-pixel latin-gaps)))
                               ;; stretch latin glues max and continue to stretch mix glues
@@ -655,8 +682,8 @@ So the length of line glues is: line-boxes-num + 1"
                                          ;; shrink
                                          (- (ekp-glue-ideal-pixel type) pixel))))
                                    line-glues-types)))
-                            (elog-debug "glue-pixel-lst:%S" glue-pixel-lst)
-                            (elog-debug "--------------")
+                            ;; (elog-debug "glue-pixel-lst:%S" glue-pixel-lst)
+                            ;; (elog-debug "--------------")
                             (append '(0) glue-pixel-lst '(0))))))))))))
         (aset line-glues i (vconcat line-glue nil))
         (setq start end)))
@@ -672,7 +699,8 @@ So the length of line glues is: line-boxes-num + 1"
                              (list last-glue)))
       (error "(length glues) + 1 != (length boxes)"))))
 
-(defun ekp-pixel-justify (string line-pixel)
+(defun ekp--pixel-justify (string line-pixel)
+  "Justify single STRING to LINE-PIXEL."
   (let* ((boxes (ekp-boxes string))
          (hyphen (ekp-hyphen-str string))
          (breaks (ekp-line-breaks string line-pixel))
@@ -694,19 +722,45 @@ So the length of line glues is: line-boxes-num + 1"
         (setq start end)))
     (mapconcat 'identity (nreverse strings) "\n")))
 
+(defun ekp-pixel-justify (string line-pixel)
+  "Justify multiline STRING to LINE-PIXEL."
+  (let ((strs (split-string string "\n")))
+    (mapconcat (lambda (str)
+                 (if (string-blank-p str)
+                     ""
+                   (ekp--pixel-justify str line-pixel)))
+               strs "\n")))
+
 (defun ekp-pixel-range-justify (string min-pixel max-pixel)
-  "Return text with optimal typing when STRING's line width
-is between MIN-PIXEL and MAX-PIXEL."
-  (let ((best-pixel max-pixel)
-        (best-cost (abs (ekp-total-cost string max-pixel)))
-        (pixel max-pixel))
-    (while (>= pixel min-pixel)
-      (let ((cost (abs (ekp-total-cost string pixel))))
-        (when (< cost best-cost)
+  "Find the optimal breakpoint for STRING typesetting between
+a MIN-PIXEL and MAX-PIXEL width and return a cons-cell. The car
+of it is the ​​typeset tex and cdr is the best pixel."
+  (let* ((strings (split-string string "\n"))
+         (best-pixel max-pixel)
+         (best-cost-lst
+          (mapcar (lambda (string)
+                    (if (string-blank-p string)
+                        0
+                      (abs (ekp-total-cost string max-pixel))))
+                  strings))
+         ;; get average cost of all lines' costs
+         (best-cost (/ (float (apply #'+ best-cost-lst))
+                       (length best-cost-lst)))
+         (curr-pixel max-pixel))
+    (while (>= curr-pixel min-pixel)
+      (let* ((cost-lst
+              (mapcar (lambda (string)
+                        (if (string-blank-p string)
+                            0
+                          (abs (ekp-total-cost string curr-pixel))))
+                      strings))
+             (curr-cost (/ (float (apply #'+ cost-lst))
+                           (length cost-lst))))
+        (when (< curr-cost best-cost)
           (progn
-            (setq best-cost cost)
-            (setq best-pixel pixel)))
-        (cl-decf pixel 1)))
+            (setq best-cost curr-cost)
+            (setq best-pixel curr-pixel)))
+        (cl-decf curr-pixel 1)))
     (cons (ekp-pixel-justify string best-pixel) best-pixel)))
 
 (provide 'ekp)

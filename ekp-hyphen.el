@@ -250,7 +250,7 @@ LEFT and RIGHT are minimum first/last syllable chars. CACHE t/nil."
     (concat "" (mapconcat #'char-to-string letters ""))))
 
 (defun ekp-hyphen-boxes (ekp-hyphen word)
-  (split-string (ekp-hyphen-inserted ekp-hyphen word) "-"))
+  (split-string (ekp-hyphen-inserted ekp-hyphen word " ") " "))
 
 (provide 'ekp-hyphen)
 

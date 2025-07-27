@@ -2,6 +2,25 @@
 
 ;;; related to font
 
+(defun ekp-cjk-char-p (char)
+  "Return if char CHAR is cjk."
+  (or
+   ;; CJK统一表意文字（基本区）
+   (<= #x4E00 char #x9FFF)
+   ;; CJK扩展A区
+   (<= #x3400 char #x4DBF)
+   ;; CJK扩展B区（注意：超出16位范围）
+   (and (<= #x20000 char) (<= char #x2A6DF))
+   ;; CJK兼容/部首扩展等
+   ;; CJK符号和标点
+   (<= #x3000 char #x303F)
+   ;; 日文假名
+   (<= #x3040 char #x30FF)
+   ;; 韩文谚文
+   (<= #xAC00 char #xD7AF)
+   ;; CJK兼容表意文字
+   (<= #xF900 char #xFAFF)))
+
 (defun ekp-font-family (string &optional position)
   (format "%s" (font-get (font-at (or position 0) nil string) :family)))
 
@@ -21,7 +40,9 @@
     (insert string)
     (goto-char (point-min))
     (while (and (< (point) (point-max))
-                (= 2 (char-width (char-after))))
+                (let ((char (char-after)))
+                  (not (or (and (>= char ?a) (<= char ?z))
+                           (and (>= char ?A) (<= char ?Z))))))
       (forward-char 1))
     (unless (eobp)
       (buffer-substring (point) (1+ (point))))))
@@ -31,7 +52,10 @@
     (insert string)
     (goto-char (point-min))
     (while (and (< (point) (point-max))
-                (= 1 (char-width (char-after))))
+                (let* ((char (char-after))
+                       (width (char-width char)))
+                  (or (or (= 1 width) (= 0 width))
+                      (not (ekp-cjk-char-p char)))))
       (forward-char 1))
     (unless (eobp)
       (buffer-substring (point) (1+ (point))))))
@@ -148,8 +172,10 @@ the value of [SYM]-default."
       ""
     (propertize " " 'display `(space :width (,pixel)))))
 
-(defun ekp-cjk-punct-p (char)
-  (or (and (>= char #x3000) (<= char #x303F))
+(defun ekp-cjk-fw-punct-p (char)
+  "Return if CHAR is CJK full-width punctuation."
+  (or (equal (char-syntax char) ?.)
+      (and (>= char #x3000) (<= char #x303F))
       (and (>= char #xFF00) (<= char #xFF60))))
 
 (defun ekp-split-to-boxes (string)
@@ -161,7 +187,9 @@ the value of [SYM]-default."
       (while (not (eobp))
         (let* ((char (char-after))
                (str (char-to-string char)))
-          (if (string-blank-p str)
+          (if (or (string-blank-p str)
+                  ;; 零宽 unicode
+                  (= 0 (string-width str)))
               (when curr-str
                 (push curr-str boxes)
                 (setq curr-str nil))
@@ -178,13 +206,17 @@ the value of [SYM]-default."
                   (setq state 2)))
               (cond
                ((= 2 (string-width str))
-                (if (ekp-cjk-punct-p char)
+                (if (ekp-cjk-fw-punct-p char)
+                    ;; cjk punct 连在前一个字符后面
                     (progn
                       (push (concat prev-str str) boxes)
                       (setq prev-str nil))
                   (when prev-str (push prev-str boxes))
                   (setq prev-str str)))
                ((= 1 (string-width str))
+                (when prev-str
+                  (push prev-str boxes)
+                  (setq prev-str nil))
                 ;; switch to state 1
                 (setq curr-str (concat curr-str str))
                 (setq state 1))))))
@@ -198,6 +230,40 @@ the value of [SYM]-default."
   (setq ekp-caches
         (make-hash-table
          :test 'equal :size 100 :rehash-size 1.5 :weakness nil)))
+
+;; (defun ekp-split-to-boxes (string)
+;;   "Split STRING into a vector: English by word, Chinese
+;; by character, punctuation attached to previous unit."
+;;   (with-temp-buffer
+;;     (insert string)
+;;     (goto-char (point-min))
+;;     (let (words (index 0))
+;;       (while (not (eobp))
+;;         ;; skip whitespace
+;;         (skip-syntax-forward "-")
+;;         (unless (eobp)
+;;           (let ((start (point)))
+;;             (if (ekp-cjk-char-p (char-after))
+;;                 (forward-char 1)
+;;               (forward-word 1)
+;;               ;; process float number
+;;               (when-let* ((char1 (char-after (point)))
+;;                           (char2 (char-after (1+ (point))))
+;;                           (_ (and (eq char1 ?.) (<= ?0 char2 ?9))))
+;;                 (forward-word 1))
+;;               ;; process hyphen and contraction
+;;               (while (or (eq (char-after (point)) ?-)
+;;                          (eq (char-after (point)) ?')
+;;                          (eq (char-after (point)) ?/))
+;;                 (forward-word 1)))
+;;             ;; attach punctuation
+;;             (while (and (not (eobp))
+;;                         (with-syntax-table (standard-syntax-table)
+;;                           (eq (char-syntax (char-after)) ?.)))
+;;               ;; (message "(char-after):%s" (char-after))
+;;               (forward-char 1))
+;;             (push (buffer-substring start (point)) words))))
+;;       (vconcat (nreverse words)))))
 
 ;; (defvar ekp-par-num 8)
 ;; (defun ekp-strings (string n)
