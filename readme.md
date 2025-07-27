@@ -54,3 +54,9 @@ Formats the text STRING to fit a pixel width of LINE-PIXEL per line and returns 
 ```(ekp-pixel-range-justify string min-pixel max-pixel)```
 
 Searches for optimal typesetting within the range of MIN-PIXEL to MAX-PIXEL. Returns a cons-cell where the car is the formatted text and the cdr is the pixel value achieving the best typesetting result.
+
+## Credits
+
+- The core algorithm is fundamentally derived from the seminal paper: "Breaking Paragraphs into Lines" by ​​DONALD E. KNUTH AND MICHAEL F. PLASS​​.
+
+- The implementation of ​​Latin word hyphenation​​ is adapted from the source code of the ​​`Pyphen​`​ Python library, and the corresponding dictionaries originate from this project: https://github.com/Kozea/Pyphen

@@ -43,3 +43,9 @@ Emacs-kp 实现了 knuth-plass 排版算法，但其功能不局限于英文排�
 ```(ekp-pixel-range-justify string min-pixel max-pixel)```
 
 在 MIN-PIXEL 到 MAX-PIXEL 的返回内寻找最优排版，返回一个 cons-cell，car 是排版后的文本，cdr 是最优排版效果的像素值。
+
+## 感谢
+
+1. 毫无疑问核心算法源自此篇论文 "Breaking Paragraphs into Lines" by DONALD E. KNUTH AND MICHAEL F. PLASS
+
+2. 拉丁单词的 hypen 断词的实现是由 Pyphen 这个 python 库的代码转写而来的，词库也来源于此: https://github.com/Kozea/Pyphen
