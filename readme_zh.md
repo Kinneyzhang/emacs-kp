@@ -42,7 +42,12 @@ Emacs-kp 实现了 knuth-plass 排版算法，但其功能不局限于英文排�
 
 ```(ekp-pixel-range-justify string min-pixel max-pixel)```
 
-在 MIN-PIXEL 到 MAX-PIXEL 的返回内寻找最优排版，返回一个 cons-cell，car 是排版后的文本，cdr 是最优排版效果的像素值。
+在 MIN-PIXEL 到 MAX-PIXEL 的返回内寻找最优排版，返回一个 cons-cell，car 是排版后的文本，cdr 是最优排版效果的像素值。请注意，该函数会遍历计算最小和最大像素之间的排版代价取最小值的情况，如果范围设置的太大执行时间可能会显著变长。后续考虑使用 rust 动态模块来并行计算，提高性能。
+
+## 下一步
+
+- [ ] 使用 rust 动态模块重写：利用 rust 并行计算提升渲染性能。
+- [ ] 实现排版自动修正功能：比如修正中文中使用的英文标点；英文中使用的中文标点等
 
 ## 感谢
 
