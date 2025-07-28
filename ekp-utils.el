@@ -219,6 +219,10 @@ the value of [SYM]-default."
                 (setq curr-str (concat curr-str str))
                 (setq state 1))))))
         (forward-char 1))
+      ;; push CJK char at the end of buffer to boxes
+      (when prev-str
+        (push prev-str boxes))
+      ;; push latin word at the end of buffer to boxes
       (when curr-str
         (push curr-str boxes))
       (vconcat (nreverse boxes)))))
