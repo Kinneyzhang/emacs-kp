@@ -614,8 +614,6 @@ So the length of line glues is: line-boxes-num + 1"
                        (t
                         (let* ((lines-gaps (ekp-dp-data string line-pixel :gaps))
                                (line-gaps (nth i lines-gaps))
-                               (_ ;; (elog-debug "line-gaps:%S" line-gaps)
-                                )
                                (latin-gaps (nth 0 line-gaps))
                                (mix-gaps (nth 1 line-gaps))
                                (cjk-gaps (nth 2 line-gaps))
