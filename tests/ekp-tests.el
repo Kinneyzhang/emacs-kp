@@ -50,7 +50,7 @@
 ;; (ekp-test-justify nil "fr" "Cascadia Next SC" 666)
 ;; (ekp-test-justify nil "de_DE" "Cascadia Next SC" 666)
 ;; (ekp-test-justify "zh" "en_US" "Noto Serif" 689)
-;; (ekp-test-justify "zh" nil nil 250)
+;; (ekp-test-justify "zh" nil nil 980)
 
 ;;; FIXME: font size also affect!
 
@@ -78,9 +78,3 @@
           (sit-for 0.00001))))))
 
 ;; (ekp-test-demo 400 800 1)
-
-;; (ekp-clear-caches)
-;; (ekp-test-justify "zh2" "en_US" "Cascadia Next SC" 666)
-;; (ekp-boxes (ekp-test-str "zh2" "en_US" "Cascadia Next SC"))
-;; (ekp-split-to-boxes "用户可通过​​Emacs Lisp (elisp)​​ 重新定义编辑行为")
-;; (ekp-split-to-boxes "用户可通过​​Emacs Lisp (elisp)​​​​ 重新定义编辑行为")

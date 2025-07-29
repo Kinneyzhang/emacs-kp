@@ -546,7 +546,8 @@ return the value of KEY in plist."
   "Line glues include glues before first box and after last box.
 So the length of line glues is: line-boxes-num + 1"
   (let* ((boxes-widths (ekp-boxes-widths string))
-         (boxes-num (length (ekp-boxes string)))
+         (boxes (ekp-boxes string))
+         (boxes-num (length boxes))
          (glues-types (ekp-glues-types string))
          (ideal-prefixs (ekp-ideal-prefixs string))
          (max-prefixs (ekp-max-prefixs string))
@@ -564,7 +565,12 @@ So the length of line glues is: line-boxes-num + 1"
         (setq line-glue
               (cond
                ((= 1 (length line-boxes-widths))
-                (list 0 (- line-pixel (aref line-boxes-widths 0))))
+                (if (ekp-hyphenate-p glues-types end)
+                    ;; ends with hyphen, minus hyphen-pixel
+                    (list 0 (- line-pixel
+                               (ekp-hyphen-pixel string)
+                               (aref line-boxes-widths 0)))
+                  (list 0 (- line-pixel (aref line-boxes-widths 0)))))
                (is-last
                 (append '(0)
                         (mapcar #'ekp-glue-ideal-pixel line-glues-types)
