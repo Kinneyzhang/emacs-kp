@@ -290,7 +290,7 @@ return the value of KEY in plist."
 
 (defun ekp-hyphen-str (string)
   (propertize
-   "-" 'face '(:family (ekp-text-data string :latin-font))))
+   "-" 'face `(:family ,(ekp-text-data string :latin-font))))
 
 (defun ekp-hyphen-pixel (string)
   (string-pixel-width (ekp-hyphen-str string)))
