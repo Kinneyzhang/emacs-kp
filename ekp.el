@@ -259,7 +259,8 @@ boxes-widths :glues-types glues-types)."
              (cons (ekp-split-string string))
              (boxes (car cons))
              (hyphen_after_positions (cdr cons))
-             (boxes-widths (vconcat (mapcar #'string-pixel-width boxes)))
+             (boxes-widths (vconcat
+                            (mapcar #'string-pixel-width boxes)))
              (boxes-types (vconcat (mapcar #'ekp-box-type boxes)))
              (glues-types (ekp--glues-types boxes boxes-types
                                             hyphen_after_positions))
