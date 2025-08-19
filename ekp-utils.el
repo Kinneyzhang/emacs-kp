@@ -2,24 +2,36 @@
 
 ;;; related to font
 
-(defun ekp-cjk-char-p (char)
-  "Return if char CHAR is cjk."
-  (or
-   ;; CJK统一表意文字（基本区）
-   (<= #x4E00 char #x9FFF)
-   ;; CJK扩展A区
-   (<= #x3400 char #x4DBF)
-   ;; CJK扩展B区（注意：超出16位范围）
-   (and (<= #x20000 char) (<= char #x2A6DF))
-   ;; CJK兼容/部首扩展等
-   ;; CJK符号和标点
-   (<= #x3000 char #x303F)
-   ;; 日文假名
-   (<= #x3040 char #x30FF)
-   ;; 韩文谚文
-   (<= #xAC00 char #xD7AF)
-   ;; CJK兼容表意文字
-   (<= #xF900 char #xFAFF)))
+;; (defun ekp-cjk-char-p (char)
+;;   "Return if char CHAR is cjk."
+;;   (or
+;;    ;; CJK统一表意文字（基本区）
+;;    (<= #x4E00 char #x9FFF)
+;;    ;; CJK扩展A区
+;;    (<= #x3400 char #x4DBF)
+;;    ;; CJK扩展B区（注意：超出16位范围）
+;;    (and (<= #x20000 char) (<= char #x2A6DF))
+;;    ;; CJK兼容/部首扩展等
+;;    ;; CJK符号和标点
+;;    (<= #x3000 char #x303F)
+;;    ;; 日文假名
+;;    (<= #x3040 char #x30FF)
+;;    ;; 韩文谚文
+;;    (<= #xAC00 char #xD7AF)
+;;    ;; CJK兼容表意文字
+;;    (<= #xF900 char #xFAFF)))
+
+(defsubst ekp-cjk-char-p (char)
+  "Return non-nil if CHAR is a CJK character."
+  (let ((entry (aref (category-table) char)))
+    ;; Use ‘describe-categories’ for a full list of categories.
+    ;; Another way is to use ‘char-script-table’ (see
+    ;; ‘script-representative-chars’ for possible scripts), which is
+    ;; not as convenient.
+    (or (aref entry ?c) ; Chinese
+        (aref entry ?h) ; Korean
+        (aref entry ?j) ; Japanese
+        )))
 
 (defun ekp-font-family (string &optional position)
   (format "%s" (font-get (font-at (or position 0) nil string) :family)))
