@@ -115,20 +115,20 @@
                (ekp-propertize
                 (ekp-propertize (nth 0 lst)
                                 '(face (:family "Comic Sans MS")))
-                '(face (:height 1.3 :foreground "Cyan"))
+                '(face (:height 1.3 :foreground "cyan"))
                 0 2)
                (ekp-propertize
                 (ekp-propertize (nth 1 lst)
                                 '(face (:family "Cascadia Next SC")))
-                '(face (:height 1.3 :foreground "Cyan"))
+                '(face (:height 1.3 :foreground "green"))
                 0 2)
                (ekp-propertize
                 (ekp-propertize (nth 2 lst)
-                                '(face (:family  "Source Han Sans SC")))
-                '(face (:height 1.3 :foreground "Cyan"))
+                                '(face (:family  "IBM 3270 Narrow")))
+                '(face (:height 1.3 :foreground "orange"))
                 0 2)))
     (ekp-clear-caches)
     (pop-buffer-insert 30
-      (ekp-pixel-justify (string-join lst "\n\n") 683))))
+      "\n" (ekp-pixel-justify (string-join lst "\n\n") 683))))
 
 ;; (ekp-test-keep-props)
