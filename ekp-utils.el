@@ -182,11 +182,12 @@ the value of [SYM]-default."
       ""
     (propertize " " 'display `(space :width (,pixel)))))
 
-(defun ekp-cjk-fw-punct-p (char)
+(defun ekp-cjk-fw-punct-p (str)
   "Return if CHAR is CJK full-width punctuation."
-  (or (equal (char-syntax char) ?.)
-      (and (>= char #x3000) (<= char #x303F))
-      (and (>= char #xFF00) (<= char #xFF60))))
+  (let ((char (seq-first str)))
+    (or (equal (char-syntax char) ?.)
+        (and (>= char #x3000) (<= char #x303F))
+        (and (>= char #xFF00) (<= char #xFF60)))))
 
 (defun ekp-split-to-boxes (string)
   (with-temp-buffer
@@ -195,8 +196,7 @@ the value of [SYM]-default."
     (let ((state (char-width (seq-first string)))
           curr-str prev-str boxes)
       (while (not (eobp))
-        (let* ((char (char-after))
-               (str (char-to-string char)))
+        (let* ((str (buffer-substring (point) (1+ (point)))))
           (if (or (string-blank-p str)
                   ;; 零宽 unicode
                   (= 0 (string-width str)))
@@ -216,7 +216,7 @@ the value of [SYM]-default."
                   (setq state 2)))
               (cond
                ((= 2 (string-width str))
-                (if (ekp-cjk-fw-punct-p char)
+                (if (ekp-cjk-fw-punct-p str)
                     ;; cjk punct 连在前一个字符后面
                     (progn
                       (push (concat prev-str str) boxes)

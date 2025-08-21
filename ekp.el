@@ -155,12 +155,7 @@
                 (cl-incf idx)))
           (push (list box) new-boxes)
           (cl-incf idx))))
-    (let* ((boxes-lst (apply #'append (nreverse new-boxes)))
-           (boxes-lst
-            (seq-map (lambda (box)
-                       (propertize
-                        box 'face `(:family ,(ekp-latin-font string))))
-                     boxes-lst)))
+    (let ((boxes-lst (apply #'append (nreverse new-boxes))))
       (cons (vconcat boxes-lst)
             (vconcat (nreverse idxs))))))
 
@@ -171,7 +166,7 @@
    ((or (string= "“" str) (string= "”" str)) 'cjk)
    ((= (string-width str) 1) 'latin)
    ((= (string-width str) 2)
-    (if (ekp-cjk-fw-punct-p (string-to-char str))
+    (if (ekp-cjk-fw-punct-p str)
         'cjk-punct
       'cjk))
    (t (error "Abnormal string width %s for %s"
@@ -290,8 +285,11 @@ return the value of KEY in plist."
   (ekp-text-data string :boxes))
 
 (defun ekp-hyphen-str (string)
-  (propertize
-   "-" 'face `(:family ,(ekp-text-data string :latin-font))))
+  "-"
+  ;; (propertize
+  ;;  "-"
+  ;;  'face `(:family ,(ekp-text-data string :latin-font)))
+  )
 
 (defun ekp-hyphen-pixel (string)
   (string-pixel-width (ekp-hyphen-str string)))

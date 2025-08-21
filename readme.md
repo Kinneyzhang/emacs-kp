@@ -56,7 +56,7 @@ Formats the text STRING to fit a pixel width of LINE-PIXEL per line and returns 
 Searches for optimal typesetting within the range of MIN-PIXEL to MAX-PIXEL. Returns a cons-cell where the car is the formatted text and the cdr is the pixel value achieving the best typesetting result. Please Note: This function iteratively computes the typesetting cost between the minimum and maximum pixel values to find the optimal case at the minimum cost. ​​If the specified range is too large, execution time may increase significantly.​​ Future updates plan to leverage Rust dynamic libraries for parallel computation to improve performance.
 
 ## Next Todos
-- [ ] Preserve the original text's text properties.
+- [x] Preserve the original text's text properties.
 - [ ] Refactor using Rust dynamic modules: Utilize Rust's parallel computing capabilities to enhance rendering performance.
 - [ ] Implement autocorrection for punctuation: Correct English punctuation mistakenly used in Chinese text; Correct Chinese punctuation mistakenly used in English texts...
 

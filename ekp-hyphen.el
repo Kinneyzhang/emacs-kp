@@ -229,10 +229,31 @@ LEFT and RIGHT are minimum first/last syllable chars. CACHE t/nil."
                              (<= (ekp-hyphen--datint-value i) right)))
                       (ekp-hyphen--hyphdict-positions hd word))))
 
+;; (defun ekp-hyphen-inserted (ekp-hyphen word &optional hyphen)
+;;   "Return WORD with all possible hyphens inserted."
+;;   (let ((hyphen (or hyphen "-"))
+;;         (letters (string-to-list word)))
+;;     (dolist (pos (reverse (ekp-hyphen-positions ekp-hyphen word)))
+;;       (let ((idx (ekp-hyphen--datint-value pos)))
+;;         (if (ekp-hyphen--datint-data pos)
+;;             (let* ((data (ekp-hyphen--datint-data pos))
+;;                    (change (nth 0 data))
+;;                    (index (+ (nth 1 data) idx))
+;;                    (cut (nth 2 data))
+;;                    (changestr (replace-regexp-in-string "=" hyphen change)))
+;;               (setq letters (append (cl-subseq letters 0 index)
+;;                                     (string-to-list changestr)
+;;                                     (cl-subseq letters (+ index cut)))))
+;;           (setq letters (append (cl-subseq letters 0 idx)
+;;                                 (string-to-list hyphen)
+;;                                 (cl-subseq letters idx))))))
+;;     (concat "" (mapconcat #'char-to-string letters ""))))
+
 (defun ekp-hyphen-inserted (ekp-hyphen word &optional hyphen)
-  "Return WORD with all possible hyphens inserted."
+  "Return WORD with all possible hyphens inserted, preserving
+text properties."
   (let ((hyphen (or hyphen "-"))
-        (letters (string-to-list word)))
+        (result word))
     (dolist (pos (reverse (ekp-hyphen-positions ekp-hyphen word)))
       (let ((idx (ekp-hyphen--datint-value pos)))
         (if (ekp-hyphen--datint-data pos)
@@ -241,13 +262,13 @@ LEFT and RIGHT are minimum first/last syllable chars. CACHE t/nil."
                    (index (+ (nth 1 data) idx))
                    (cut (nth 2 data))
                    (changestr (replace-regexp-in-string "=" hyphen change)))
-              (setq letters (append (cl-subseq letters 0 index)
-                                    (string-to-list changestr)
-                                    (cl-subseq letters (+ index cut)))))
-          (setq letters (append (cl-subseq letters 0 idx)
-                                (string-to-list hyphen)
-                                (cl-subseq letters idx))))))
-    (concat "" (mapconcat #'char-to-string letters ""))))
+              (setq result (concat (substring result 0 index)
+                                   changestr
+                                   (substring result (+ index cut)))))
+          (setq result (concat (substring result 0 idx)
+                               hyphen
+                               (substring result idx))))))
+    result))
 
 (defun ekp-hyphen-boxes (ekp-hyphen word)
   (split-string (ekp-hyphen-inserted ekp-hyphen word " ") " "))
