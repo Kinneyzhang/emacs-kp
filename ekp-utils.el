@@ -190,54 +190,56 @@ the value of [SYM]-default."
         (and (>= char #xFF00) (<= char #xFF60)))))
 
 (defun ekp-split-to-boxes (string)
-  (with-temp-buffer
-    (insert string)
-    (goto-char (point-min))
-    (let ((state (char-width (seq-first string)))
-          curr-str prev-str boxes)
-      (while (not (eobp))
-        (let* ((str (buffer-substring (point) (1+ (point)))))
-          (if (or (string-blank-p str)
-                  ;; 零宽 unicode
-                  (= 0 (string-width str)))
-              (when curr-str
-                (push curr-str boxes)
-                (setq curr-str nil))
-            (if (= state 1)
+  (if (string-blank-p string)
+      (vector string)
+    (with-temp-buffer
+      (insert string)
+      (goto-char (point-min))
+      (let ((state (char-width (seq-first string)))
+            curr-str prev-str boxes)
+        (while (not (eobp))
+          (let* ((str (buffer-substring (point) (1+ (point)))))
+            (if (or (string-blank-p str)
+                    ;; 零宽 unicode
+                    (= 0 (string-width str)))
+                (when curr-str
+                  (push curr-str boxes)
+                  (setq curr-str nil))
+              (if (= state 1)
+                  (cond
+                   ((= 1 (string-width str))
+                    (setq curr-str (concat curr-str str)))
+                   ((= 2 (string-width str))
+                    (when curr-str
+                      (push curr-str boxes)
+                      (setq curr-str nil))
+                    ;; switch to state 2
+                    (push str boxes)
+                    (setq state 2)))
                 (cond
-                 ((= 1 (string-width str))
-                  (setq curr-str (concat curr-str str)))
                  ((= 2 (string-width str))
-                  (when curr-str
-                    (push curr-str boxes)
-                    (setq curr-str nil))
-                  ;; switch to state 2
-                  (push str boxes)
-                  (setq state 2)))
-              (cond
-               ((= 2 (string-width str))
-                (if (ekp-cjk-fw-punct-p str)
-                    ;; cjk punct 连在前一个字符后面
-                    (progn
-                      (push (concat prev-str str) boxes)
-                      (setq prev-str nil))
-                  (when prev-str (push prev-str boxes))
-                  (setq prev-str str)))
-               ((= 1 (string-width str))
-                (when prev-str
-                  (push prev-str boxes)
-                  (setq prev-str nil))
-                ;; switch to state 1
-                (setq curr-str (concat curr-str str))
-                (setq state 1))))))
-        (forward-char 1))
-      ;; push CJK char at the end of buffer to boxes
-      (when prev-str
-        (push prev-str boxes))
-      ;; push latin word at the end of buffer to boxes
-      (when curr-str
-        (push curr-str boxes))
-      (vconcat (nreverse boxes)))))
+                  (if (ekp-cjk-fw-punct-p str)
+                      ;; cjk punct 连在前一个字符后面
+                      (progn
+                        (push (concat prev-str str) boxes)
+                        (setq prev-str nil))
+                    (when prev-str (push prev-str boxes))
+                    (setq prev-str str)))
+                 ((= 1 (string-width str))
+                  (when prev-str
+                    (push prev-str boxes)
+                    (setq prev-str nil))
+                  ;; switch to state 1
+                  (setq curr-str (concat curr-str str))
+                  (setq state 1))))))
+          (forward-char 1))
+        ;; push CJK char at the end of buffer to boxes
+        (when prev-str
+          (push prev-str boxes))
+        ;; push latin word at the end of buffer to boxes
+        (when curr-str
+          (push curr-str boxes))
+        (vconcat (nreverse boxes))))))
 
 (defun ekp-clear-caches ()
   (interactive)
