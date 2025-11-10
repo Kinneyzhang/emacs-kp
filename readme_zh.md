@@ -30,6 +30,24 @@ Emacs-kp 实现了 knuth-plass 排版算法，但其功能不局限于英文排�
 
 例如 `(ekp-param-set 7 3 2 5 2 1 0 2 0)` 对应设置上面的值。请勿直接设置上面的变量，必须要使用这个函数来设置。
 
+**新增：中文排版参数**
+
+emacs-kp 现在支持更多中文排版相关的参数，详见 [中文排版参数文档](./CHINESE_TYPOGRAPHY.md)。
+
+主要功能包括：
+- 行高控制 (`ekp-line-height-ratio`)
+- 段落缩进 (`ekp-paragraph-indent-chars`)
+- 标点压缩 (`ekp-punct-compress-ratio`)
+- 行首行尾标点禁则
+- CJK与拉丁文本自动间距
+
+快速配置示例：
+```elisp
+(ekp-set-line-height 1.6)          ; 设置行高为1.6倍
+(ekp-set-paragraph-indent 2)       ; 段落缩进2个字符
+(ekp-set-punct-compression 0.5)    ; 标点压缩比例50%
+```
+
 如果不手动设置，默认会按照 KP 算法推荐的规则设置一个合适的值：理想宽度设置为空格的像素宽度；可拉伸宽度为理想宽度的1/2；可压缩宽度为理想宽度的1/3。默认设置 `ekp-mws-ideal-pixel = ekp-lws-ideal-pixel - 2`；拉伸和压缩比例与上面一致。中文字符间的理想宽度为0；可拉伸宽度2；无可压缩宽度。
 
 ### 核心函数

@@ -5,6 +5,16 @@
 
 (defconst ekp-load-file-name (or load-file-name (buffer-file-name)))
 
+;; Default parameter ratios based on Knuth-Plass algorithm
+(defconst ekp-default-stretch-ratio 0.5
+  "Default stretch ratio: stretchable width = ideal width * ratio.")
+
+(defconst ekp-default-shrink-ratio 0.333
+  "Default shrink ratio: shrinkable width = ideal width * ratio.")
+
+(defconst ekp-default-mws-offset 2
+  "Default offset for mixed word spacing relative to Latin word spacing.")
+
 (defvar ekp-latin-lang "en_US")
 
 (defvar ekp-param-use-default-p t
@@ -37,6 +47,34 @@
 (defvar ekp-cws-shrink-pixel nil
   "The shrink pixel of non-whitespace, such between cjk chars.")
 
+;; Chinese typography parameters
+(defvar ekp-line-height-ratio 1.0
+  "Line height ratio for Chinese typography. 1.0 means default line height.
+Typical values range from 1.0 to 2.0. Higher values create more vertical space.")
+
+(defvar ekp-paragraph-indent-chars 2
+  "Number of CJK characters for paragraph indentation.
+Common value is 2 for Chinese typography.")
+
+(defvar ekp-punct-compress-ratio 0.5
+  "Compression ratio for CJK full-width punctuation.
+Value should be between 0.0 (no compression) and 1.0 (full compression).
+Typical value is 0.5, which compresses punctuation to half width.")
+
+(defvar ekp-prohibit-line-end-open-punct t
+  "If non-nil, prohibit opening punctuation at line end.
+This follows Chinese typography rules to avoid starting punctuation
+like '（', '「', '《' at the end of a line.")
+
+(defvar ekp-prohibit-line-start-close-punct t
+  "If non-nil, prohibit closing punctuation at line start.
+This follows Chinese typography rules to avoid ending punctuation
+like '）', '」', '》' at the start of a line.")
+
+(defvar ekp-cjk-latin-spacing-auto t
+  "If non-nil, automatically add spacing between CJK and Latin text.
+This improves readability in mixed CJK-Latin content.")
+
 (defvar ekp-lws-max-pixel nil)
 
 (defvar ekp-lws-min-pixel nil)
@@ -53,6 +91,10 @@
   (make-hash-table
    :test 'equal :size 100 :rehash-size 1.5 :weakness nil)
   "Key of ekp-caches is the hash of string.")
+
+(defvar ekp-cache-max-size 1000
+  "Maximum number of entries in ekp-caches.
+When cache exceeds this size, it will be cleared.")
 
 (defun ekp-root-dir ()
   (when ekp-load-file-name
@@ -71,16 +113,42 @@
        ekp-cws-ideal-pixel ekp-cws-stretch-pixel ekp-cws-shrink-pixel))
 
 (defun ekp-param-set-default (string)
+  "Set default typography parameters based on font metrics of STRING.
+Uses the Knuth-Plass algorithm recommended ratios."
   (let* ((lws-pixel (ekp-word-spacing-pixel string))
-         (mws-pixel (- lws-pixel 2)))
+         (mws-pixel (max 0 (- lws-pixel ekp-default-mws-offset))))
     (ekp-param-set
-     lws-pixel (round (* lws-pixel 0.5)) (round (* lws-pixel 0.333))
-     mws-pixel (round (* mws-pixel 0.5)) (round (* mws-pixel 0.333))
+     lws-pixel (round (* lws-pixel ekp-default-stretch-ratio)) 
+               (round (* lws-pixel ekp-default-shrink-ratio))
+     mws-pixel (round (* mws-pixel ekp-default-stretch-ratio))
+               (round (* mws-pixel ekp-default-shrink-ratio))
      0 2 0)))
 
 (defun ekp-param-set ( lws-ideal lws-stretch lws-shrink
                        mws-ideal mws-stretch mws-shrink
                        cws-ideal cws-stretch cws-shrink)
+  "Set typesetting parameters for Latin word spacing, mixed spacing, and CJK spacing.
+All parameters should be non-negative numbers representing pixel values.
+
+Parameters:
+  lws-ideal, lws-stretch, lws-shrink: Latin word spacing (ideal, stretchable, shrinkable)
+  mws-ideal, mws-stretch, mws-shrink: Mixed (Latin-CJK) spacing (ideal, stretchable, shrinkable)
+  cws-ideal, cws-stretch, cws-shrink: CJK character spacing (ideal, stretchable, shrinkable)"
+  ;; Validate parameters
+  (dolist (param (list lws-ideal lws-stretch lws-shrink
+                      mws-ideal mws-stretch mws-shrink
+                      cws-ideal cws-stretch cws-shrink))
+    (unless (and (numberp param) (>= param 0))
+      (error "Parameter must be a non-negative number, got: %s" param)))
+  
+  ;; Validate logical constraints
+  (when (< lws-ideal lws-shrink)
+    (error "lws-ideal (%s) must be >= lws-shrink (%s)" lws-ideal lws-shrink))
+  (when (< mws-ideal mws-shrink)
+    (error "mws-ideal (%s) must be >= mws-shrink (%s)" mws-ideal mws-shrink))
+  (when (< cws-ideal cws-shrink)
+    (error "cws-ideal (%s) must be >= cws-shrink (%s)" cws-ideal cws-shrink))
+  
   (setq ekp-lws-ideal-pixel lws-ideal)
   (setq ekp-lws-stretch-pixel lws-stretch)
   (setq ekp-lws-shrink-pixel lws-shrink)
@@ -107,6 +175,72 @@
           ekp-cws-ideal-pixel ekp-cws-stretch-pixel ekp-cws-shrink-pixel))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Chinese Typography Helper Functions
+
+(defun ekp-set-line-height (ratio)
+  "Set line height ratio for Chinese typography.
+RATIO should be a number >= 1.0. Typical values: 1.0-2.0."
+  (interactive "nLine height ratio (1.0-2.0): ")
+  (unless (and (numberp ratio) (>= ratio 1.0))
+    (error "Line height ratio must be >= 1.0, got: %s" ratio))
+  (setq ekp-line-height-ratio ratio))
+
+(defun ekp-set-paragraph-indent (chars)
+  "Set paragraph indentation in number of CJK characters.
+CHARS should be a non-negative integer. Common value is 2."
+  (interactive "nIndentation (number of CJK chars): ")
+  (unless (and (integerp chars) (>= chars 0))
+    (error "Indentation must be a non-negative integer, got: %s" chars))
+  (setq ekp-paragraph-indent-chars chars))
+
+(defun ekp-set-punct-compression (ratio)
+  "Set compression ratio for CJK full-width punctuation.
+RATIO should be between 0.0 (no compression) and 1.0 (full compression)."
+  (interactive "nPunctuation compression ratio (0.0-1.0): ")
+  (unless (and (numberp ratio) (>= ratio 0.0) (<= ratio 1.0))
+    (error "Compression ratio must be between 0.0 and 1.0, got: %s" ratio))
+  (setq ekp-punct-compress-ratio ratio))
+
+(defun ekp-toggle-line-end-punct-prohibition ()
+  "Toggle prohibition of opening punctuation at line end."
+  (interactive)
+  (setq ekp-prohibit-line-end-open-punct (not ekp-prohibit-line-end-open-punct))
+  (message "Line-end opening punctuation prohibition: %s" 
+           (if ekp-prohibit-line-end-open-punct "ON" "OFF")))
+
+(defun ekp-toggle-line-start-punct-prohibition ()
+  "Toggle prohibition of closing punctuation at line start."
+  (interactive)
+  (setq ekp-prohibit-line-start-close-punct (not ekp-prohibit-line-start-close-punct))
+  (message "Line-start closing punctuation prohibition: %s"
+           (if ekp-prohibit-line-start-close-punct "ON" "OFF")))
+
+(defun ekp-toggle-cjk-latin-spacing ()
+  "Toggle automatic spacing between CJK and Latin text."
+  (interactive)
+  (setq ekp-cjk-latin-spacing-auto (not ekp-cjk-latin-spacing-auto))
+  (message "Automatic CJK-Latin spacing: %s"
+           (if ekp-cjk-latin-spacing-auto "ON" "OFF")))
+
+(defun ekp-check-cache-size ()
+  "Check and manage cache size. Clear if exceeds maximum."
+  (when (and ekp-caches (> (hash-table-count ekp-caches) ekp-cache-max-size))
+    (message "Cache size exceeded %d, clearing..." ekp-cache-max-size)
+    (ekp-clear-caches)))
+
+(defun ekp-is-opening-punct (char)
+  "Check if CHAR is an opening punctuation."
+  (member char '("（" "「" "『" "《" "【" "〈" "〔" "｛" "〖" "［"
+                 "(" "[" "{" "'" """ "‹" "«")))
+
+(defun ekp-is-closing-punct (char)
+  "Check if CHAR is a closing punctuation."
+  (member char '("）" "」" "』" "》" "】" "〉" "〕" "｝" "〗" "］"
+                 ")" "]" "}" "'" """ "›" "»" "。" "，" "、" "；" "："
+                 "！" "？" "." "," ";" ":" "!" "?")))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 
 ;; 正确版本：包含完整字符集和组合标记
 (defvar ekp-latin-regexp
@@ -241,6 +375,9 @@ set type to 'nws for each glue after position in hyphen_positions."
   "Return the text cache of STRING. Text cache consists of
 (data . param-cache). Data is a plist (:boxes boxes :boxes-widths
 boxes-widths :glues-types glues-types)."
+  ;; Check and manage cache size
+  (ekp-check-cache-size)
+  
   (let ((text-hash (ekp-text-hash string)))
     (if-let ((_ ekp-caches)
              (cache (gethash text-hash ekp-caches)))
