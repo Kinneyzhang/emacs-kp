@@ -231,12 +231,12 @@ RATIO should be between 0.0 (no compression) and 1.0 (full compression)."
 (defun ekp-is-opening-punct (char)
   "Check if CHAR is an opening punctuation."
   (member char '("（" "「" "『" "《" "【" "〈" "〔" "｛" "〖" "［"
-                 "(" "[" "{" "'" """ "‹" "«")))
+                 "(" "[" "{" "‹" "«")))
 
 (defun ekp-is-closing-punct (char)
   "Check if CHAR is a closing punctuation."
   (member char '("）" "」" "』" "》" "】" "〉" "〕" "｝" "〗" "］"
-                 ")" "]" "}" "'" """ "›" "»" "。" "，" "、" "；" "："
+                 ")" "]" "}" "›" "»" "。" "，" "、" "；" "："
                  "！" "？" "." "," ";" ":" "!" "?")))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
