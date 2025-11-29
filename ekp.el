@@ -728,20 +728,32 @@ So the length of line glues is: line-boxes-num + 1"
         (setq start end)))
     (mapconcat 'identity (nreverse strings) "\n")))
 
-(defun ekp-pixel-justify (string line-pixel)
-  "Justify multiline STRING to LINE-PIXEL."
-  (let ((strs (split-string string "\n")))
+(defun ekp-pixel-justify (string line-pixel &optional use-cache)
+  "Justify multiline STRING to LINE-PIXEL.
+When USE-CACHE is non-nil, use the cache for performance.
+Default is nil, meaning cache is not used."
+  (let ((ekp-caches (if use-cache
+                        ekp-caches
+                      (make-hash-table
+                       :test 'equal :size 100 :rehash-size 1.5 :weakness nil)))
+        (strs (split-string string "\n")))
     (mapconcat (lambda (str)
                  (if (string-blank-p str)
                      ""
                    (ekp--pixel-justify str line-pixel)))
                strs "\n")))
 
-(defun ekp-pixel-range-justify (string min-pixel max-pixel)
+(defun ekp-pixel-range-justify (string min-pixel max-pixel &optional use-cache)
   "Find the optimal breakpoint for STRING typesetting between
 a MIN-PIXEL and MAX-PIXEL width and return a cons-cell. The car
-of it is the ​​typeset tex and cdr is the best pixel."
-  (let* ((strings (split-string string "\n"))
+of it is the ​​typeset tex and cdr is the best pixel.
+When USE-CACHE is non-nil, use the cache for performance.
+Default is nil, meaning cache is not used."
+  (let* ((ekp-caches (if use-cache
+                         ekp-caches
+                       (make-hash-table
+                        :test 'equal :size 100 :rehash-size 1.5 :weakness nil)))
+         (strings (split-string string "\n"))
          (best-pixel max-pixel)
          (best-cost-lst
           (mapcar (lambda (string)
@@ -767,6 +779,6 @@ of it is the ​​typeset tex and cdr is the best pixel."
             (setq best-cost curr-cost)
             (setq best-pixel curr-pixel)))
         (cl-decf curr-pixel 1)))
-    (cons (ekp-pixel-justify string best-pixel) best-pixel)))
+    (cons (ekp-pixel-justify string best-pixel use-cache) best-pixel)))
 
 (provide 'ekp)
