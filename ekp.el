@@ -231,9 +231,10 @@ set type to 'nws for each glue after position in hyphen_positions."
 
 (defun ekp-text-hash (string)
   (let ((latin-font (ekp-latin-font string))
-        (cjk-font (ekp-cjk-font string)))
+        (cjk-font (ekp-cjk-font string))
+        (print-text-properties t))
     (secure-hash
-     'md5 (format "%s|%s|%s" latin-font cjk-font string))))
+     'md5 (format "%s|%s|%s" latin-font cjk-font (prin1-to-string string)))))
 
 (defun ekp-text-cache (string)
   ;; consider font
