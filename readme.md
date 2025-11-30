@@ -33,6 +33,24 @@ Currently, it only supports hybrid typesetting between CJK and one Latin-based l
 
 For example: `(ekp-param-set 7 3 2 5 2 1 0 2 0)` sets the above parameters accordingly. **​​Do not modify these variables directly – always use this function for configuration.​​**
 
+**New: Chinese Typography Parameters**
+
+emacs-kp now supports additional Chinese typography parameters. See [Chinese Typography Documentation](./CHINESE_TYPOGRAPHY.md) for details.
+
+Key features include:
+- Line height control (`ekp-line-height-ratio`)
+- Paragraph indentation (`ekp-paragraph-indent-chars`)
+- Punctuation compression (`ekp-punct-compress-ratio`)
+- Opening/closing punctuation line-break prohibition rules
+- Automatic CJK-Latin spacing
+
+Quick configuration example:
+```elisp
+(ekp-set-line-height 1.6)          ; Set line height to 1.6x
+(ekp-set-paragraph-indent 2)       ; Indent paragraphs by 2 CJK chars
+(ekp-set-punct-compression 0.5)    ; 50% punctuation compression
+```
+
 If not manually configured, the default values follow KP algorithm recommendations for spaces between latin words:
 
 - The ideal width is set to the pixel width of a space character.
