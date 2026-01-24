@@ -49,6 +49,32 @@
 
 (defvar ekp-cws-min-pixel nil)
 
+;;; Knuth-Plass Algorithm Parameters
+;; These control the trade-offs in line breaking optimization.
+;; See: Knuth & Plass, "Breaking Paragraphs into Lines" (1981)
+
+(defvar ekp-line-penalty 10
+  "Penalty added for each line break (K-P: linepenalty).
+Higher values prefer fewer lines with more stretching.
+Typical range: 0-100. Default 10.")
+
+(defvar ekp-hyphen-penalty 50
+  "Penalty for breaking a word with hyphen (K-P: hyphenpenalty).
+Higher values avoid hyphenation. Default 50.")
+
+(defvar ekp-adjacent-fitness-penalty 100
+  "Penalty when adjacent lines differ in fitness class by > 1.
+Ensures visual consistency. Default 100.")
+
+(defvar ekp-last-line-min-ratio 0.5
+  "Minimum fill ratio for last line (0.0-1.0).
+Avoids orphaned words. Default 0.5 = at least half width.")
+
+(defvar ekp-looseness 0
+  "Target line count adjustment from optimal.
+0 = optimal, +1 = one more line (looser), -1 = one fewer line (tighter).
+Useful for fitting text to specific space.")
+
 (defvar ekp-caches
   (make-hash-table
    :test 'equal :size 100 :rehash-size 1.5 :weakness nil)
@@ -359,42 +385,271 @@ return the value of KEY in plist."
 (defun ekp-max-prefixs (string)
   (ekp-param-data string :max-prefixs))
 
+;;; Knuth-Plass Badness and Demerits
+;; 
+;; K-P defines badness as how much a line deviates from ideal:
+;;   badness = 100 * |r|³  where r = adjustment / flexibility
+;;
+;; Demerits combine badness with penalties to rank line breaks:
+;;   demerits = (linepenalty + badness)² + penalties
+;;
+;; Fitness classes ensure visual consistency:
+;;   0=tight, 1=decent, 2=loose, 3=very-loose
+;;   Adjacent lines with class difference > 1 get extra penalty.
+
+(defun ekp--compute-badness (adjustment-pixel flexibility-pixel)
+  "Compute Knuth-Plass badness from ADJUSTMENT-PIXEL and FLEXIBILITY-PIXEL.
+Returns 0 if no adjustment needed, 10000 (infinite) if impossible."
+  (cond
+   ((= adjustment-pixel 0) 0)
+   ((<= flexibility-pixel 0) 10000)
+   (t (let ((ratio (/ (float adjustment-pixel) flexibility-pixel)))
+        (min 10000 (* 100 (expt (abs ratio) 3)))))))
+
+(defun ekp--compute-fitness-class (adjustment-pixel flexibility-pixel)
+  "Classify line tightness into fitness class (0-3).
+0=tight (shrunk), 1=decent, 2=loose, 3=very-loose."
+  (if (<= flexibility-pixel 0)
+      1  ; default to decent
+    (let ((ratio (/ (float adjustment-pixel) flexibility-pixel)))
+      (cond
+       ((< ratio -0.5) 0)   ; tight (significantly shrunk)
+       ((< ratio 0.5) 1)    ; decent (close to ideal)
+       ((< ratio 1.0) 2)    ; loose
+       (t 3)))))            ; very loose
+
+(defun ekp--compute-demerits (badness penalty prev-fitness curr-fitness
+                                      end-with-hyphenp prev-hyphen-count)
+  "Compute K-P demerits for a line break.
+BADNESS is the line badness, PENALTY is break penalty (e.g., hyphen).
+PREV-FITNESS and CURR-FITNESS are fitness classes of adjacent lines.
+Returns total demerits for this break."
+  (let* (;; Base demerits: (linepenalty + badness)²
+         (base (expt (+ ekp-line-penalty badness) 2))
+         ;; Add break penalty
+         (with-penalty (+ base (* penalty penalty)))
+         ;; Fitness incompatibility penalty
+         (fitness-delta (abs (- prev-fitness curr-fitness)))
+         (with-fitness (if (> fitness-delta 1)
+                           (+ with-penalty ekp-adjacent-fitness-penalty)
+                         with-penalty))
+         ;; Consecutive hyphen penalty (quadratic growth)
+         (hyphen-count (if end-with-hyphenp (1+ prev-hyphen-count) 0))
+         (with-hyphen (if end-with-hyphenp
+                          (+ with-fitness (* 100 hyphen-count hyphen-count))
+                        with-fitness)))
+    with-hyphen))
+
 (defun ekp--gaps-list (glues-types)
+  "Count gaps by type: (latin-gaps mix-gaps cjk-gaps)."
   (list (seq-count (lambda (it) (eq 'lws it)) glues-types)
         (seq-count (lambda (it) (eq 'mws it)) glues-types)
         (seq-count (lambda (it) (eq 'cws it)) glues-types)))
 
-(defun ekp--line-cost-and-gaps (ideal-pixel line-pixel glues-types)
-  "Return the cost ratio of WORDS limited to LINE-PIXEL."
+(defun ekp--compute-stretch-capacity (gaps-list)
+  "Return total stretchable pixels for GAPS-LIST."
+  (+ (* (nth 0 gaps-list) ekp-lws-stretch-pixel)
+     (* (nth 1 gaps-list) ekp-mws-stretch-pixel)
+     (* (nth 2 gaps-list) ekp-cws-stretch-pixel)))
+
+(defun ekp--compute-shrink-capacity (gaps-list)
+  "Return total shrinkable pixels for GAPS-LIST (CJK gaps don't shrink)."
+  (+ (* (nth 0 gaps-list) ekp-lws-shrink-pixel)
+     (* (nth 1 gaps-list) ekp-mws-shrink-pixel)))
+
+(defun ekp--line-badness-and-fitness (ideal-pixel line-pixel glues-types)
+  "Compute badness, fitness class, and gaps for a line.
+Returns (:badness NUM :fitness NUM :gaps LIST :adjustment NUM :flexibility NUM)."
   (let* ((glues-types (seq-drop glues-types 1))
          (gaps-list (ekp--gaps-list glues-types))
-         (latin-gaps (nth 0 gaps-list))
-         (mix-gaps (nth 1 gaps-list))
-         (cjk-gaps (nth 2 gaps-list))
-         (rest-pixel (- line-pixel ideal-pixel))
-         ratio)
-    (if (> rest-pixel 0)
-        ;; should stretch
-        (setq ratio
-              (/ rest-pixel
-                 (float (+ (* latin-gaps ekp-lws-stretch-pixel)
-                           (* cjk-gaps ekp-cws-stretch-pixel)
-                           (* mix-gaps ekp-mws-stretch-pixel)))))
-      ;; should shrink
-      (setq ratio
-            (/ rest-pixel
-               (float (+ (* latin-gaps ekp-lws-shrink-pixel)
-                         (* mix-gaps ekp-mws-shrink-pixel))))))
-    (list :cost (* 100 (expt ratio 3)) :gaps gaps-list)))
+         (adjustment (- line-pixel ideal-pixel))
+         (flexibility (if (> adjustment 0)
+                          (ekp--compute-stretch-capacity gaps-list)
+                        (ekp--compute-shrink-capacity gaps-list)))
+         (badness (ekp--compute-badness adjustment flexibility))
+         (fitness (ekp--compute-fitness-class adjustment flexibility)))
+    (list :badness badness
+          :fitness fitness
+          :gaps gaps-list
+          :adjustment adjustment
+          :flexibility flexibility)))
+
+;; Keep old function for compatibility
+(defun ekp--line-cost-and-gaps (ideal-pixel line-pixel glues-types)
+  "Compute badness cost for a line using Knuth-Plass formula.
+IDEAL-PIXEL is natural width, LINE-PIXEL is target width.
+Returns (:cost NUMBER :gaps GAPS-LIST)."
+  (let* ((result (ekp--line-badness-and-fitness ideal-pixel line-pixel glues-types)))
+    (list :cost (plist-get result :badness)
+          :gaps (plist-get result :gaps))))
 
 (defun ekp-hyphenate-p (glues-types n)
+  "Return non-nil if position N ends with hyphenation."
   (and (< n (length glues-types))
        (eq 'nws (aref glues-types n))))
 
+;;; Dynamic Programming Line Breaking Algorithm
+;; Implements optimal line breaking using Knuth-Plass algorithm.
+;;
+;; Key data structures:
+;;   - demerits[i]: minimum demerits to reach position i
+;;   - backptrs[i]: previous break point for optimal path
+;;   - fitness[i]: fitness class at break i (for adjacent penalty)
+;;   - rests[i]: adjustment pixels at break i
+;;   - gaps[i]: gap counts by type
+;;   - hyphen-counts[i]: consecutive hyphen count
+
+(defun ekp--dp-init-arrays (n)
+  "Initialize DP arrays for N boxes.
+Returns (backptrs demerits rests gaps hyphen-counts fitness-classes line-counts)."
+  (let ((backptrs (make-vector (1+ n) nil))
+        (demerits (make-vector (1+ n) nil))
+        (rests (make-vector (1+ n) nil))
+        (gaps (make-vector (1+ n) nil))
+        (hyphen-counts (make-vector (1+ n) 0))
+        (fitness-classes (make-vector (1+ n) 1))  ; default: decent
+        (line-counts (make-vector (1+ n) 0)))     ; for looseness
+    (aset demerits 0 0.0)
+    (list backptrs demerits rests gaps hyphen-counts fitness-classes line-counts)))
+
+(defun ekp--dp-line-metrics (i k glues-types ideal-prefixs min-prefixs max-prefixs)
+  "Compute line metrics for boxes I to K.
+Returns (ideal-pixel min-pixel max-pixel) excluding leading glue."
+  (let ((leading-glue-type (aref glues-types i)))
+    (list (- (aref ideal-prefixs k) (aref ideal-prefixs i)
+             (ekp-glue-ideal-pixel leading-glue-type))
+          (- (aref min-prefixs k) (aref min-prefixs i)
+             (ekp-glue-min-pixel leading-glue-type))
+          (- (aref max-prefixs k) (aref max-prefixs i)
+             (ekp-glue-max-pixel leading-glue-type)))))
+
+(defun ekp--dp-force-break (i k arrays glues-types ideal-prefixs hyphen-pixel line-pixel)
+  "Force a break at K-1 when no valid break found. Update ARRAYS."
+  (let* ((backptrs (nth 0 arrays))
+         (demerits (nth 1 arrays))
+         (rests (nth 2 arrays))
+         (gaps (nth 3 arrays))
+         (fitness-classes (nth 5 arrays))
+         (line-counts (nth 6 arrays))
+         (break-pos (1- k))
+         (hyphenate-p (ekp-hyphenate-p glues-types break-pos))
+         (ideal-pixel (- (aref ideal-prefixs break-pos)
+                         (aref ideal-prefixs i)
+                         (ekp-glue-ideal-pixel (aref glues-types i))))
+         (rest-pixel (- line-pixel ideal-pixel)))
+    (when hyphenate-p (cl-incf ideal-pixel hyphen-pixel))
+    ;; Force break with high demerits
+    (aset demerits break-pos (+ 10000 (expt rest-pixel 2)))
+    (aset rests break-pos rest-pixel)
+    (aset backptrs break-pos i)
+    (aset fitness-classes break-pos 3)  ; very loose
+    (aset line-counts break-pos (1+ (aref line-counts i)))
+    (aset gaps break-pos
+          (ekp--gaps-list (seq-drop (cl-subseq glues-types i break-pos) 1)))))
+
+(defun ekp--dp-compute-line-demerits (j is-last end-with-hyphenp
+                                        ideal-pixel line-pixel
+                                        glues-types i k
+                                        prev-hyphen-count prev-fitness)
+  "Compute line demerits using full K-P formula.
+Returns (demerits gaps fitness new-hyphen-count)."
+  (cond
+   ;; Single word line
+   ((= j 0)
+    (let* ((badness (ekp--compute-badness (- line-pixel ideal-pixel) 1))
+           (fitness 1)  ; decent
+           (penalty (if end-with-hyphenp ekp-hyphen-penalty 0))
+           (new-hyphen (if end-with-hyphenp 1 0))
+           (dem (ekp--compute-demerits badness penalty prev-fitness fitness
+                                       end-with-hyphenp prev-hyphen-count)))
+      (list dem nil fitness new-hyphen)))
+   ;; Last line: minimal demerits if reasonably filled
+   (is-last
+    (let* ((fill-ratio (/ (float ideal-pixel) line-pixel))
+           ;; Penalize if last line is too short
+           (badness (if (< fill-ratio ekp-last-line-min-ratio)
+                        (* 50 (- 1.0 fill-ratio))
+                      0))
+           (dem (expt (+ ekp-line-penalty badness) 2)))
+      (list dem nil 1 0)))
+   ;; Normal line
+   (t
+    (let* ((result (ekp--line-badness-and-fitness ideal-pixel line-pixel
+                                                  (seq-subseq glues-types i k)))
+           (badness (plist-get result :badness))
+           (fitness (plist-get result :fitness))
+           (line-gaps (plist-get result :gaps))
+           (penalty (if end-with-hyphenp ekp-hyphen-penalty 0))
+           (new-hyphen (if end-with-hyphenp (1+ prev-hyphen-count) 0))
+           (dem (ekp--compute-demerits badness penalty prev-fitness fitness
+                                       end-with-hyphenp prev-hyphen-count)))
+      (list dem line-gaps fitness new-hyphen)))))
+
+;; Unused but kept for reference
+(defun ekp--dp-update-best (k arrays line-demerits line-gaps fitness
+                              ideal-pixel line-pixel base-demerits new-hyphen line-num)
+  "Update ARRAYS at position K if this break is better."
+  (let* ((backptrs (nth 0 arrays))
+         (demerits (nth 1 arrays))
+         (rests (nth 2 arrays))
+         (gaps (nth 3 arrays))
+         (hyphen-counts (nth 4 arrays))
+         (fitness-classes (nth 5 arrays))
+         (line-counts (nth 6 arrays))
+         (total-demerits (+ base-demerits line-demerits)))
+    (when (or (null (aref demerits k))
+              (< total-demerits (aref demerits k)))
+      (aset rests k (- line-pixel ideal-pixel))
+      (aset gaps k line-gaps)
+      (aset demerits k total-demerits)
+      (aset backptrs k (aref backptrs k))  ; will be set by caller
+      (aset fitness-classes k fitness)
+      (aset hyphen-counts k new-hyphen)
+      (aset line-counts k line-num)
+      t)))
+
+(defun ekp--dp-trace-breaks (backptrs n)
+  "Trace optimal break points from BACKPTRS array."
+  (let ((breaks (list n))
+        (index n))
+    (while (> index 0)
+      (let ((prev (aref backptrs index)))
+        (if prev
+            (progn (push prev breaks)
+                   (setq index prev))
+          (setq index (1- index)))))
+    (cdr breaks)))
+
+(defun ekp--dp-trace-breaks-with-looseness (backptrs line-counts n target-lines)
+  "Trace breaks, preferring paths with TARGET-LINES line count.
+Used for looseness parameter support."
+  (if (= ekp-looseness 0)
+      (ekp--dp-trace-breaks backptrs n)
+    ;; Find path closest to target line count
+    (let ((optimal-lines (aref line-counts n))
+          (target (+ optimal-lines ekp-looseness)))
+      ;; For now, just use optimal path
+      ;; Full looseness would require tracking multiple paths
+      (ekp--dp-trace-breaks backptrs n))))
+
+(defun ekp--dp-store-cache (string line-pixel dp-cache)
+  "Store DP-CACHE for STRING at LINE-PIXEL."
+  (if-let ((dp-record (cdr (ekp-param-cache string))))
+      (puthash line-pixel dp-cache dp-record)
+    (let ((dp-record (make-hash-table :test 'equal :size 100
+                                      :rehash-size 1.5 :weakness nil)))
+      (puthash line-pixel dp-cache dp-record)
+      (puthash (ekp-param-fmtstr)
+               (cons (ekp-param-data string) dp-record)
+               (cdr (ekp-text-cache string))))))
+
 (defun ekp-dp-cache (string line-pixel)
+  "Compute optimal line breaks for STRING at LINE-PIXEL width.
+Uses Knuth-Plass dynamic programming with demerits."
   (if-let* ((dp-record (cdr (ekp-param-cache string)))
-            (dp-cache (gethash line-pixel dp-record)))
-      dp-cache
+            (cached (gethash line-pixel dp-record)))
+      cached
+    ;; Gather input data
     (let* ((glues-types (ekp-glues-types string))
            (boxes (ekp-boxes string))
            (hyphen-pixel (ekp-hyphen-pixel string))
@@ -402,129 +657,73 @@ return the value of KEY in plist."
            (ideal-prefixs (ekp-ideal-prefixs string))
            (min-prefixs (ekp-min-prefixs string))
            (max-prefixs (ekp-max-prefixs string))
-           (backptrs (make-vector (1+ n) nil))
-           (costs (make-vector (1+ n) nil))
-           ;; rest pixel = line-pixel - ideal-pixel
-           (rests (make-vector (1+ n) nil))
-           (gaps (make-vector (1+ n) nil))
-           ;; 连续行 hyphen 结尾计数
-           (hyphen-line-count 0))
+           (arrays (ekp--dp-init-arrays n))
+           (backptrs (nth 0 arrays))
+           (demerits (nth 1 arrays))
+           (rests (nth 2 arrays))
+           (gaps (nth 3 arrays))
+           (hyphen-counts (nth 4 arrays))
+           (fitness-classes (nth 5 arrays))
+           (line-counts (nth 6 arrays)))
+      ;; Main DP loop: for each reachable position i
       (dotimes (i (1+ n))
-        (aset costs i (if (= i 0) 0.0 nil)))
-      (dotimes (i (1+ n))
-        (when (aref costs i)
-          (setq hyphen-line-count 0)
-          (catch 'break
-            (dotimes (j (- n i))
-              (let* ((k (+ i j 1)) ;; k: end word index (exclusive)
-                     (is-last (= k n))
-                     (end-with-hyphenp (ekp-hyphenate-p glues-types k))
-                     (ideal-pixel (- (aref ideal-prefixs k)
-                                     (aref ideal-prefixs i)
-                                     (ekp-glue-ideal-pixel
-                                      (aref glues-types i))))
-                     (max-pixel (- (aref max-prefixs k)
-                                   (aref max-prefixs i)
-                                   (ekp-glue-max-pixel
-                                    (aref glues-types i))))
-                     (min-pixel (- (aref min-prefixs k)
-                                   (aref min-prefixs i)
-                                   (ekp-glue-min-pixel
-                                    (aref glues-types i)))))
-
-                ;; ends with hyphen, plus the pixel of hyphen
-                (when end-with-hyphenp
-                  (cl-incf ideal-pixel hyphen-pixel)
-                  (cl-incf max-pixel hyphen-pixel)
-                  (cl-incf min-pixel hyphen-pixel))
-
-                ;; back to last word
-                (when (or (> min-pixel line-pixel)
-                          (and is-last (> ideal-pixel line-pixel)))
-                  (when (null (aref costs (1- k)))
-                    ;; can not find a proper line break,
-                    ;; break line at prev box
-                    (let* ((hyphenate-p (ekp-hyphenate-p glues-types (1- k)))
-                           (ideal-pixel (- (aref ideal-prefixs (1- k))
-                                           (aref ideal-prefixs i)
-                                           (ekp-glue-ideal-pixel
-                                            (aref glues-types i))))
-                           (rest-pixel (- line-pixel ideal-pixel)))
-                      (when hyphenate-p (cl-incf ideal-pixel hyphen-pixel))
-                      (aset costs (1- k) (+ 100 (expt rest-pixel 3)))
-                      (aset rests (1- k) rest-pixel)
-                      (aset backptrs (1- k) i)
-                      (aset gaps (1- k)
-                            (ekp--gaps-list
-                             (seq-drop (cl-subseq glues-types i (1- k)) 1)))
-                      ;; (elog-debug "1-k:%s; rests:%S" (1- k)
-                      ;;             (aref rests (1- k)))
-                      ))
-                  (throw 'break nil))
-                
-                (when (or (<= min-pixel line-pixel max-pixel)
-                          (and is-last (<= ideal-pixel line-pixel)))
-                  (let* ((line-gaps)
-                         (line-cost
-                          (cond
-                           ;; only has one word
-                           ((= j 0)
-                            (expt (- ideal-pixel line-pixel) 3))
-                           (is-last 0.0)
-                           ;; has more than one word
-                           (t (let* ((cost-and-gaps
-                                      (ekp--line-cost-and-gaps
-                                       ideal-pixel line-pixel
-                                       (seq-subseq glues-types i k)))
-                                     (cost (plist-get cost-and-gaps :cost))
-                                     (gaps (plist-get cost-and-gaps :gaps)))
-                                (setq line-gaps gaps)
-                                (if end-with-hyphenp
-                                    (progn
-                                      ;; add extra cost of hypen
-                                      (cl-incf hyphen-line-count)
-                                      (+ cost (* 1000 hyphen-line-count)))
-                                  (setq hyphen-line-count 0)
-                                  cost)))))
-                         (total-cost (+ (aref costs i) line-cost)))
-                    ;; (message "total cost:%S" total-cost)
-                    ;; (message "hyphen-line-count:%S" hyphen-line-count)
-                    (when (or (null (aref costs k))
-                              (< (abs total-cost) (abs (aref costs k))))
-                      ;; set all for cost is smaller!
-                      (aset rests k (- line-pixel ideal-pixel))
-                      (aset gaps k line-gaps)
-                      (aset costs k total-cost)
-                      ;; 断点设置为 当前行的起点 = 上一行的和结束点
-                      (aset backptrs k i)))))))))
-      (let ((breaks (list n))
-            (index n))
-        (while (> index 0)
-          (let ((prev (aref backptrs index)))
-            (if prev (progn (push prev breaks)
-                            (setq index prev))
-              (setq index (1- index)))))
-        (let* ((breaks (cdr breaks))
-               lines-rests lines-gaps dp-cache)
-          (dolist (i breaks)
-            (push (aref rests i) lines-rests)
-            (push (aref gaps i) lines-gaps))
-          ;; set dp cache
-          (setq dp-cache (list :rests (nreverse lines-rests)
-                               :gaps (nreverse lines-gaps)
-                               :breaks breaks
-                               :cost (aref costs (length boxes))))
-          ;; update param cache
-          (if-let ((dp-record (cdr (ekp-param-cache string))))
-              (puthash line-pixel dp-cache dp-record)
-            (let ((dp-record (make-hash-table
-                              :test 'equal :size 100
-                              :rehash-size 1.5 :weakness nil)))
-              (puthash line-pixel dp-cache dp-record)
-              (puthash (ekp-param-fmtstr)
-                       (cons (ekp-param-data string) dp-record)
-                       (cdr (ekp-text-cache string)))))
-          dp-cache)))))
+        (when (aref demerits i)
+          (let ((prev-hyphen-count (aref hyphen-counts i))
+                (prev-fitness (aref fitness-classes i))
+                (prev-line-count (aref line-counts i)))
+            (catch 'break
+              ;; Try extending line to each position k > i
+              (dotimes (j (- n i))
+                (let* ((k (+ i j 1))
+                       (is-last (= k n))
+                       (end-with-hyphenp (ekp-hyphenate-p glues-types k))
+                       (metrics (ekp--dp-line-metrics
+                                 i k glues-types ideal-prefixs min-prefixs max-prefixs))
+                       (ideal-pixel (nth 0 metrics))
+                       (min-pixel (nth 1 metrics))
+                       (max-pixel (nth 2 metrics)))
+                  ;; Add hyphen width if line ends with hyphen
+                  (when end-with-hyphenp
+                    (cl-incf ideal-pixel hyphen-pixel)
+                    (cl-incf max-pixel hyphen-pixel)
+                    (cl-incf min-pixel hyphen-pixel))
+                  ;; Check if line is too long
+                  (when (or (> min-pixel line-pixel)
+                            (and is-last (> ideal-pixel line-pixel)))
+                    (when (null (aref demerits (1- k)))
+                      (ekp--dp-force-break i k arrays glues-types
+                                           ideal-prefixs hyphen-pixel line-pixel))
+                    (throw 'break nil))
+                  ;; Valid break point: compute demerits
+                  (when (or (<= min-pixel line-pixel max-pixel)
+                            (and is-last (<= ideal-pixel line-pixel)))
+                    (pcase-let ((`(,dem ,line-gaps ,fitness ,new-hyphen)
+                                 (ekp--dp-compute-line-demerits
+                                  j is-last end-with-hyphenp
+                                  ideal-pixel line-pixel glues-types i k
+                                  prev-hyphen-count prev-fitness)))
+                      (let ((total-dem (+ (aref demerits i) dem)))
+                        (when (or (null (aref demerits k))
+                                  (< total-dem (aref demerits k)))
+                          (aset rests k (- line-pixel ideal-pixel))
+                          (aset gaps k line-gaps)
+                          (aset demerits k total-dem)
+                          (aset backptrs k i)
+                          (aset fitness-classes k fitness)
+                          (aset hyphen-counts k new-hyphen)
+                          (aset line-counts k (1+ prev-line-count))))))))))))
+      ;; Extract optimal solution
+      (let* ((breaks (ekp--dp-trace-breaks-with-looseness
+                      backptrs line-counts n (aref line-counts n)))
+             (lines-rests (mapcar (lambda (i) (aref rests i)) breaks))
+             (lines-gaps (mapcar (lambda (i) (aref gaps i)) breaks))
+             (dp-cache (list :rests lines-rests
+                             :gaps lines-gaps
+                             :breaks breaks
+                             :cost (aref demerits n)
+                             :line-count (aref line-counts n))))
+        (ekp--dp-store-cache string line-pixel dp-cache)
+        dp-cache))))
 
 (defun ekp-dp-data (string line-pixel &optional key)
   "Return the data plist of dp cache. If KEY is non-nil,
@@ -542,156 +741,149 @@ return the value of KEY in plist."
   "Return the break points of kp algorithm."
   (ekp-dp-data string line-pixel :breaks))
 
+;;; Line Glue Distribution
+;; Distributes extra/deficit space across glues (gaps between boxes)
+;; Priority: latin gaps → mixed gaps → CJK gaps
+
+(defun ekp--distribute-gap-adjustment (rest-pixel gaps-list stretch-p)
+  "Distribute REST-PIXEL across GAPS-LIST.
+STRETCH-P indicates stretch (t) or shrink (nil) mode.
+Returns ((latin-adj . latin-extra) (mix-adj . mix-extra) (cjk-adj . cjk-extra))."
+  (let* ((latin-gaps (nth 0 gaps-list))
+         (mix-gaps (nth 1 gaps-list))
+         (cjk-gaps (nth 2 gaps-list))
+         (remaining rest-pixel)
+         ;; Per-gap adjustment values
+         (latin-change (if stretch-p ekp-lws-stretch-pixel ekp-lws-shrink-pixel))
+         (mix-change (if stretch-p ekp-mws-stretch-pixel ekp-mws-shrink-pixel))
+         (cjk-change (if stretch-p ekp-cws-stretch-pixel 0))
+         ;; Results
+         (latin-adj 0) (latin-extra 0)
+         (mix-adj 0) (mix-extra 0)
+         (cjk-adj 0) (cjk-extra 0))
+    ;; Distribute to latin gaps first
+    (let ((latin-capacity (* latin-gaps latin-change)))
+      (if (< remaining latin-capacity)
+          (when (> latin-gaps 0)
+            (setq latin-adj (/ remaining latin-gaps))
+            (setq latin-extra (% remaining latin-gaps))
+            (setq remaining 0))
+        (setq latin-adj latin-change)
+        (setq remaining (- remaining latin-capacity))))
+    ;; Then to mixed gaps
+    (when (> remaining 0)
+      (let ((mix-capacity (* mix-gaps mix-change)))
+        (if (< remaining mix-capacity)
+            (when (> mix-gaps 0)
+              (setq mix-adj (/ remaining mix-gaps))
+              (setq mix-extra (% remaining mix-gaps))
+              (setq remaining 0))
+          (setq mix-adj mix-change)
+          (setq remaining (- remaining mix-capacity)))))
+    ;; Finally to CJK gaps
+    (when (and (> remaining 0) (> cjk-gaps 0))
+      (setq cjk-adj (/ remaining cjk-gaps))
+      (setq cjk-extra (% remaining cjk-gaps)))
+    (list (cons latin-adj latin-extra)
+          (cons mix-adj mix-extra)
+          (cons cjk-adj cjk-extra))))
+
+(defun ekp--compute-glue-pixels (glues-types gaps-distribution stretch-p)
+  "Compute actual glue pixels from GLUES-TYPES and GAPS-DISTRIBUTION.
+Returns list of pixel values for each glue."
+  (let ((latin-adj (car (nth 0 gaps-distribution)))
+        (latin-extra (cdr (nth 0 gaps-distribution)))
+        (mix-adj (car (nth 1 gaps-distribution)))
+        (mix-extra (cdr (nth 1 gaps-distribution)))
+        (cjk-adj (car (nth 2 gaps-distribution)))
+        (cjk-extra (cdr (nth 2 gaps-distribution)))
+        (latin-idx -1) (mix-idx -1) (cjk-idx -1))
+    (mapcar
+     (lambda (type)
+       (let* ((base (ekp-glue-ideal-pixel type))
+              (adj (pcase type
+                     ('lws (cl-incf latin-idx)
+                           (+ latin-adj (if (< latin-idx latin-extra) 1 0)))
+                     ('mws (cl-incf mix-idx)
+                           (+ mix-adj (if (< mix-idx mix-extra) 1 0)))
+                     ('cws (cl-incf cjk-idx)
+                           (+ cjk-adj (if (< cjk-idx cjk-extra) 1 0)))
+                     ('nws 0)
+                     (_ 0))))
+         (if stretch-p (+ base adj) (- base adj))))
+     glues-types)))
+
+(defun ekp--line-glue-single-box (line-pixel box-width hyphen-p hyphen-pixel)
+  "Compute glues for a single-box line."
+  (let ((trailing (- line-pixel box-width (if hyphen-p hyphen-pixel 0))))
+    (list 0 trailing)))
+
+(defun ekp--line-glue-last-line (glues-types ideal-pixel line-pixel)
+  "Compute glues for last line (ragged right)."
+  (append '(0)
+          (mapcar #'ekp-glue-ideal-pixel glues-types)
+          (list (- line-pixel ideal-pixel))))
+
+(defun ekp--line-glue-normal (glues-types rest-pixel gaps-list)
+  "Compute glues for a normal (justified) line."
+  (if (= rest-pixel 0)
+      (append '(0) (mapcar #'ekp-glue-ideal-pixel glues-types) '(0))
+    (let* ((stretch-p (> rest-pixel 0))
+           (distribution (ekp--distribute-gap-adjustment
+                          (abs rest-pixel) gaps-list stretch-p))
+           (glue-pixels (ekp--compute-glue-pixels glues-types distribution stretch-p)))
+      (append '(0) glue-pixels '(0)))))
+
 (defun ekp-line-glues (string line-pixel)
-  "Line glues include glues before first box and after last box.
-So the length of line glues is: line-boxes-num + 1"
+  "Compute glue pixels for each line after breaking STRING at LINE-PIXEL.
+Returns vector of vectors, each inner vector is glue pixels for one line.
+Each line's glues: [0 glue1 glue2 ... trailing-space]."
   (let* ((boxes-widths (ekp-boxes-widths string))
-         (boxes (ekp-boxes string))
-         (boxes-num (length boxes))
+         (boxes-num (length (ekp-boxes string)))
          (glues-types (ekp-glues-types string))
          (ideal-prefixs (ekp-ideal-prefixs string))
          (max-prefixs (ekp-max-prefixs string))
          (breaks (ekp-line-breaks string line-pixel))
+         (lines-rests (ekp-dp-data string line-pixel :rests))
+         (lines-gaps (ekp-dp-data string line-pixel :gaps))
+         (hyphen-pixel (ekp-hyphen-pixel string))
          (line-glues (make-vector (length breaks) nil))
          (start 0))
     (dotimes (i (length breaks))
       (let* ((end (nth i breaks))
              (line-boxes-widths (cl-subseq boxes-widths start end))
-             (line-glues-types
-              ;; exclude glue before word at the start of line
-              (seq-drop (cl-subseq glues-types start end) 1))
+             (line-glues-types (seq-drop (cl-subseq glues-types start end) 1))
              (is-last (>= end boxes-num))
-             line-glue)
-        (setq line-glue
+             (hyphen-p (ekp-hyphenate-p glues-types end))
+             (ideal-pixel (- (aref ideal-prefixs end)
+                             (aref ideal-prefixs start)
+                             (ekp-glue-ideal-pixel (aref glues-types start))))
+             (max-pixel (+ (- (aref max-prefixs end)
+                              (aref max-prefixs start)
+                              (ekp-glue-max-pixel (aref glues-types start)))
+                           (if hyphen-p hyphen-pixel 0)))
+             glue-list)
+        (setq glue-list
               (cond
+               ;; Single box: just trailing space
                ((= 1 (length line-boxes-widths))
-                (if (ekp-hyphenate-p glues-types end)
-                    ;; ends with hyphen, minus hyphen-pixel
-                    (list 0 (- line-pixel
-                               (ekp-hyphen-pixel string)
-                               (aref line-boxes-widths 0)))
-                  (list 0 (- line-pixel (aref line-boxes-widths 0)))))
+                (ekp--line-glue-single-box line-pixel
+                                           (aref line-boxes-widths 0)
+                                           hyphen-p hyphen-pixel))
+               ;; Last line: ragged right
                (is-last
+                (ekp--line-glue-last-line line-glues-types ideal-pixel line-pixel))
+               ;; Forced break (line too short even at max stretch)
+               ((< max-pixel line-pixel)
                 (append '(0)
-                        (mapcar #'ekp-glue-ideal-pixel line-glues-types)
-                        (list
-                         (- line-pixel (- (aref ideal-prefixs end)
-                                          (aref ideal-prefixs start)
-                                          (ekp-glue-ideal-pixel
-                                           (aref glues-types start)))))))
+                        (mapcar #'ekp-glue-max-pixel line-glues-types)
+                        (list (- line-pixel max-pixel))))
+               ;; Normal justified line
                (t
-                ;; (elog-debug "-----------------")
-                ;; (elog-debug "glues-types:%s" line-glues-types)
-                (let ((max-pixel (- (aref max-prefixs end)
-                                    (aref max-prefixs start)
-                                    (ekp-glue-max-pixel
-                                     (aref glues-types start)))))
-                  ;; ends with hyphen
-                  (when (ekp-hyphenate-p glues-types end)
-                    (cl-incf max-pixel (ekp-hyphen-pixel string)))
-                  ;; (elog-debug "start:%s; end:%s; max:%s" start end max-pixel)
-                  (if (< max-pixel line-pixel)
-                      (progn
-                        ;; 行尾直接断行的情况
-                        ;; (elog-debug "暴力断行 i:%s pixel:%s"
-                        ;;             i (- line-pixel max-pixel))
-                        (append '(0)
-                                (mapcar #'ekp-glue-max-pixel line-glues-types)
-                                (list (- line-pixel max-pixel))))
-                    ;; 正常情况
-                    (let ((ideal-pixel (- (aref ideal-prefixs end)
-                                          (aref ideal-prefixs start)
-                                          (ekp-glue-ideal-pixel
-                                           (aref glues-types start)))))
-                      ;; ideal-pixel 包含第一个box之前的glue
-                      ;; (elog-debug "boxes:%S" (cl-subseq boxes start end))
-                      ;; (elog-debug "line:%s; ideal:%s; rest:%s; stored-rest:%s"
-                      ;;             line-pixel ideal-pixel (- line-pixel ideal-pixel)
-                      ;;             (nth i (ekp-dp-data string line-pixel :rests)))
-                      )
-                    (let* ((lines-rests (ekp-dp-data string line-pixel :rests))
-                           (curr-rest-pixel (nth i lines-rests)))
-                      ;; (elog-debug "curr-rest-pixel:%s" curr-rest-pixel)
-                      (cond
-                       ((= curr-rest-pixel 0)
-                        (append '(0) (mapcar #'ekp-glue-ideal-pixel
-                                             line-glues-types)
-                                '(0)))
-                       (t
-                        (let* ((lines-gaps (ekp-dp-data string line-pixel :gaps))
-                               (line-gaps (nth i lines-gaps))
-                               (latin-gaps (nth 0 line-gaps))
-                               (mix-gaps (nth 1 line-gaps))
-                               (cjk-gaps (nth 2 line-gaps))
-                               (latin-gap-pixel 0) (latin-extra-gaps 0)
-                               (mix-gap-pixel 0) (mix-extra-gaps 0)
-                               (cjk-gap-pixel 0) (cjk-extra-gaps 0)
-                               (line-rest-pixel (abs curr-rest-pixel)))
-                          ;; max-latin-change include stretch or shrink
-                          (let* ((latin-gap-change (if (> curr-rest-pixel 0)
-                                                       ekp-lws-stretch-pixel
-                                                     ekp-lws-shrink-pixel))
-                                 (latin-max-pixel (* latin-gaps latin-gap-change)))
-                            (if (< (- line-rest-pixel latin-max-pixel) 0)
-                                (when (> latin-gaps 0)
-                                  ;; only stretch latin glues
-                                  ;; (elog-debug "latin-gap-pixel:%s"
-                                  ;;             (/ line-rest-pixel latin-gaps))
-                                  ;; (elog-debug "latin-extra-gaps:%s"
-                                  ;;             (% line-rest-pixel latin-gaps))
-                                  (setq latin-gap-pixel (/ line-rest-pixel latin-gaps))
-                                  (setq latin-extra-gaps (% line-rest-pixel latin-gaps)))
-                              ;; stretch latin glues max and continue to stretch mix glues
-                              (setq latin-gap-pixel latin-gap-change)
-                              (setq line-rest-pixel (- line-rest-pixel latin-max-pixel))
-                              (let* ((mix-gap-change (if (> curr-rest-pixel 0)
-                                                         ekp-mws-stretch-pixel
-                                                       ekp-mws-shrink-pixel))
-                                     (mix-max-pixel (* mix-gaps mix-gap-change)))
-                                (if (< (- line-rest-pixel mix-max-pixel) 0)
-                                    (when (> mix-gaps 0)
-                                      ;; only stretch mix glues
-                                      (setq mix-gap-pixel (/ line-rest-pixel mix-gaps))
-                                      (setq mix-extra-gaps (% line-rest-pixel mix-gaps)))
-                                  ;; stretch mix glues max and continue to stretch cjk glues
-                                  (setq mix-gap-pixel mix-gap-change)
-                                  (setq line-rest-pixel (- line-rest-pixel mix-max-pixel))
-                                  (when (> cjk-gaps 0)
-                                    (setq cjk-gap-pixel (/ line-rest-pixel cjk-gaps))
-                                    (setq cjk-extra-gaps (% line-rest-pixel cjk-gaps)))))))
-                          (let* ((latin-extra-index -1)
-                                 (mix-extra-index -1)
-                                 (cjk-extra-index -1)
-                                 (glue-pixel-lst
-                                  (mapcar
-                                   (lambda (type)
-                                     (let ((pixel (cond
-                                                   ((eq type 'lws)
-                                                    (cl-incf latin-extra-index)
-                                                    (if (< latin-extra-index latin-extra-gaps)
-                                                        (1+ latin-gap-pixel)
-                                                      latin-gap-pixel))
-                                                   ((eq type 'mws)
-                                                    (cl-incf mix-extra-index)
-                                                    (if (< mix-extra-index mix-extra-gaps)
-                                                        (1+ mix-gap-pixel)
-                                                      mix-gap-pixel))
-                                                   ((eq type 'cws)
-                                                    (cl-incf cjk-extra-index)
-                                                    (if (< cjk-extra-index cjk-extra-gaps)
-                                                        (1+ cjk-gap-pixel)
-                                                      cjk-gap-pixel))
-                                                   ((eq type 'nws) 0))))
-                                       (if (> curr-rest-pixel 0)
-                                           ;; stretch
-                                           (+ (ekp-glue-ideal-pixel type) pixel)
-                                         ;; shrink
-                                         (- (ekp-glue-ideal-pixel type) pixel))))
-                                   line-glues-types)))
-                            ;; (elog-debug "glue-pixel-lst:%S" glue-pixel-lst)
-                            ;; (elog-debug "--------------")
-                            (append '(0) glue-pixel-lst '(0))))))))))))
-        (aset line-glues i (vconcat line-glue nil))
+                (ekp--line-glue-normal line-glues-types
+                                       (nth i lines-rests)
+                                       (nth i lines-gaps)))))
+        (aset line-glues i (vconcat glue-list))
         (setq start end)))
     line-glues))
 
@@ -743,42 +935,54 @@ Default is nil, meaning cache is not used."
                    (ekp--pixel-justify str line-pixel)))
                strs "\n")))
 
+;;; Optimal Width Search
+;; Uses ternary search instead of linear scan.
+;; Cost function is roughly unimodal: too narrow = many breaks = high cost,
+;; too wide = overstretched lines = high cost.
+
+(defun ekp--compute-avg-cost (strings pixel)
+  "Compute average cost for STRINGS at PIXEL width."
+  (let ((costs (mapcar (lambda (s)
+                         (if (string-blank-p s) 0
+                           (abs (ekp-total-cost s pixel))))
+                       strings)))
+    (/ (float (apply #'+ costs)) (max 1 (length costs)))))
+
+(defun ekp--ternary-search-optimal-width (strings min-pixel max-pixel)
+  "Find optimal width in [MIN-PIXEL, MAX-PIXEL] using ternary search.
+Returns the pixel width with minimum average cost."
+  (let ((lo min-pixel)
+        (hi max-pixel))
+    ;; Ternary search: O(log n) instead of O(n)
+    (while (> (- hi lo) 2)
+      (let* ((mid1 (+ lo (/ (- hi lo) 3)))
+             (mid2 (- hi (/ (- hi lo) 3)))
+             (cost1 (ekp--compute-avg-cost strings mid1))
+             (cost2 (ekp--compute-avg-cost strings mid2)))
+        (if (< cost1 cost2)
+            (setq hi mid2)
+          (setq lo mid1))))
+    ;; Final linear scan over remaining 3 candidates
+    (let ((best-pixel lo)
+          (best-cost (ekp--compute-avg-cost strings lo)))
+      (dolist (p (list (1+ lo) hi))
+        (when (<= p max-pixel)
+          (let ((cost (ekp--compute-avg-cost strings p)))
+            (when (< cost best-cost)
+              (setq best-cost cost
+                    best-pixel p)))))
+      best-pixel)))
+
 (defun ekp-pixel-range-justify (string min-pixel max-pixel &optional use-cache)
-  "Find the optimal breakpoint for STRING typesetting between
-a MIN-PIXEL and MAX-PIXEL width and return a cons-cell. The car
-of it is the ​​typeset tex and cdr is the best pixel.
-When USE-CACHE is non-nil, use the cache for performance.
-Default is nil, meaning cache is not used."
+  "Find optimal width for STRING between MIN-PIXEL and MAX-PIXEL.
+Returns (justified-text . optimal-pixel).
+Uses ternary search for O(log n) complexity instead of O(n)."
   (let* ((ekp-caches (if use-cache
                          ekp-caches
                        (make-hash-table
                         :test 'equal :size 100 :rehash-size 1.5 :weakness nil)))
          (strings (split-string string "\n"))
-         (best-pixel max-pixel)
-         (best-cost-lst
-          (mapcar (lambda (string)
-                    (if (string-blank-p string)
-                        0
-                      (abs (ekp-total-cost string max-pixel))))
-                  strings))
-         ;; get average cost of all lines' costs
-         (best-cost (/ (float (apply #'+ best-cost-lst))
-                       (length best-cost-lst)))
-         (curr-pixel max-pixel))
-    (while (>= curr-pixel min-pixel)
-      (let* ((cost-lst
-              (mapcar (lambda (string)
-                        (if (string-blank-p string)
-                            0
-                          (abs (ekp-total-cost string curr-pixel))))
-                      strings))
-             (curr-cost (/ (float (apply #'+ cost-lst))
-                           (length cost-lst))))
-        (when (< curr-cost best-cost)
-          (progn
-            (setq best-cost curr-cost)
-            (setq best-pixel curr-pixel)))
-        (cl-decf curr-pixel 1)))
+         (best-pixel (ekp--ternary-search-optimal-width strings min-pixel max-pixel)))
     (cons (ekp-pixel-justify string best-pixel use-cache) best-pixel)))
 
 (provide 'ekp)

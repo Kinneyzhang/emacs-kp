@@ -1,31 +1,50 @@
 ;;; ekp-hyphen.el -*- lexical-binding: t; -*-
 
 (require 'cl-lib)
+(require 'subr-x)  ; for hash-table-keys
 
+;; Cache: dictionary path -> compiled HyphDict
 (defvar ekp-hyphen--hdcache (make-hash-table :test 'equal))
 
+;; Language registry: "en_US" -> dictionary file path
 (defvar ekp-hyphen--languages (make-hash-table :test 'equal))
 
+;; Fallback registry: "en" -> dictionary file path (first match)
 (defvar ekp-hyphen--languages-lowercase (make-hash-table :test 'equal))
 
+;; Lines in .dic files starting with these are metadata, not patterns
 (defconst ekp-hyphen--ignored
   '("%" "#" "LEFTHYPHENMIN" "RIGHTHYPHENMIN"
     "COMPOUNDLEFTHYPHENMIN" "COMPOUNDRIGHTHYPHENMIN"))
 
+;; Data structures for hyphenation algorithm
+;; See: Liang, F.M. "Word Hy-phen-a-tion by Com-put-er" (1983)
+
 (cl-defstruct (ekp-hyphen--datint
                (:constructor ekp-hyphen--make-datint))
-  value data)
+  "Integer with optional replacement data for special hyphenations."
+  value  ; hyphenation priority (odd = break allowed)
+  data)  ; (change index cut) for non-standard breaks like "ff" -> "f-f"
 
 (cl-defstruct (ekp-hyphen--altparser
                (:constructor ekp-hyphen--make-altparser))
-  change index cut)
+  "Parser for alternative hyphenation patterns (e.g., German ck -> k-k)."
+  change  ; replacement string with "=" marking break point
+  index   ; position in word
+  cut)    ; characters to remove
 
 (cl-defstruct (ekp-hyphen (:constructor ekp-hyphen--make))
-  hd left right)
+  "User-facing hyphenator object."
+  hd      ; compiled HyphDict
+  left    ; minimum chars before first break (default 2)
+  right)  ; minimum chars after last break (default 2)
 
 (cl-defstruct (ekp-hyphen--hyphdict
                (:constructor ekp-hyphen--make-hyphdict))
-  patterns cache maxlen)
+  "Compiled hyphenation dictionary."
+  patterns  ; hash: pattern-string -> (offset . values)
+  cache     ; hash: word -> positions (memoization)
+  maxlen)   ; longest pattern length (optimization)
 
 (defun ekp-hyphen--parse-hex (s)
   "Replace ^^hh with the corresponding char in S."
@@ -149,48 +168,59 @@
                                  :cache (make-hash-table :test 'equal)
                                  :maxlen maxlen))))
 
-(defun ekp-hyphen--hyphdict-positions (hd word)
-  "Get a list of positions where WORD can be hyphenated, using HyphDict HD.
-Returns a list of ekp-hyphen--datint objects or ints."
-  (let* ((w (downcase word))
-         (cache (ekp-hyphen--hyphdict-cache hd))
-         (points (gethash w cache)))
-    (unless points
-      (let* ((pointed-word (concat "." w "."))
-             (references (make-list (+ (length pointed-word) 1) 0)))
-        (cl-loop
-         for i from 0 below (1- (length pointed-word)) do
-         (let ((stop (min (+ i (ekp-hyphen--hyphdict-maxlen hd))
-                          (length pointed-word))))
-           (cl-loop
-            for j from (1+ i) to stop do
-            (let ((pattern
-                   (gethash (substring pointed-word i j)
-                            (ekp-hyphen--hyphdict-patterns hd))))
-              (when pattern
-                (let* ((offset (car pattern))
-                       (vals (cdr pattern))
-                       (slice-start (+ i offset))
-                       (slice-end (+ i offset (length vals))))
-                  (cl-loop for k from slice-start below slice-end
-                           for v in vals
-                           do (when (and (<= 0 k)
-                                         (< k (length references)))
-                                (setf (nth k references)
-                                      (max v (nth k references)))))))))))
-        (let ((res nil))
-          (cl-loop for i from 0 below (length references)
-                   for reference in references
-                   when (cl-oddp (if (ekp-hyphen--datint-p reference)
-                                     (ekp-hyphen--datint-value reference)
-                                   reference))
-                   do (push (if (ekp-hyphen--datint-p reference)
-                                reference
-                              (ekp-hyphen--make-datint :value (- i 1)))
-                            res))
-          (setq points (nreverse res))
-          (puthash w points cache))))
-    points))
+(defun ekp-hyphen--hyphdict-positions (hyphdict word)
+  "Find all hyphenation positions in WORD using HYPHDICT.
+Returns list of ekp-hyphen--datint objects (odd value = break allowed)."
+  (let* ((word-lower (downcase word))
+         (cache (ekp-hyphen--hyphdict-cache hyphdict))
+         (cached-result (gethash word-lower cache)))
+    (or cached-result
+        (let ((points (ekp-hyphen--compute-positions hyphdict word-lower)))
+          (puthash word-lower points cache)
+          points))))
+
+(defun ekp-hyphen--compute-positions (hyphdict word)
+  "Compute hyphenation positions for WORD (internal, no caching)."
+  (let* ((pointed-word (concat "." word "."))
+         (word-len (length pointed-word))
+         (max-pattern-len (ekp-hyphen--hyphdict-maxlen hyphdict))
+         (patterns (ekp-hyphen--hyphdict-patterns hyphdict))
+         ;; Priority array: index i = position before char i
+         (priorities (make-list (1+ word-len) 0)))
+    ;; Scan all substrings and apply matching patterns
+    (dotimes (start (1- word-len))
+      (let ((end-limit (min (+ start max-pattern-len) word-len)))
+        (cl-loop for end from (1+ start) to end-limit do
+                 (when-let ((pattern (gethash (substring pointed-word start end)
+                                              patterns)))
+                   (ekp-hyphen--apply-pattern priorities pattern start)))))
+    ;; Extract positions where priority is odd (= hyphenation allowed)
+    (ekp-hyphen--extract-break-positions priorities)))
+
+(defun ekp-hyphen--apply-pattern (priorities pattern start)
+  "Apply PATTERN values to PRIORITIES array starting at START."
+  (let ((offset (car pattern))
+        (values (cdr pattern)))
+    (cl-loop for idx from (+ start offset)
+             for val in values
+             when (and (<= 0 idx) (< idx (length priorities)))
+             do (setf (nth idx priorities)
+                      (max val (nth idx priorities))))))
+
+(defun ekp-hyphen--extract-break-positions (priorities)
+  "Extract break positions from PRIORITIES array.
+Returns list of ekp-hyphen--datint objects for odd-valued positions."
+  (let (result)
+    (cl-loop for idx from 0 below (length priorities)
+             for priority in priorities
+             when (cl-oddp (if (ekp-hyphen--datint-p priority)
+                               (ekp-hyphen--datint-value priority)
+                             priority))
+             do (push (if (ekp-hyphen--datint-p priority)
+                          priority
+                        (ekp-hyphen--make-datint :value (- idx 1)))
+                      result))
+    (nreverse result)))
 
 (defun ekp-hyphen-load-languages (dict-dir)
   "Scan DICT-DIR for hyphenation dictionaries and populate

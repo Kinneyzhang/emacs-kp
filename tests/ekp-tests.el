@@ -67,7 +67,7 @@
     (car (ekp-pixel-range-justify
           (ekp-test-str cjk latin font) min max))))
 
-;; (ekp-test-justify nil "en_US" "Cascadia Next SC" 699)
+;; (ekp-test-justify nil "en_US" "Cascadia Next SC" 399)
 ;; (ekp-test-justify nil "en_US" "Times New Roman" 699)
 ;; (ekp-test-justify nil "en_US" "Georgia" 699)
 ;; (ekp-test-justify nil "en_US" "Noto Serif" 700)
