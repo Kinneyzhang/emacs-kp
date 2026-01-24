@@ -115,6 +115,32 @@
   "Push CJK CHAR to BOXES if non-nil. Return updated boxes."
   (if char (cons char boxes) boxes))
 
+(defun ekp--flush-spaces (spaces boxes prev-state next-width)
+  "Push SPACES to BOXES based on context.
+PREV-STATE: 1=latin, 2=CJK (previous content type).
+NEXT-WIDTH: width of next character (1=latin, 2=CJK).
+Rules:
+- Latin-Latin: single space handled by glue, multiple preserves all but last
+- CJK involved (prev or next is CJK): preserve ALL spaces"
+  (when (and spaces (not (string-empty-p spaces)))
+    (let ((cjk-involved (or (= prev-state 2) (= next-width 2))))
+      (cond
+       ;; CJK involved: preserve all spaces
+       (cjk-involved
+        (setq boxes (cons spaces boxes)))
+       ;; Latin-Latin with multiple spaces: preserve all but last
+       ((> (length spaces) 1)
+        (setq boxes (cons (substring spaces 0 -1) boxes)))
+       ;; Latin-Latin with single space: let glue handle it
+       (t nil))))
+  boxes)
+
+(defun ekp--flush-trailing-spaces (spaces boxes)
+  "Push all trailing SPACES to BOXES (for end of string)."
+  (if (and spaces (not (string-empty-p spaces)))
+      (cons spaces boxes)
+    boxes))
+
 (defun ekp--handle-latin-char (str state latin-word cjk-char boxes)
   "Handle a latin (width=1) character.
 Return (new-state new-latin-word new-cjk-char new-boxes)."
@@ -140,38 +166,51 @@ Return (new-state new-latin-word new-cjk-char new-boxes)."
 (defun ekp-split-to-boxes (string)
   "Split STRING into typographic boxes.
 Latin words become single boxes; CJK chars are individual boxes.
-Whitespace separates boxes; CJK punctuation attaches to preceding char."
+Whitespace runs are preserved as separate boxes; CJK punctuation attaches to preceding char."
   (if (string-blank-p string)
       (vector string)
     (with-temp-buffer
       (insert string)
       (goto-char (point-min))
       (let ((state (char-width (seq-first string)))  ; 1=latin, 2=CJK
+            (prev-state 1)  ; track previous content state for space handling
             latin-word   ; accumulator for latin characters
             cjk-char     ; holds previous CJK char (for punct attachment)
+            spaces       ; accumulator for whitespace runs
             boxes)       ; result list (built in reverse)
         (while (not (eobp))
           (let* ((str (buffer-substring (point) (1+ (point))))
                  (width (string-width str)))
             (cond
-             ;; Whitespace or zero-width: flush latin word, start new box
+             ;; Whitespace or zero-width: flush content, accumulate spaces
              ((or (string-blank-p str) (= 0 width))
+              (setq boxes (ekp--flush-cjk-char cjk-char boxes))
+              (when cjk-char (setq prev-state 2))
+              (setq cjk-char nil)
               (setq boxes (ekp--flush-latin-word latin-word boxes))
-              (setq latin-word nil))
-             ;; Latin character (width = 1)
-             ((= 1 width)
-              (pcase-let ((`(,s ,lw ,cc ,bx)
-                           (ekp--handle-latin-char str state latin-word cjk-char boxes)))
-                (setq state s latin-word lw cjk-char cc boxes bx)))
-             ;; CJK character (width = 2)
-             ((= 2 width)
-              (pcase-let ((`(,s ,lw ,cc ,bx)
-                           (ekp--handle-cjk-char str state latin-word cjk-char boxes)))
-                (setq state s latin-word lw cjk-char cc boxes bx)))))
+              (when latin-word (setq prev-state 1))
+              (setq latin-word nil)
+              (setq spaces (concat spaces str)))
+             ;; Non-whitespace: flush spaces first, then handle char
+             (t
+              (setq boxes (ekp--flush-spaces spaces boxes prev-state width))
+              (setq spaces nil)
+              (cond
+               ;; Latin character (width = 1)
+               ((= 1 width)
+                (pcase-let ((`(,s ,lw ,cc ,bx)
+                             (ekp--handle-latin-char str state latin-word cjk-char boxes)))
+                  (setq state s latin-word lw cjk-char cc boxes bx)))
+               ;; CJK character (width = 2)
+               ((= 2 width)
+                (pcase-let ((`(,s ,lw ,cc ,bx)
+                             (ekp--handle-cjk-char str state latin-word cjk-char boxes)))
+                  (setq state s latin-word lw cjk-char cc boxes bx)))))))
           (forward-char 1))
         ;; Flush remaining content
         (setq boxes (ekp--flush-cjk-char cjk-char boxes))
         (setq boxes (ekp--flush-latin-word latin-word boxes))
+        (setq boxes (ekp--flush-trailing-spaces spaces boxes))
         (vconcat (nreverse boxes))))))
 
 (defun ekp-clear-caches ()
