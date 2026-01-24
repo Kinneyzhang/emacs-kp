@@ -12,7 +12,7 @@ Emacs-kp implements the Knuth-Plass optimal line breaking algorithm with full su
 
 ### The Knuth-Plass Algorithm
 
-The algorithm is based on the seminal 1981 paper ["Breaking Paragraphs into Lines"](http://www.eprg.org/G53DOC/pdfs/knuth-plass-breaking.pdf) by Donald Knuth and Michael Plass. Unlike greedy line-breaking (used by most text editors), K-P considers **all possible breakpoints** simultaneously to find the globally optimal solution.
+The algorithm is based on the seminal 1981 paper ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf) by Donald Knuth and Michael Plass. Unlike greedy line-breaking (used by most text editors), K-P considers **all possible breakpoints** simultaneously to find the globally optimal solution.
 
 #### Core Concepts
 
@@ -167,6 +167,6 @@ Clear all paragraph caches.
 
 ## Credits
 
-- Core algorithm: ["Breaking Paragraphs into Lines"](http://www.eprg.org/G53DOC/pdfs/knuth-plass-breaking.pdf) by Donald E. Knuth and Michael F. Plass (1981)
+- Core algorithm: ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf) by Donald E. Knuth and Michael F. Plass (1981)
 - Hyphenation: Adapted from [Pyphen](https://github.com/Kozea/Pyphen), using Liang's algorithm
 - Dictionaries: [Hunspell hyphenation patterns](https://github.com/Kozea/Pyphen)

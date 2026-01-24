@@ -10,7 +10,7 @@ Emacs-kp 实现了 Knuth-Plass 最优断行算法，并扩展支持 CJK（中日
 
 ### Knuth-Plass 算法
 
-本算法基于 Donald Knuth 和 Michael Plass 于 1981 年发表的经典论文 ["Breaking Paragraphs into Lines"](http://www.eprg.org/G53DOC/pdfs/knuth-plass-breaking.pdf)。与大多数文本编辑器使用的贪心断行不同，K-P 算法**同时考虑所有可能的断点**，寻找全局最优解。
+本算法基于 Donald Knuth 和 Michael Plass 于 1981 年发表的经典论文 ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf)。与大多数文本编辑器使用的贪心断行不同，K-P 算法**同时考虑所有可能的断点**，寻找全局最优解。
 
 #### 核心概念
 
@@ -165,6 +165,6 @@ Emacs-kp 为 CJK 文本扩展了原算法：
 
 ## 致谢
 
-- 核心算法：Donald E. Knuth 和 Michael F. Plass 的论文 ["Breaking Paragraphs into Lines"](http://www.eprg.org/G53DOC/pdfs/knuth-plass-breaking.pdf)（1981）
+- 核心算法：Donald E. Knuth 和 Michael F. Plass 的论文 ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf)（1981）
 - 断词算法：改编自 [Pyphen](https://github.com/Kozea/Pyphen)，使用 Liang 算法
 - 词典：[Hunspell 断词模式](https://github.com/Kozea/Pyphen)
