@@ -1,67 +1,172 @@
 [中文文档](./readme_zh.md)
 
-## Introduction
-Emacs-kp implements the knuth-plass typesetting algorithm, but its capabilities extend beyond English typesetting. Through further optimization of the algorithm, it achieves hybrid typesetting for both CJK and Latin-based languages.
+# Emacs-KP: Knuth-Plass Line Breaking for Emacs
+
+Emacs-kp implements the Knuth-Plass optimal line breaking algorithm with full support for CJK (Chinese, Japanese, Korean) and Latin mixed text typesetting.
 
 ## Demo
-First, let's look at a demo of the typesetting effect:
 
 ![ekp-demo](./images/ekp-demo-with-cache.gif)
 
+## Algorithm Overview
+
+### The Knuth-Plass Algorithm
+
+The algorithm is based on the seminal 1981 paper ["Breaking Paragraphs into Lines"](http://www.eprg.org/G53DOC/pdfs/knuth-plass-breaking.pdf) by Donald Knuth and Michael Plass. Unlike greedy line-breaking (used by most text editors), K-P considers **all possible breakpoints** simultaneously to find the globally optimal solution.
+
+#### Core Concepts
+
+**1. Boxes, Glue, and Penalties**
+
+Text is modeled as a sequence of three elements:
+- **Box**: Indivisible content (characters, words) with fixed width
+- **Glue**: Flexible space with ideal width, stretchability, and shrinkability
+- **Penalty**: Cost for breaking at specific points (e.g., hyphenation)
+
+```
+┌─────┐      ┌─────┐      ┌─────┐
+│ Box │─Glue─│ Box │─Glue─│ Box │
+└─────┘      └─────┘      └─────┘
+  word      (flexible)      word
+```
+
+**2. Badness: Measuring Line Quality**
+
+Each line's quality is measured by how much glue must stretch/shrink:
+
+```
+            ⎧ 0                        if adjustment = 0
+badness =   ⎨ ∞                        if impossible to fit
+            ⎩ 100 × |adjustment/flexibility|³
+```
+
+- `adjustment` = target_width - natural_width
+- `flexibility` = total stretchability (if stretching) or shrinkability (if shrinking)
+
+**3. Demerits: Ranking Break Sequences**
+
+Demerits combine badness with penalties to rank entire paragraph layouts:
+
+```
+demerits = (line_penalty + badness)² + penalty² + fitness_penalty
+```
+
+Where:
+- `line_penalty`: Base cost per line (default: 10)
+- `penalty`: Break-specific cost (hyphenation: 50)
+- `fitness_penalty`: Extra cost when adjacent lines differ significantly in tightness
+
+**4. Fitness Classes**
+
+Lines are classified by tightness to ensure visual consistency:
+- Class 0: Tight (significantly shrunk)
+- Class 1: Decent (close to ideal)
+- Class 2: Loose (stretched)
+- Class 3: Very loose (significantly stretched)
+
+Adjacent lines differing by more than one class incur additional penalty.
+
+**5. Dynamic Programming**
+
+The algorithm uses DP to find the minimum-demerits path through all valid breakpoints:
+
+```
+dp[k] = min over all valid i < k {
+    dp[i] + demerits(line from i to k)
+}
+```
+
+Time complexity: O(n²) where n = number of potential breakpoints.
+
+### CJK Extensions
+
+Emacs-kp extends the original algorithm for CJK text:
+
+1. **Character-level breaking**: CJK text can break between any characters
+2. **Mixed spacing**: Three glue types for Latin-Latin, Latin-CJK, and CJK-CJK gaps
+3. **Punctuation handling**: CJK punctuation attaches to adjacent characters
+
+### Hyphenation
+
+Latin word hyphenation uses Frank Liang's algorithm (TeX's hyphenation):
+- Pattern-based approach with priority values
+- Language-specific dictionaries (en_US, de_DE, fr, etc.)
+- Configurable minimum characters before/after breaks
+
 ## Limitations
-Currently, it only supports hybrid typesetting between CJK and one Latin-based language. Mixed typesetting with multiple Latin-based languages is not supported. This limitation arises because the system cannot precisely determine which language a word belongs to in order to perform hyphenation.
+
+Currently supports CJK mixed with **one** Latin language only. Multi-Latin-language mixing is not supported because the system cannot reliably determine which language a word belongs to for hyphenation.
 
 ## Usage
 
 ### Configuration
 
-`ekp-latin-lang` is used to set the primary Latin-based language in the text. The default setting is "en_US". All supported languages can be found in the "dictionaries" directory. The language name must match the name following "hyph_" in the dictionary files. Test cases include examples of German and French typesetting. Other languages have not been tested extensively but should theoretically work; however, finer customization may be required.
+**`ekp-latin-lang`**: Primary Latin language for hyphenation (default: `"en_US"`).
+See `dictionaries/` for supported languages.
 
-`ekp-param-set` is a function used to configure fundamental typesetting parameters. These parameters include:
+**`ekp-param-set`**: Configure spacing parameters (in pixels):
 
-| Parameter             | Meaning                                                        |
-|:----------------------|:---------------------------------------------------------------|
-| ekp-lws-ideal-pixel   | Ideal pixel width between Latin words                          |
-| ekp-lws-stretch-pixel | Stretchable pixel width between Latin words                    |
-| ekp-lws-shrink-pixel  | Shrinkable pixel width between Latin words                     |
-| ekp-mws-ideal-pixel   | Ideal pixel width between Latin words and CJK characters       |
-| ekp-mws-stretch-pixel | Stretchable pixel width between Latin words and CJK characters |
-| ekp-mws-shrink-pixel  | Shrinkable pixel width between Latin words and CJK characters  |
-| ekp-cws-ideal-pixel   | Ideal pixel width between CJK characters                       |
-| ekp-cws-stretch-pixel | Stretchable pixel width between CJK characters                 |
-| ekp-cws-shrink-pixel  | Shrinkable pixel width between CJK characters                  |
+| Parameter             | Description                                    |
+|:----------------------|:-----------------------------------------------|
+| `ekp-lws-ideal-pixel`   | Ideal space between Latin words               |
+| `ekp-lws-stretch-pixel` | Maximum stretch between Latin words           |
+| `ekp-lws-shrink-pixel`  | Maximum shrink between Latin words            |
+| `ekp-mws-ideal-pixel`   | Ideal space between Latin and CJK             |
+| `ekp-mws-stretch-pixel` | Maximum stretch between Latin and CJK         |
+| `ekp-mws-shrink-pixel`  | Maximum shrink between Latin and CJK          |
+| `ekp-cws-ideal-pixel`   | Ideal space between CJK characters            |
+| `ekp-cws-stretch-pixel` | Maximum stretch between CJK characters        |
+| `ekp-cws-shrink-pixel`  | Maximum shrink between CJK characters         |
 
-For example: `(ekp-param-set 7 3 2 5 2 1 0 2 0)` sets the above parameters accordingly. **​​Do not modify these variables directly – always use this function for configuration.​​**
+Example: `(ekp-param-set 7 3 2 5 2 1 0 2 0)`
 
-If not manually configured, the default values follow KP algorithm recommendations for spaces between latin words:
+**Do not set these variables directly—always use `ekp-param-set`.**
 
-- The ideal width is set to the pixel width of a space character.
-- The stretchable width defaults to 1/2 of the ideal width.
-- The shrinkable width defaults to 1/3 of the ideal width.
+Default values follow K-P recommendations:
+- Ideal = space character width
+- Stretch = ideal × 0.5
+- Shrink = ideal × 0.33
 
-For spaces between latin word and CJK character: `ekp-mws-ideal-pixel = ekp-lws-ideal-pixel - 2` while maintaining the same stretch/shrink proportions.
+### K-P Algorithm Parameters
 
-For spaces between CJK characters: Ideal width between CJK characters defaults to 0. Stretchable width between CJK characters defaults to 2 pixels. Shrinkable width between CJK characters defaults to 0 (non-compressible).
+| Parameter                     | Default | Description                              |
+|:------------------------------|:--------|:-----------------------------------------|
+| `ekp-line-penalty`            | 10      | Base penalty per line break              |
+| `ekp-hyphen-penalty`          | 50      | Penalty for hyphenated breaks            |
+| `ekp-adjacent-fitness-penalty`| 100     | Penalty for inconsistent line tightness  |
+| `ekp-last-line-min-ratio`     | 0.5     | Minimum fill ratio for last line         |
+| `ekp-looseness`               | 0       | Target line count offset (±n lines)      |
 
 ### Core Functions
 
-Two functions are provided:
+```elisp
+(ekp-pixel-justify string line-pixel)
+```
+Justify STRING to LINE-PIXEL width per line. Returns formatted text.
 
-```(ekp-pixel-justify string line-pixel)```
+```elisp
+(ekp-pixel-range-justify string min-pixel max-pixel)
+```
+Find optimal width in [MIN-PIXEL, MAX-PIXEL] range using ternary search.
+Returns `(formatted-text . optimal-pixel)`.
 
-Formats the text STRING to fit a pixel width of LINE-PIXEL per line and returns the justified text.
+Note: Uses O(log n) ternary search with aggressive caching.
 
-```(ekp-pixel-range-justify string min-pixel max-pixel)```
+```elisp
+(ekp-clear-caches)
+```
+Clear all paragraph caches.
 
-Searches for optimal typesetting within the range of MIN-PIXEL to MAX-PIXEL. Returns a cons-cell where the car is the formatted text and the cdr is the pixel value achieving the best typesetting result. Please Note: This function iteratively computes the typesetting cost between the minimum and maximum pixel values to find the optimal case at the minimum cost. ​​If the specified range is too large, execution time may increase significantly.​​ Future updates plan to leverage Rust dynamic libraries for parallel computation to improve performance.
+## Roadmap
 
-## Next Todos
-- [x] Preserve the original text's text properties.
-- [ ] Refactor using Rust dynamic modules: Utilize Rust's parallel computing capabilities to enhance rendering performance.
-- [ ] Implement autocorrection for punctuation: Correct English punctuation mistakenly used in Chinese text; Correct Chinese punctuation mistakenly used in English texts...
+- [x] Preserve original text properties after formatting
+- [x] Full Knuth-Plass demerits model with fitness classes
+- [x] Hyphenation with consecutive-hyphen penalty
+- [ ] Rust dynamic module for parallel computation
+- [ ] Auto-correction for mixed punctuation
 
 ## Credits
 
-- The core algorithm is fundamentally derived from the seminal paper: "Breaking Paragraphs into Lines" by ​​DONALD E. KNUTH AND MICHAEL F. PLASS​​.
-
-- The implementation of ​​Latin word hyphenation​​ is adapted from the source code of the ​​`Pyphen​`​ Python library, and the corresponding dictionaries originate from this project: https://github.com/Kozea/Pyphen
+- Core algorithm: ["Breaking Paragraphs into Lines"](http://www.eprg.org/G53DOC/pdfs/knuth-plass-breaking.pdf) by Donald E. Knuth and Michael F. Plass (1981)
+- Hyphenation: Adapted from [Pyphen](https://github.com/Kozea/Pyphen), using Liang's algorithm
+- Dictionaries: [Hunspell hyphenation patterns](https://github.com/Kozea/Pyphen)

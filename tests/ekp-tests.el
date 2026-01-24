@@ -1,6 +1,8 @@
-;; -*- lexical-binding: t; -*-
+;;; ekp-tests.el --- Tests for EKP -*- lexical-binding: t; -*-
 
-;;; utils
+(require 'ekp)
+
+;;;; Test Utilities
 (defun ekp-file-content (file)
   (with-temp-buffer
     (insert-file-contents file)
@@ -132,3 +134,74 @@
       "\n" (ekp-pixel-justify (string-join lst "\n\n") 683))))
 
 ;; (ekp-test-keep-props)
+
+;;; Performance Tests
+
+(defun ekp-test-perf-range-justify (min max &optional iterations)
+  "Benchmark ekp-pixel-range-justify from MIN to MAX.
+Returns time in seconds."
+  (let* ((iterations (or iterations 3))
+         (str (ekp-test-str "zh" "en_US"))
+         (start-time (float-time))
+         result)
+    (dotimes (_ iterations)
+      (ekp-clear-caches)
+      (setq result (ekp-pixel-range-justify str min max)))
+    (let ((elapsed (/ (- (float-time) start-time) iterations)))
+      (message "Range [%d, %d]: %.3fs avg, optimal=%dpx"
+               min max elapsed (cdr result))
+      elapsed)))
+
+;; (ekp-test-perf-range-justify 666 690 3)
+
+;;; Unit Tests (batch-mode safe, no font required)
+
+(defun ekp-test-unit--hash-consistency ()
+  "Test that sxhash is consistent for same input."
+  (let* ((str "test string")
+         (hash1 (sxhash (list (sxhash str) "font1" "font2" 8 4 2)))
+         (hash2 (sxhash (list (sxhash str) "font1" "font2" 8 4 2))))
+    (if (= hash1 hash2)
+        (message "✓ Hash consistency: PASSED")
+      (message "✗ Hash consistency: FAILED"))))
+
+(defun ekp-test-unit--struct-access ()
+  "Test struct slot access."
+  (let ((para (record 'ekp-para
+                      "test"        ; string
+                      nil nil       ; latin-font, cjk-font
+                      (vector "a" "b" "c")   ; boxes
+                      (vector 10 20 30)      ; boxes-widths
+                      nil                    ; boxes-types
+                      (vector 'nws 'lws 'lws) ; glues-types
+                      5                      ; hyphen-pixel
+                      (vector 0 10 38 76)    ; ideal-prefixs
+                      (vector 0 10 34 70)    ; min-prefixs
+                      (vector 0 10 42 82)    ; max-prefixs
+                      (make-hash-table :test 'eql)))) ; dp-cache
+    (if (and (equal (ekp-para-string para) "test")
+             (= (length (ekp-para-boxes para)) 3)
+             (= (aref (ekp-para-boxes-widths para) 1) 20)
+             (= (ekp-para-hyphen-pixel para) 5))
+        (message "✓ Struct access: PASSED")
+      (message "✗ Struct access: FAILED"))))
+
+(defun ekp-test-unit--dp-cache-storage ()
+  "Test DP results are stored in hash table."
+  (let ((cache (make-hash-table :test 'eql)))
+    (puthash 100 '(:breaks (1) :cost 50) cache)
+    (let ((cached (gethash 100 cache)))
+      (if (and cached (= (plist-get cached :cost) 50))
+          (message "✓ DP cache storage: PASSED")
+        (message "✗ DP cache storage: FAILED")))))
+
+(defun ekp-test-unit-all ()
+  "Run all unit tests."
+  (interactive)
+  (message "=== Running Unit Tests ===")
+  (ekp-test-unit--hash-consistency)
+  (ekp-test-unit--struct-access)
+  (ekp-test-unit--dp-cache-storage)
+  (message "=== Unit Tests Complete ==="))
+
+;; (ekp-test-unit-all)

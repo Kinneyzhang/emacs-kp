@@ -1,25 +1,15 @@
-;; -*- lexical-binding: t; -*-
+;;; ekp-utils.el --- Utility functions for EKP -*- lexical-binding: t; -*-
 
-;;; related to font
+;; Copyright (C) 2024
+;; Author: emacs-kp contributors
 
-;; (defun ekp-cjk-char-p (char)
-;;   "Return if char CHAR is cjk."
-;;   (or
-;;    ;; CJK统一表意文字（基本区）
-;;    (<= #x4E00 char #x9FFF)
-;;    ;; CJK扩展A区
-;;    (<= #x3400 char #x4DBF)
-;;    ;; CJK扩展B区（注意：超出16位范围）
-;;    (and (<= #x20000 char) (<= char #x2A6DF))
-;;    ;; CJK兼容/部首扩展等
-;;    ;; CJK符号和标点
-;;    (<= #x3000 char #x303F)
-;;    ;; 日文假名
-;;    (<= #x3040 char #x30FF)
-;;    ;; 韩文谚文
-;;    (<= #xAC00 char #xD7AF)
-;;    ;; CJK兼容表意文字
-;;    (<= #xF900 char #xFAFF)))
+;;; Commentary:
+
+;; Utilities for the Emacs Knuth-Plass (EKP) typesetting package.
+
+;;; Code:
+
+;;;; Font Detection
 
 (defsubst ekp-cjk-char-p (char)
   "Return non-nil if CHAR is a CJK character."
@@ -103,78 +93,6 @@
   (if-let ((letter (ekp-get-cjk-letter string)))
       (ekp-font-family letter)
     (ekp-font-family "牛")))
-
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defun ekp-start-process-with-callback
-    (process-name command-args callback
-                  &optional output-buffer)
-  "执行命令（带参数）并在完成后调用回调"
-  (let* ((buffer-name (generate-new-buffer-name
-                       (or output-buffer "*EKP Process Output*")))
-         (process (apply #'start-process process-name
-                         buffer-name command-args)))
-    (set-process-sentinel
-     process
-     `(lambda (proc event)
-        (if (string-match-p "finished" event)
-            (when (memq (process-status proc) '(exit signal))
-              (unwind-protect
-                  (funcall ',callback proc (process-buffer proc))
-                (when (buffer-live-p (process-buffer proc))
-                  (kill-buffer (process-buffer proc)))))
-          (message "%s, please check %s" (string-trim event)
-                   ,buffer-name))))
-    process))
-
-(defun ekp-rust-module-reload (module)
-  (let ((tmpfile (make-temp-file
-                  (file-name-nondirectory module))))
-    (copy-file module tmpfile t)
-    (module-load tmpfile)))
-
-(defun ekp-module-dir ()
-  (when-let ((root-dir (ekp-root-dir)))
-    (expand-file-name "ekp_rust" root-dir)))
-
-(defun ekp-module-file ()
-  (when-let* ((module-dir (ekp-module-dir))
-              (filename (cond ((eq system-type 'darwin) "libekp.dylib")
-                              ((eq system-type 'windows-nt) "ekp.dll")
-                              (t "libekp.so"))))
-    (expand-file-name (concat "target/release/" filename) module-dir)))
-
-(defun ekp-module-load ()
-  "Load rust module of ekp."
-  (if (executable-find "cargo")
-      (let ((file (ekp-module-file)))
-        (if file
-            (ekp-rust-module-reload file)
-          (ekp-module-build)))
-    (error "Please install cargo and add it to executable path!")))
-
-(defun ekp-module-build ()
-  "Reload ekp rust module."
-  (interactive)
-  (if (executable-find "cargo")
-      (ekp-start-process-with-callback
-       "ekp-build"
-       (cond
-        ((eq system-type 'windows-nt)
-         `("cmd.exe" "/c" ,(format "cd %s && cargo build -r"
-                                   (ekp-module-dir))))
-        (t `("zsh" "-c" ,(format "cd %s && cargo build -r"
-                                 (ekp-module-dir)))))
-       (lambda (proc buffer)
-         (ekp-rust-module-reload (ekp-module-file))
-         (message "ekp rust module reload success!")))
-    (error "Please install cargo and add it to executable path!")))
-
-(defmacro ekp-setq (sym val)
-  "Set the value of symbol SYM to VAL. If VAL is nil, set to
-the value of [SYM]-default."
-  `(setq ,sym (or ,val ,(intern (concat (symbol-name sym)
-                                        "-default")))))
 
 (defun ekp-pixel-spacing (pixel)
   "Return a pixel spacing with a PIXEL pixel width."
@@ -262,67 +180,72 @@ Whitespace separates boxes; CJK punctuation attaches to preceding char."
         (make-hash-table
          :test 'equal :size 100 :rehash-size 1.5 :weakness nil)))
 
-;; (defun ekp-split-to-boxes (string)
-;;   "Split STRING into a vector: English by word, Chinese
-;; by character, punctuation attached to previous unit."
-;;   (with-temp-buffer
-;;     (insert string)
-;;     (goto-char (point-min))
-;;     (let (words (index 0))
-;;       (while (not (eobp))
-;;         ;; skip whitespace
-;;         (skip-syntax-forward "-")
-;;         (unless (eobp)
-;;           (let ((start (point)))
-;;             (if (ekp-cjk-char-p (char-after))
-;;                 (forward-char 1)
-;;               (forward-word 1)
-;;               ;; process float number
-;;               (when-let* ((char1 (char-after (point)))
-;;                           (char2 (char-after (1+ (point))))
-;;                           (_ (and (eq char1 ?.) (<= ?0 char2 ?9))))
-;;                 (forward-word 1))
-;;               ;; process hyphen and contraction
-;;               (while (or (eq (char-after (point)) ?-)
-;;                          (eq (char-after (point)) ?')
-;;                          (eq (char-after (point)) ?/))
-;;                 (forward-word 1)))
-;;             ;; attach punctuation
-;;             (while (and (not (eobp))
-;;                         (with-syntax-table (standard-syntax-table)
-;;                           (eq (char-syntax (char-after)) ?.)))
-;;               ;; (message "(char-after):%s" (char-after))
-;;               (forward-char 1))
-;;             (push (buffer-substring start (point)) words))))
-;;       (vconcat (nreverse words)))))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; (defvar ekp-par-num 8)
-;; (defun ekp-strings (string n)
-;;   "Split STRING to average N parts but don't split in a word."
-;;   ;; used for rust
-;;   (let* ((size (length string))
-;;          (each-size (/ size n))
-;;          (str-ends (--map (if (= it n) size (* it each-size))
-;;                           (number-sequence 1 n)))
-;;          regions)
-;;     (with-temp-buffer
-;;       (insert string)
-;;       (goto-char (point-min))
-;;       (let ((str-start 0)
-;;             (prev-end 0))
-;;         (dolist (str-end str-ends)
-;;           (when (> str-end prev-end)
-;;             (goto-char (1+ str-end))
-;;             (while (and (not (eobp))
-;;                         (not (eq ?  (char-after)))
-;;                         (< (char-width (char-after)) 2))
-;;               (forward-char 1))
-;;             (setq str-end (1- (point)))
-;;             (push (cons str-start str-end) regions)
-;;             (setq prev-end str-end)
-;;             (setq str-start str-end)))))
-;;     (vconcat (--map
-;;               (substring string (car it) (cdr it))
-;;               (nreverse regions)))))
+(defun ekp-start-process-with-callback
+    (process-name command-args callback
+                  &optional output-buffer)
+  "执行命令（带参数）并在完成后调用回调"
+  (let* ((buffer-name (generate-new-buffer-name
+                       (or output-buffer "*EKP Process Output*")))
+         (process (apply #'start-process process-name
+                         buffer-name command-args)))
+    (set-process-sentinel
+     process
+     `(lambda (proc event)
+        (if (string-match-p "finished" event)
+            (when (memq (process-status proc) '(exit signal))
+              (unwind-protect
+                  (funcall ',callback proc (process-buffer proc))
+                (when (buffer-live-p (process-buffer proc))
+                  (kill-buffer (process-buffer proc)))))
+          (message "%s, please check %s" (string-trim event)
+                   ,buffer-name))))
+    process))
+
+(defun ekp-rust-module-reload (module)
+  (let ((tmpfile (make-temp-file
+                  (file-name-nondirectory module))))
+    (copy-file module tmpfile t)
+    (module-load tmpfile)))
+
+(defun ekp-module-dir ()
+  (when-let ((root-dir (ekp-root-dir)))
+    (expand-file-name "ekp_rust" root-dir)))
+
+(defun ekp-module-file ()
+  (when-let* ((module-dir (ekp-module-dir))
+              (filename (cond ((eq system-type 'darwin) "libekp.dylib")
+                              ((eq system-type 'windows-nt) "ekp.dll")
+                              (t "libekp.so"))))
+    (expand-file-name (concat "target/release/" filename) module-dir)))
+
+(defun ekp-module-load ()
+  "Load rust module of ekp."
+  (if (executable-find "cargo")
+      (let ((file (ekp-module-file)))
+        (if file
+            (ekp-rust-module-reload file)
+          (ekp-module-build)))
+    (error "Please install cargo and add it to executable path!")))
+
+(defun ekp-module-build ()
+  "Reload ekp rust module."
+  (interactive)
+  (if (executable-find "cargo")
+      (ekp-start-process-with-callback
+       "ekp-build"
+       (cond
+        ((eq system-type 'windows-nt)
+         `("cmd.exe" "/c" ,(format "cd %s && cargo build -r"
+                                   (ekp-module-dir))))
+        (t `("zsh" "-c" ,(format "cd %s && cargo build -r"
+                                 (ekp-module-dir)))))
+       (lambda (proc buffer)
+         (ekp-rust-module-reload (ekp-module-file))
+         (message "ekp rust module reload success!")))
+    (error "Please install cargo and add it to executable path!")))
 
 (provide 'ekp-utils)
+
+;;; ekp-utils.el ends here
