@@ -85,8 +85,21 @@ Applied as: this × (1 - fill-ratio) when fill < ekp-last-line-min-ratio.")
   "Minimum fill ratio for last line (0.0-1.0).")
 
 (defvar ekp-looseness 0
-  "Target line count offset: 0=optimal, +1=looser, -1=tighter.
-Note: Full looseness requires tracking multiple paths (not yet implemented).")
+  "Target line count offset: 0=optimal, +1=looser (more lines), -1=tighter (fewer lines).
+When non-zero, the algorithm tracks multiple paths and selects the one
+whose line count is closest to (optimal + looseness).")
+
+(defvar ekp-threshold-factor 0
+  "Threshold factor for early pruning (0 = disabled).
+When > 0, breakpoints with demerits > best × (1 + factor) are skipped.
+Typical value: 2.0 for moderate pruning, 5.0 for aggressive pruning.
+Reduces computation time for long paragraphs at slight quality cost.")
+
+(defvar ekp-flagged-penalty -10000
+  "Penalty for flagged (forced) breaks.
+Negative value means this break is preferred (mandatory).
+When a box ends with a forced break marker, it will be selected.
+Used for explicit line breaks in poetry, code blocks, etc.")
 
 ;;;; Paragraph Cache Structure
 ;;
@@ -98,6 +111,7 @@ Note: Full looseness requires tracking multiple paths (not yet implemented).")
   string latin-font cjk-font
   boxes boxes-widths boxes-types glues-types
   hyphen-pixel hyphen-positions
+  flagged-positions  ; vector of indices for forced line breaks
   ideal-prefixs min-prefixs max-prefixs
   ;; Store glue params at para creation time for consistent C module calls
   glue-params  ; plist (:lws-ideal :lws-shrink :lws-stretch :mws-* :cws-*)
@@ -531,21 +545,44 @@ Uses binary search for O(log n) lookup instead of O(n) linear search."
                (setq hi mid))))
          (= (aref hyphen-positions lo) n))))
 
+(defun ekp--flagged-p (flagged-positions n)
+  "Return non-nil if position N is a flagged (forced) break.
+FLAGGED-POSITIONS is a sorted vector of indices where forced breaks occur.
+Uses binary search for O(log n) lookup."
+  (and flagged-positions
+       (> (length flagged-positions) 0)
+       (let ((lo 0)
+             (hi (1- (length flagged-positions))))
+         (while (< lo hi)
+           (let ((mid (/ (+ lo hi) 2)))
+             (if (< (aref flagged-positions mid) n)
+                 (setq lo (1+ mid))
+               (setq hi mid))))
+         (= (aref flagged-positions lo) n))))
+
 ;;;; Dynamic Programming Line Breaking
 
 (defun ekp--dp-init-arrays (n)
   "Initialize DP arrays for N boxes.
-Returns (backptrs demerits rests gaps hyphen-counts fitness-classes line-counts)."
+Returns (backptrs demerits rests gaps hyphen-counts fitness-classes line-counts alt-paths).
+When looseness != 0, alt-paths tracks alternative paths by (position . line-count)."
   (let ((backptrs (make-vector (1+ n) nil))
         (demerits (make-vector (1+ n) nil))
         (rests (make-vector (1+ n) nil))
         (gaps (make-vector (1+ n) nil))
         (hyphen-counts (make-vector (1+ n) 0))
         (fitness-classes (make-vector (1+ n) 1))  ; default: decent
-        (line-counts (make-vector (1+ n) 0)))     ; for looseness
+        (line-counts (make-vector (1+ n) 0))      ; for looseness
+        ;; alt-paths: hash (position . line-count) -> (backptr . demerits)
+        ;; Size based on estimated paths: n positions × ~10 possible line counts
+        (alt-paths (when (/= ekp-looseness 0)
+                     (make-hash-table :test 'equal :size (min 1000 (* n 10))))))
     (aset demerits 0 0.0)
+    ;; Initialize alt-paths for position 0
+    (when alt-paths
+      (puthash (cons 0 0) (cons nil 0.0) alt-paths))
     (list backptrs demerits rests gaps
-          hyphen-counts fitness-classes line-counts)))
+          hyphen-counts fitness-classes line-counts alt-paths)))
 
 (defun ekp--dp-line-metrics (para i k glues-types ideal-prefixs min-prefixs max-prefixs)
   "Compute line metrics for boxes I to K using PARA's stored glue params.
@@ -586,11 +623,21 @@ Uses PARA's stored glue params for consistency."
 (defun ekp--dp-compute-line-demerits (para j is-last end-with-hyphenp
                                         ideal-pixel line-pixel
                                         glues-types i k
-                                        prev-hyphen-count prev-fitness)
+                                        prev-hyphen-count prev-fitness
+                                        &optional end-with-flaggedp)
   "Compute line demerits using full K-P formula.
 Uses PARA's stored glue params for consistent badness calculation.
+END-WITH-FLAGGEDP indicates a forced break (very low/negative demerits).
 Returns (demerits gaps fitness new-hyphen-count)."
   (cond
+   ;; Flagged (forced) break: use negative penalty to ensure selection
+   (end-with-flaggedp
+    (let* ((result (ekp--line-badness-and-fitness
+                    para ideal-pixel line-pixel
+                    (seq-subseq glues-types i k)))
+           (line-gaps (plist-get result :gaps)))
+      ;; Use flagged penalty (negative = preferred)
+      (list ekp-flagged-penalty line-gaps 1 0)))
    ;; Single word line
    ((= j 0)
     (let* ((badness (ekp--compute-badness (- line-pixel ideal-pixel) 1))
@@ -635,17 +682,53 @@ Returns (demerits gaps fitness new-hyphen-count)."
           (setq index (1- index)))))
     (cdr breaks)))
 
-(defun ekp--dp-trace-breaks-with-looseness (backptrs line-counts n target-lines)
+(defun ekp--dp-trace-breaks-with-looseness (backptrs line-counts n target-lines
+                                                     &optional alt-paths)
   "Trace breaks, preferring paths with TARGET-LINES line count.
-Used for looseness parameter support."
-  (if (= ekp-looseness 0)
+Used for looseness parameter support.
+ALT-PATHS is a hash table mapping (position . line-count) to (backptr . demerits)
+for alternative paths when looseness != 0."
+  (if (or (= ekp-looseness 0) (null alt-paths))
       (ekp--dp-trace-breaks backptrs n)
     ;; Find path closest to target line count
-    (let ((optimal-lines (aref line-counts n))
-          (target (+ optimal-lines ekp-looseness)))
-      ;; For now, just use optimal path
-      ;; Full looseness would require tracking multiple paths
-      (ekp--dp-trace-breaks backptrs n))))
+    (let* ((optimal-lines (aref line-counts n))
+           (target (+ optimal-lines ekp-looseness))
+           (best-path nil)
+           (best-diff most-positive-fixnum))
+      ;; Search alt-paths for best match at position n
+      (maphash
+       (lambda (key value)
+         (when (= (car key) n)  ; position = n (end)
+           (let* ((line-count (cdr key))
+                  (diff (abs (- line-count target))))
+             (when (< diff best-diff)
+               (setq best-diff diff)
+               (setq best-path (cons line-count (car value)))))))  ; (line-count . backptr)
+       alt-paths)
+      (if best-path
+          ;; Trace back using alt-paths
+          (ekp--dp-trace-alt-path alt-paths n (car best-path))
+        ;; Fallback to optimal path
+        (ekp--dp-trace-breaks backptrs n)))))
+
+(defun ekp--dp-trace-alt-path (alt-paths n target-lines)
+  "Trace alternative path from ALT-PATHS ending at N with TARGET-LINES."
+  (let ((breaks (list n))
+        (index n)
+        (lines target-lines)
+        (max-iterations (* n 2)))  ; Safety limit to prevent infinite loop
+    (while (and (> index 0) (> max-iterations 0))
+      (let* ((key (cons index lines))
+             (entry (gethash key alt-paths)))
+        (if entry
+            (let ((prev (car entry)))
+              (when (> prev 0) (push prev breaks))
+              (setq index prev)
+              (cl-decf lines))
+          ;; No entry found at current line count, give up
+          (setq index 0)))
+      (cl-decf max-iterations))
+    (cdr breaks)))
 
 (defun ekp--dp-store-cache (string line-pixel dp-result)
   "Store DP-RESULT for STRING at LINE-PIXEL in para's dp-cache."
@@ -849,6 +932,7 @@ Uses PARA's stored glue-params for consistency with cached prefix arrays."
          (boxes (ekp-para-boxes para))
          (hyphen-pixel (ekp-para-hyphen-pixel para))
          (hyphen-positions (ekp-para-hyphen-positions para))
+         (flagged-positions (ekp-para-flagged-positions para))
          (n (length boxes))
          (ideal-prefixs (ekp-para-ideal-prefixs para))
          (min-prefixs (ekp-para-min-prefixs para))
@@ -860,61 +944,91 @@ Uses PARA's stored glue-params for consistency with cached prefix arrays."
          (gaps (nth 3 arrays))
          (hyphen-counts (nth 4 arrays))
          (fitness-classes (nth 5 arrays))
-         (line-counts (nth 6 arrays)))
+         (line-counts (nth 6 arrays))
+         (alt-paths (nth 7 arrays))  ; for looseness support
+         ;; Track best demerits at end for threshold pruning
+         (best-end-demerits nil))
     ;; Main DP loop: for each reachable position i
     (dotimes (i (1+ n))
       (when (aref demerits i)
-        (let ((prev-hyphen-count (aref hyphen-counts i))
-              (prev-fitness (aref fitness-classes i))
-              (prev-line-count (aref line-counts i)))
-          (catch 'break
-            ;; Try extending line to each position k > i
-            (dotimes (j (- n i))
-              (let* ((k (+ i j 1))
-                     (is-last (= k n))
-                     ;; k is the break position (exclusive), k-1 is the last box index
-                     (end-with-hyphenp
-                      (ekp--hyphenate-p hyphen-positions (1- k)))
-                     (metrics (ekp--dp-line-metrics
-                               para i k glues-types
-                               ideal-prefixs min-prefixs max-prefixs))
-                     (ideal-pixel (nth 0 metrics))
-                     (min-pixel (nth 1 metrics))
-                     (max-pixel (nth 2 metrics)))
-                ;; Add hyphen width if line ends with hyphen
-                (when end-with-hyphenp
-                  (cl-incf ideal-pixel hyphen-pixel)
-                  (cl-incf max-pixel hyphen-pixel)
-                  (cl-incf min-pixel hyphen-pixel))
-                ;; Check if line is too long
-                (when (or (> min-pixel line-pixel)
-                          (and is-last (> ideal-pixel line-pixel)))
-                  (when (null (aref demerits (1- k)))
-                    (ekp--dp-force-break
-                     para i k arrays glues-types hyphen-positions
-                     ideal-prefixs hyphen-pixel line-pixel))
-                  (throw 'break nil))
-                ;; Valid break point: compute demerits
-                (when (or (<= min-pixel line-pixel max-pixel)
-                          (and is-last (<= ideal-pixel line-pixel)))
-                  (pcase-let ((`(,dem ,line-gaps ,fitness ,new-hyphen)
-                               (ekp--dp-compute-line-demerits
-                                para j is-last end-with-hyphenp
-                                ideal-pixel line-pixel glues-types i k
-                                prev-hyphen-count prev-fitness)))
-                    (let ((total-dem (+ (aref demerits i) dem)))
-                      (when (or (null (aref demerits k))
-                                (< total-dem (aref demerits k)))
-                        (aset rests k (- line-pixel ideal-pixel))
-                        (aset gaps k line-gaps)
-                        (aset demerits k total-dem)
-                        (aset backptrs k i)
-                        (aset fitness-classes k fitness)
-                        (aset hyphen-counts k new-hyphen)
-                        (aset line-counts k (1+ prev-line-count))))))))))))
+        ;; Threshold pruning: skip if demerits already too high
+        (let ((should-process
+               (or (<= ekp-threshold-factor 0)
+                   (null best-end-demerits)
+                   (<= (aref demerits i)
+                       (* best-end-demerits (1+ ekp-threshold-factor))))))
+          (when should-process
+            (let ((prev-hyphen-count (aref hyphen-counts i))
+                  (prev-fitness (aref fitness-classes i))
+                  (prev-line-count (aref line-counts i)))
+              (catch 'break
+                ;; Try extending line to each position k > i
+                (dotimes (j (- n i))
+                  (let* ((k (+ i j 1))
+                         (is-last (= k n))
+                         ;; k is the break position (exclusive), k-1 is the last box index
+                         (end-with-hyphenp
+                          (ekp--hyphenate-p hyphen-positions (1- k)))
+                         (end-with-flaggedp
+                          (ekp--flagged-p flagged-positions (1- k)))
+                       (metrics (ekp--dp-line-metrics
+                                 para i k glues-types
+                                 ideal-prefixs min-prefixs max-prefixs))
+                       (ideal-pixel (nth 0 metrics))
+                       (min-pixel (nth 1 metrics))
+                       (max-pixel (nth 2 metrics)))
+                  ;; Add hyphen width if line ends with hyphen
+                  (when end-with-hyphenp
+                    (cl-incf ideal-pixel hyphen-pixel)
+                    (cl-incf max-pixel hyphen-pixel)
+                    (cl-incf min-pixel hyphen-pixel))
+                  ;; Check if line is too long (but allow flagged breaks anyway)
+                  (when (and (not end-with-flaggedp)
+                             (or (> min-pixel line-pixel)
+                                 (and is-last (> ideal-pixel line-pixel))))
+                    (when (null (aref demerits (1- k)))
+                      (ekp--dp-force-break
+                       para i k arrays glues-types hyphen-positions
+                       ideal-prefixs hyphen-pixel line-pixel))
+                    (throw 'break nil))
+                  ;; Valid break point: compute demerits
+                  ;; Flagged breaks are always valid
+                  (when (or end-with-flaggedp
+                            (<= min-pixel line-pixel max-pixel)
+                            (and is-last (<= ideal-pixel line-pixel)))
+                    (pcase-let ((`(,dem ,line-gaps ,fitness ,new-hyphen)
+                                 (ekp--dp-compute-line-demerits
+                                  para j is-last end-with-hyphenp
+                                  ideal-pixel line-pixel glues-types i k
+                                  prev-hyphen-count prev-fitness
+                                  end-with-flaggedp)))
+                      (let ((total-dem (+ (aref demerits i) dem))
+                            (new-line-count (1+ prev-line-count)))
+                        ;; Update optimal path (always)
+                        (when (or (null (aref demerits k))
+                                  (< total-dem (aref demerits k)))
+                          (aset rests k (- line-pixel ideal-pixel))
+                          (aset gaps k line-gaps)
+                          (aset demerits k total-dem)
+                          (aset backptrs k i)
+                          (aset fitness-classes k fitness)
+                          (aset hyphen-counts k new-hyphen)
+                          (aset line-counts k new-line-count)
+                          ;; Update best end demerits for threshold pruning
+                          (when (= k n)
+                            (when (or (null best-end-demerits)
+                                      (< total-dem best-end-demerits))
+                              (setq best-end-demerits total-dem))))
+                        ;; Track alternative paths for looseness (if enabled)
+                        (when alt-paths
+                          (let* ((key (cons k new-line-count))
+                                 (existing (gethash key alt-paths)))
+                            (when (or (null existing)
+                                      (< total-dem (cdr existing)))
+                              (puthash key (cons i total-dem) alt-paths)))))))))))))))
     ;; Extract optimal solution
     (let* ((breaks (ekp--dp-trace-breaks-with-looseness
-                    backptrs line-counts n (aref line-counts n)))
+                    backptrs line-counts n (aref line-counts n) alt-paths))
            (lines-rests (mapcar (lambda (i) (aref rests i)) breaks))
            (lines-gaps (mapcar (lambda (i) (aref gaps i)) breaks))
            (dp-result (list :rests lines-rests

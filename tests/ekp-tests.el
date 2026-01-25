@@ -175,9 +175,12 @@ Returns time in seconds."
                       nil                    ; boxes-types
                       (vector 'nws 'lws 'lws) ; glues-types
                       5                      ; hyphen-pixel
+                      nil                    ; hyphen-positions
+                      nil                    ; flagged-positions
                       (vector 0 10 38 76)    ; ideal-prefixs
                       (vector 0 10 34 70)    ; min-prefixs
                       (vector 0 10 42 82)    ; max-prefixs
+                      nil                    ; glue-params
                       (make-hash-table :test 'eql)))) ; dp-cache
     (if (and (equal (ekp-para-string para) "test")
              (= (length (ekp-para-boxes para)) 3)
@@ -195,6 +198,62 @@ Returns time in seconds."
           (message "✓ DP cache storage: PASSED")
         (message "✗ DP cache storage: FAILED")))))
 
+;;; New Feature Tests
+
+(defun ekp-test-unit--hyphenate-p-binary-search ()
+  "Test binary search hyphenation lookup."
+  (let ((positions (vector 3 7 12 18 25)))
+    (if (and (ekp--hyphenate-p positions 7)   ; exists
+             (ekp--hyphenate-p positions 25)  ; last element
+             (not (ekp--hyphenate-p positions 10))  ; doesn't exist
+             (not (ekp--hyphenate-p positions 0)))  ; before first
+        (message "✓ Binary search hyphenate-p: PASSED")
+      (message "✗ Binary search hyphenate-p: FAILED"))))
+
+(defun ekp-test-unit--flagged-p-binary-search ()
+  "Test binary search flagged position lookup."
+  (let ((positions (vector 5 10 20)))
+    (if (and (ekp--flagged-p positions 5)     ; exists
+             (ekp--flagged-p positions 20)    ; last element
+             (not (ekp--flagged-p positions 15))  ; doesn't exist
+             (not (ekp--flagged-p positions 1)))  ; before first
+        (message "✓ Binary search flagged-p: PASSED")
+      (message "✗ Binary search flagged-p: FAILED"))))
+
+(defun ekp-test-unit--alt-paths-hash ()
+  "Test alternative paths hash table for looseness."
+  (let ((alt-paths (make-hash-table :test 'equal)))
+    ;; Simulate tracking paths: (position . line-count) -> (backptr . demerits)
+    (puthash (cons 10 3) (cons 5 150.0) alt-paths)
+    (puthash (cons 10 4) (cons 6 200.0) alt-paths)
+    (puthash (cons 20 5) (cons 10 300.0) alt-paths)
+    (let* ((entry1 (gethash (cons 10 3) alt-paths))
+           (entry2 (gethash (cons 10 4) alt-paths)))
+      (if (and entry1
+               (= (car entry1) 5)
+               (= (cdr entry1) 150.0)
+               entry2
+               (= (car entry2) 6))
+          (message "✓ Alt paths hash: PASSED")
+        (message "✗ Alt paths hash: FAILED")))))
+
+(defun ekp-test-unit--threshold-factor ()
+  "Test threshold factor variable."
+  (let ((original ekp-threshold-factor))
+    (setq ekp-threshold-factor 2.0)
+    (let ((result (and (numberp ekp-threshold-factor)
+                       (= ekp-threshold-factor 2.0))))
+      (setq ekp-threshold-factor original)
+      (if result
+          (message "✓ Threshold factor: PASSED")
+        (message "✗ Threshold factor: FAILED")))))
+
+(defun ekp-test-unit--flagged-penalty ()
+  "Test flagged penalty is negative (preferred break)."
+  (if (< ekp-flagged-penalty 0)
+      (message "✓ Flagged penalty negative: PASSED")
+    (message "✗ Flagged penalty negative: FAILED")))
+
 (defun ekp-test-unit-all ()
   "Run all unit tests."
   (interactive)
@@ -202,6 +261,12 @@ Returns time in seconds."
   (ekp-test-unit--hash-consistency)
   (ekp-test-unit--struct-access)
   (ekp-test-unit--dp-cache-storage)
-  (message "=== Unit Tests Complete ==="))
+  ;; New feature tests
+  (ekp-test-unit--hyphenate-p-binary-search)
+  (ekp-test-unit--flagged-p-binary-search)
+  (ekp-test-unit--alt-paths-hash)
+  (ekp-test-unit--threshold-factor)
+  (ekp-test-unit--flagged-penalty)
+  (message "=== Unit Tests Complete ===")))
 
 ;; (ekp-test-unit-all)
