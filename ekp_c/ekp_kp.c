@@ -136,133 +136,257 @@ typedef struct {
 } dp_work_t;
 
 /*
+ * Unified DP input structure for shared core algorithm
+ * This allows both ekp_paragraph_t-based and array-based inputs
+ * to use the same DP core logic.
+ */
+typedef struct {
+    /* Prefix sum arrays */
+    const int32_t *ideal_prefix;
+    const int32_t *min_prefix;
+    const int32_t *max_prefix;
+    
+    /* Glue arrays (nullable) */
+    const int32_t *glue_ideals;
+    const int32_t *glue_shrinks;
+    const int32_t *glue_stretches;
+    
+    /* Hyphen info */
+    const int32_t *hyphen_positions;
+    size_t hyphen_count;
+    int32_t hyphen_width;
+    
+    /* Dimensions */
+    size_t n;  /* box count */
+    int32_t line_width;
+    
+    /* K-P parameters */
+    int line_penalty;
+    int hyphen_penalty;
+    int fitness_penalty;
+    double last_line_ratio;
+} dp_input_t;
+
+/*
+ * Shared hyphen position check for dp_input_t
+ */
+static inline bool dp_is_hyphen(const dp_input_t *in, size_t pos)
+{
+    if (!in->hyphen_positions || in->hyphen_count == 0)
+        return false;
+    
+    /* Binary search in sorted positions */
+    size_t lo = 0;
+    size_t hi = in->hyphen_count - 1;
+    
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((size_t)in->hyphen_positions[mid] < pos)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    
+    return (size_t)in->hyphen_positions[lo] == pos;
+}
+
+/*
+ * Core DP algorithm - shared by both entry points
+ * Processes position i, trying all end positions k.
+ * Updates output arrays when better solutions found.
+ */
+static void dp_process_position(
+    const dp_input_t *in,
+    size_t i,
+    /* Input state at position i */
+    double prev_dem,
+    uint8_t prev_fit,
+    int prev_hyph,
+    int prev_lines,
+    /* Output arrays */
+    double *demerits,
+    int32_t *backptrs,
+    int32_t *rest_pixels,
+    uint8_t *fitness,
+    int32_t *hyphen_counts,
+    int32_t *line_counts)
+{
+    size_t n = in->n;
+    int32_t line_width = in->line_width;
+    
+    /* Get leading glue for line starting at i */
+    int32_t lead_ideal = (in->glue_ideals && i < n) ? in->glue_ideals[i] : 0;
+    int32_t lead_shrink = (in->glue_shrinks && i < n) ? in->glue_shrinks[i] : 0;
+    int32_t lead_stretch = (in->glue_stretches && i < n) ? in->glue_stretches[i] : 0;
+    
+    /* Try extending to each position k > i */
+    for (size_t k = i + 1; k <= n; k++) {
+        bool is_last = (k == n);
+        bool end_hyphen = dp_is_hyphen(in, k - 1);
+        
+        /* Line metrics from i to k (excluding leading glue) */
+        int32_t ideal = in->ideal_prefix[k] - in->ideal_prefix[i] - lead_ideal;
+        int32_t min_w = in->min_prefix[k] - in->min_prefix[i] -
+                       (lead_ideal - lead_shrink);
+        int32_t max_w = in->max_prefix[k] - in->max_prefix[i] -
+                       (lead_ideal + lead_stretch);
+        
+        /* Add hyphen width if needed */
+        if (end_hyphen) {
+            ideal += in->hyphen_width;
+            min_w += in->hyphen_width;
+            max_w += in->hyphen_width;
+        }
+        
+        /* Too long? Also handle is_last && ideal > line_width. */
+        if (min_w > line_width || (is_last && ideal > line_width)) {
+            /* Force break if nothing else found */
+            if (k > i + 1 && demerits[k - 1] >= EKP_INFINITY) {
+                int32_t prev_ideal = in->ideal_prefix[k - 1] - in->ideal_prefix[i] - lead_ideal;
+                int32_t rest = line_width - prev_ideal;
+                demerits[k - 1] = prev_dem + 10000.0 + (double)rest * rest;
+                backptrs[k - 1] = i;
+                rest_pixels[k - 1] = rest;
+                fitness[k - 1] = FITNESS_VERY_LOOSE;
+                hyphen_counts[k - 1] = 0;
+                line_counts[k - 1] = prev_lines + 1;
+            }
+            break;  /* No point trying longer lines */
+        }
+        
+        /* Valid break? */
+        bool valid = (min_w <= line_width && max_w >= line_width) ||
+                    (is_last && ideal <= line_width);
+        
+        if (!valid)
+            continue;
+        
+        /* Compute demerits */
+        int32_t adjustment = line_width - ideal;
+        int32_t flexibility = (adjustment > 0) ?
+            (max_w - ideal) : (ideal - min_w);
+        
+        /* Single-box line: use minimum flexibility of 1 */
+        bool is_single_box = (k == i + 1);
+        if (is_single_box && flexibility <= 0)
+            flexibility = 1;
+        
+        double badness;
+        uint8_t fit;
+        double dem;
+        
+        if (is_last) {
+            /* Last line: minimal penalty if reasonably filled */
+            double fill_ratio = (double)ideal / line_width;
+            if (fill_ratio < in->last_line_ratio) {
+                badness = 50.0 * (1.0 - fill_ratio);
+            } else {
+                badness = 0.0;
+            }
+            fit = FITNESS_DECENT;
+            dem = prev_dem + (in->line_penalty + badness) *
+                             (in->line_penalty + badness);
+        } else if (is_single_box) {
+            /* Single-box line: use fixed flexibility=1, fitness=decent */
+            badness = compute_badness(adjustment, 1);
+            fit = FITNESS_DECENT;
+            
+            int penalty = end_hyphen ? in->hyphen_penalty : 0;
+            dem = prev_dem + compute_demerits(badness, penalty,
+                                              prev_fit, fit,
+                                              end_hyphen, prev_hyph,
+                                              in->line_penalty,
+                                              in->fitness_penalty);
+        } else {
+            badness = compute_badness(adjustment, flexibility);
+            fit = compute_fitness(adjustment, flexibility);
+            
+            int penalty = end_hyphen ? in->hyphen_penalty : 0;
+            dem = prev_dem + compute_demerits(badness, penalty,
+                                              prev_fit, fit,
+                                              end_hyphen, prev_hyph,
+                                              in->line_penalty,
+                                              in->fitness_penalty);
+        }
+        
+        /* Update if better */
+        if (dem < demerits[k]) {
+            demerits[k] = dem;
+            backptrs[k] = i;
+            rest_pixels[k] = adjustment;
+            fitness[k] = fit;
+            hyphen_counts[k] = end_hyphen ? prev_hyph + 1 : 0;
+            line_counts[k] = prev_lines + 1;
+        }
+    }
+}
+
+/*
  * Process a range of candidate breakpoints (for parallel execution)
+ * Now uses shared dp_process_position() core.
  */
 static void process_dp_range(void *arg)
 {
     dp_work_t *work = (dp_work_t *)arg;
     ekp_paragraph_t *p = work->para;
-    int32_t line_width = work->line_width;
     size_t n = p->box_count;
-
+    
+    /* Build temporary glue arrays from paragraph structure */
+    int32_t *glue_ideals = malloc(n * sizeof(int32_t));
+    int32_t *glue_shrinks = malloc(n * sizeof(int32_t));
+    int32_t *glue_stretches = malloc(n * sizeof(int32_t));
+    
+    if (!glue_ideals || !glue_shrinks || !glue_stretches) {
+        free(glue_ideals); free(glue_shrinks); free(glue_stretches);
+        return;
+    }
+    
+    for (size_t i = 0; i < n; i++) {
+        glue_ideals[i] = p->glues[i].ideal;
+        glue_shrinks[i] = p->glues[i].shrink;
+        glue_stretches[i] = p->glues[i].stretch;
+    }
+    
+    /* Create unified input structure */
+    dp_input_t in = {
+        .ideal_prefix = p->ideal_prefix,
+        .min_prefix = p->min_prefix,
+        .max_prefix = p->max_prefix,
+        .glue_ideals = glue_ideals,
+        .glue_shrinks = glue_shrinks,
+        .glue_stretches = glue_stretches,
+        .hyphen_positions = p->hyphen_positions,
+        .hyphen_count = p->hyphen_count,
+        .hyphen_width = p->hyphen_width,
+        .n = n,
+        .line_width = work->line_width,
+        .line_penalty = work->line_penalty,
+        .hyphen_penalty = work->hyphen_penalty,
+        .fitness_penalty = work->fitness_penalty,
+        .last_line_ratio = work->last_line_ratio
+    };
+    
+    /* Process each position in range */
     for (size_t i = work->start; i < work->end; i++) {
         if (work->prev_demerits[i] >= EKP_INFINITY)
             continue;
-
-        double prev_dem = work->prev_demerits[i];
-        uint8_t prev_fit = work->prev_fitness[i];
-        int prev_hyph = work->prev_hyphen_counts[i];
-        int prev_lines = work->prev_line_counts[i];
-
-        /* Get leading glue for line starting at i */
-        int32_t leading_glue_ideal = (i < n) ? p->glues[i].ideal : 0;
-        int32_t leading_glue_stretch = (i < n) ? p->glues[i].stretch : 0;
-        int32_t leading_glue_shrink = (i < n) ? p->glues[i].shrink : 0;
-
-        /* Try extending to each position k > i */
-        for (size_t k = i + 1; k <= n; k++) {
-            bool is_last = (k == n);
-            bool end_hyphen = (k > 0) && is_hyphen_break(p, k - 1);
-
-            /* Line metrics from i to k (excluding leading glue) */
-            int32_t ideal = p->ideal_prefix[k] - p->ideal_prefix[i] - leading_glue_ideal;
-            int32_t min_w = p->min_prefix[k] - p->min_prefix[i] -
-                           (leading_glue_ideal - leading_glue_shrink);
-            int32_t max_w = p->max_prefix[k] - p->max_prefix[i] -
-                           (leading_glue_ideal + leading_glue_stretch);
-
-            /* Add hyphen width if needed */
-            if (end_hyphen) {
-                ideal += p->hyphen_width;
-                min_w += p->hyphen_width;
-                max_w += p->hyphen_width;
-            }
-
-            /* Too long? Also handle is_last && ideal > line_width.
-             * This matches Elisp's ekp--dp-cache-elisp which breaks when
-             * content won't fit even at the end of a paragraph. */
-            if (min_w > line_width || (is_last && ideal > line_width)) {
-                /* Force break if nothing else found */
-                if (k > 1 && work->demerits[k - 1] >= EKP_INFINITY) {
-                    int32_t rest = line_width - (p->ideal_prefix[k - 1] -
-                                                 p->ideal_prefix[i] - leading_glue_ideal);
-                    work->demerits[k - 1] = prev_dem + 10000.0 + rest * rest;
-                    work->backptrs[k - 1] = i;
-                    work->rest_pixels[k - 1] = rest;
-                    work->fitness[k - 1] = FITNESS_VERY_LOOSE;
-                    work->hyphen_counts[k - 1] = 0;
-                    work->line_counts[k - 1] = prev_lines + 1;
-                }
-                break;  /* No point trying longer lines */
-            }
-
-            /* Valid break? */
-            bool valid = (min_w <= line_width && max_w >= line_width) ||
-                        (is_last && ideal <= line_width);
-
-            if (!valid)
-                continue;
-
-            /* Compute demerits */
-            int32_t adjustment = line_width - ideal;
-            int32_t flexibility = (adjustment > 0) ?
-                (max_w - ideal) : (ideal - min_w);
-
-            /* Single-box line: use minimum flexibility of 1 to avoid infinite badness
-             * This matches Elisp's behavior for lines containing only one box */
-            bool is_single_box = (k == i + 1);
-            if (is_single_box && flexibility <= 0)
-                flexibility = 1;
-
-            double badness;
-            uint8_t fit;
-            double dem;
-
-            if (is_last) {
-                /* Last line: minimal penalty if reasonably filled */
-                double fill_ratio = (double)ideal / line_width;
-                if (fill_ratio < work->last_line_ratio) {
-                    badness = 50.0 * (1.0 - fill_ratio);
-                } else {
-                    badness = 0.0;
-                }
-                fit = FITNESS_DECENT;
-                dem = prev_dem + (work->line_penalty + badness) *
-                                 (work->line_penalty + badness);
-            } else if (is_single_box) {
-                /* Single-box line: use fixed flexibility=1, fitness=decent */
-                badness = compute_badness(adjustment, 1);
-                fit = FITNESS_DECENT;
-
-                int penalty = end_hyphen ? work->hyphen_penalty : 0;
-                dem = prev_dem + compute_demerits(badness, penalty,
-                                                  prev_fit, fit,
-                                                  end_hyphen, prev_hyph,
-                                                  work->line_penalty,
-                                                  work->fitness_penalty);
-            } else {
-                badness = compute_badness(adjustment, flexibility);
-                fit = compute_fitness(adjustment, flexibility);
-
-                int penalty = end_hyphen ? work->hyphen_penalty : 0;
-                dem = prev_dem + compute_demerits(badness, penalty,
-                                                  prev_fit, fit,
-                                                  end_hyphen, prev_hyph,
-                                                  work->line_penalty,
-                                                  work->fitness_penalty);
-            }
-
-            /* Update if better */
-            if (dem < work->demerits[k]) {
-                work->demerits[k] = dem;
-                work->backptrs[k] = i;
-                work->rest_pixels[k] = adjustment;
-                work->fitness[k] = fit;
-                work->hyphen_counts[k] = end_hyphen ? prev_hyph + 1 : 0;
-                work->line_counts[k] = prev_lines + 1;
-            }
-        }
+        
+        dp_process_position(&in, i,
+                           work->prev_demerits[i],
+                           work->prev_fitness[i],
+                           work->prev_hyphen_counts[i],
+                           work->prev_line_counts[i],
+                           work->demerits,
+                           work->backptrs,
+                           work->rest_pixels,
+                           work->fitness,
+                           work->hyphen_counts,
+                           work->line_counts);
     }
+    
+    free(glue_ideals);
+    free(glue_shrinks);
+    free(glue_stretches);
 }
 
 /*
@@ -426,27 +550,11 @@ void ekp_result_destroy(ekp_result_t *r)
  * C module only does: O(n²) DP computation.
  *
  * All font-dependent calculations happen in Elisp. C module is pure algorithm.
+ *
+ * Note: This function now uses dp_process_position() for the core DP logic,
+ * sharing the same algorithm with process_dp_range(). Any bug fix only needs
+ * to be made once in dp_process_position().
  */
-
-static inline bool is_hyphen_pos(const int32_t *positions, size_t count, int32_t pos)
-{
-    if (count == 0)
-        return false;
-    
-    /* Binary search in sorted positions */
-    size_t lo = 0;
-    size_t hi = count - 1;
-    
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if (positions[mid] < pos)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    
-    return positions[lo] == pos;
-}
 
 ekp_result_t *ekp_break_with_prefixes(
     const int32_t *ideal_prefix,
@@ -495,100 +603,41 @@ ekp_result_t *ekp_break_with_prefixes(
     int fp = ekp_global ? ekp_global->fitness_penalty : 100;
     double last_ratio = ekp_global ? ekp_global->last_line_ratio : 0.5;
 
+    /* Create unified input structure */
+    dp_input_t in = {
+        .ideal_prefix = ideal_prefix,
+        .min_prefix = min_prefix,
+        .max_prefix = max_prefix,
+        .glue_ideals = glue_ideals,
+        .glue_shrinks = glue_shrinks,
+        .glue_stretches = glue_stretches,
+        .hyphen_positions = hyphen_positions,
+        .hyphen_count = hyphen_count,
+        .hyphen_width = hyphen_width,
+        .n = n,
+        .line_width = line_width,
+        .line_penalty = lp,
+        .hyphen_penalty = hp,
+        .fitness_penalty = fp,
+        .last_line_ratio = last_ratio
+    };
+
     /* DP: for each valid start, try all ends */
     for (size_t i = 0; i < n; i++) {
         if (demerits[i] >= EKP_INFINITY)
             continue;
-
-        /* Leading glue for line starting at i */
-        int32_t lead_ideal = glue_ideals ? glue_ideals[i] : 0;
-        int32_t lead_shrink = glue_shrinks ? glue_shrinks[i] : 0;
-        int32_t lead_stretch = glue_stretches ? glue_stretches[i] : 0;
-
-        for (size_t k = i + 1; k <= n; k++) {
-            bool is_last = (k == n);
-            bool end_hyph = hyphen_positions && is_hyphen_pos(hyphen_positions, hyphen_count, k - 1);
-
-            /* Line width from i to k (exclude leading glue) */
-            int32_t ideal = ideal_prefix[k] - ideal_prefix[i] - lead_ideal;
-            int32_t min_w = min_prefix[k] - min_prefix[i] - (lead_ideal - lead_shrink);
-            int32_t max_w = max_prefix[k] - max_prefix[i] - (lead_ideal + lead_stretch);
-
-            if (end_hyph) {
-                ideal += hyphen_width;
-                min_w += hyphen_width;
-                max_w += hyphen_width;
-            }
-
-            /* Too long? Also handle is_last && ideal > line_width.
-             * This matches Elisp's ekp--dp-cache-elisp which breaks when
-             * content won't fit even at the end of a paragraph. */
-            if (min_w > line_width || (is_last && ideal > line_width)) {
-                if (k > i + 1 && demerits[k - 1] >= EKP_INFINITY) {
-                    /* Force break at previous position with high penalty */
-                    int32_t prev_ideal = ideal_prefix[k - 1] - ideal_prefix[i] - lead_ideal;
-                    int32_t rest = line_width - prev_ideal;
-                    double forced_dem = demerits[i] + 10000.0 + (double)rest * rest;
-                    demerits[k - 1] = forced_dem;
-                    backptrs[k - 1] = i;
-                    rest_pixels[k - 1] = rest;
-                    fitness[k - 1] = FITNESS_VERY_LOOSE;
-                    hyph_counts[k - 1] = 0;
-                    line_counts[k - 1] = line_counts[i] + 1;
-                }
-                break;
-            }
-
-            /* Valid break? */
-            bool valid = (min_w <= line_width && max_w >= line_width) ||
-                        (is_last && ideal <= line_width);
-
-            if (!valid)
-                continue;
-
-            /* Compute demerits */
-            int32_t adj = line_width - ideal;
-            int32_t flex = (adj > 0) ? (max_w - ideal) : (ideal - min_w);
-
-            /* Single-box line: use minimum flexibility of 1 to avoid infinite badness
-             * This matches Elisp's behavior for lines containing only one box */
-            bool is_single_box = (k == i + 1);
-            if (is_single_box && flex <= 0)
-                flex = 1;
-
-            double bad;
-            uint8_t fit;
-            double dem;
-
-            if (is_last) {
-                double fill = (double)ideal / line_width;
-                bad = (fill < last_ratio) ? 50.0 * (1.0 - fill) : 0.0;
-                fit = FITNESS_DECENT;
-                dem = demerits[i] + (lp + bad) * (lp + bad);
-            } else if (is_single_box) {
-                /* Single-box line: use fixed flexibility=1, fitness=decent */
-                bad = compute_badness(adj, 1);
-                fit = FITNESS_DECENT;
-                int pen = end_hyph ? hp : 0;
-                dem = demerits[i] + compute_demerits(bad, pen, fitness[i], fit,
-                                                      end_hyph, hyph_counts[i], lp, fp);
-            } else {
-                bad = compute_badness(adj, flex);
-                fit = compute_fitness(adj, flex);
-                int pen = end_hyph ? hp : 0;
-                dem = demerits[i] + compute_demerits(bad, pen, fitness[i], fit,
-                                                      end_hyph, hyph_counts[i], lp, fp);
-            }
-
-            if (dem < demerits[k]) {
-                demerits[k] = dem;
-                backptrs[k] = i;
-                rest_pixels[k] = adj;
-                fitness[k] = fit;
-                hyph_counts[k] = end_hyph ? hyph_counts[i] + 1 : 0;
-                line_counts[k] = line_counts[i] + 1;
-            }
-        }
+        
+        dp_process_position(&in, i,
+                           demerits[i],
+                           fitness[i],
+                           hyph_counts[i],
+                           line_counts[i],
+                           demerits,
+                           backptrs,
+                           rest_pixels,
+                           fitness,
+                           hyph_counts,
+                           line_counts);
     }
 
     /* If no valid path found to end, return NULL to fallback to Elisp */
