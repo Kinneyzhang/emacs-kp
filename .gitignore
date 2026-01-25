@@ -1,1 +1,4 @@
 archive
+*.dylib
+*.dll
+*.o

@@ -9,6 +9,14 @@
 
 ;;; Code:
 
+(defconst ekp-utils--load-file (or load-file-name (buffer-file-name))
+  "Path to this file, for locating module directories.")
+
+(defun ekp-root-dir ()
+  "Return directory containing ekp files."
+  (when ekp-utils--load-file
+    (file-name-directory ekp-utils--load-file)))
+
 ;;;; Font Detection
 
 (defsubst ekp-cjk-char-p (char)
@@ -199,12 +207,14 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
                ;; Latin character (width = 1)
                ((= 1 width)
                 (pcase-let ((`(,s ,lw ,cc ,bx)
-                             (ekp--handle-latin-char str state latin-word cjk-char boxes)))
+                             (ekp--handle-latin-char
+                              str state latin-word cjk-char boxes)))
                   (setq state s latin-word lw cjk-char cc boxes bx)))
                ;; CJK character (width = 2)
                ((= 2 width)
                 (pcase-let ((`(,s ,lw ,cc ,bx)
-                             (ekp--handle-cjk-char str state latin-word cjk-char boxes)))
+                             (ekp--handle-cjk-char
+                              str state latin-word cjk-char boxes)))
                   (setq state s latin-word lw cjk-char cc boxes bx)))))))
           (forward-char 1))
         ;; Flush remaining content
@@ -284,6 +294,80 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
          (ekp-rust-module-reload (ekp-module-file))
          (message "ekp rust module reload success!")))
     (error "Please install cargo and add it to executable path!")))
+
+;;; C Module Support
+;; Parallel C implementation using pthreads
+
+(defvar ekp-c-module-loaded nil
+  "Non-nil if C module is loaded.")
+
+(defvar ekp-c-hyphenator-index nil
+  "Index of the loaded hyphenator in C module.")
+
+(defun ekp-c-module-dir ()
+  "Return the C module directory."
+  (when-let ((root-dir (ekp-root-dir)))
+    (expand-file-name "ekp_c" root-dir)))
+
+(defun ekp-c-module-file ()
+  "Return path to compiled C module."
+  (when-let* ((module-dir (ekp-c-module-dir))
+              (filename (cond ((eq system-type 'darwin) "ekp.dylib")
+                              ((eq system-type 'windows-nt) "ekp.dll")
+                              (t "ekp.so"))))
+    (expand-file-name filename module-dir)))
+
+(defun ekp-c-module-reload (module)
+  "Load MODULE from a temp copy to allow rebuilding."
+  (let ((tmpfile (make-temp-file
+                  (file-name-nondirectory module))))
+    (copy-file module tmpfile t)
+    (module-load tmpfile)))
+
+(defun ekp-c-module-load ()
+  "Load EKP C module if available."
+  (interactive)
+  (let ((file (ekp-c-module-file)))
+    (if (and file (file-exists-p file))
+        (progn
+          (ekp-c-module-reload file)
+          (when (fboundp 'ekp-c-init)
+            (ekp-c-init)
+            (setq ekp-c-module-loaded t)
+            (message "ekp-c module loaded (version %s, %d threads)"
+                     (ekp-c-version) (ekp-c-thread-count))))
+      (message "C module not found. Run 'make' in ekp_c/ directory."))))
+
+(defun ekp-c-load-dictionary (lang)
+  "Load hyphenation dictionary for LANG into C module."
+  (when ekp-c-module-loaded
+    (let* ((root-dir (ekp-root-dir))
+           (dict-file (expand-file-name
+                       (format "dictionaries/hyph_%s.dic" lang)
+                       root-dir)))
+      (when (file-exists-p dict-file)
+        (setq ekp-c-hyphenator-index
+              (ekp-c-load-hyphenator dict-file))
+        (when ekp-c-hyphenator-index
+          (message "Loaded hyphenator for %s (index %d)"
+                   lang ekp-c-hyphenator-index))))))
+
+(defun ekp-c-module-build ()
+  "Build the C module using make."
+  (interactive)
+  (let ((module-dir (ekp-c-module-dir)))
+    (if (and module-dir (file-exists-p
+                         (expand-file-name "Makefile" module-dir)))
+        (ekp-start-process-with-callback
+         "ekp-c-build"
+         (cond
+          ((eq system-type 'windows-nt)
+           `("cmd.exe" "/c" ,(format "cd %s && make" module-dir)))
+          (t `("zsh" "-c" ,(format "cd %s && make" module-dir))))
+         (lambda (proc buffer)
+           (ekp-c-module-load)
+           (message "ekp C module build success!")))
+      (error "Makefile not found in ekp_c/ directory"))))
 
 (provide 'ekp-utils)
 
