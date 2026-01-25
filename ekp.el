@@ -175,6 +175,18 @@ Each takes ideal, stretch (+), and shrink (-) values."
   "[A-Za-z'\\-\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF\u0100-\u024F\u1E00-\u1EFF]"
   "Regexp matching Latin characters including accented forms.")
 
+(defun ekp--split-hyphenated-word (word)
+  "Split WORD at existing hyphens into parts with hyphens attached.
+E.g., \"help-echo\" -> (\"help-\" \"echo\").
+Does NOT apply dictionary hyphenation - just uses existing hyphens."
+  (let* ((segments (split-string word "-" t))  ; t = omit empty/null strings
+         (num-segs (length segments)))
+    (cl-loop for seg in segments
+             for i from 0
+             collect (if (< i (1- num-segs))
+                         (concat seg "-")
+                       seg))))
+
 (defun ekp--split-with-hyphen (string)
   "Split STRING into boxes with hyphenation points marked.
 Returns (boxes-vector . hyphen-positions-vector)."
@@ -185,12 +197,16 @@ Returns (boxes-vector . hyphen-positions-vector)."
            (format "^\\([[{<„‚¿¡*@\"']*\\)\\(%s+\\)\\([]}>.,*?\"']*\\)$"
                    ekp--latin-regexp)
            box)
-          ;; Latin word: apply hyphenation
+          ;; Latin word (possibly with embedded hyphens)
           (let* ((left (match-string 1 box))
                  (word (match-string 2 box))
                  (right (match-string 3 box))
-                 (parts (ekp-hyphen-boxes
-                         (ekp-hyphen-create ekp-latin-lang) word))
+                 ;; If word contains hyphens, split at those points only (no further hyphenation)
+                 ;; Otherwise, apply dictionary hyphenation
+                 (parts (if (string-match-p "-" word)
+                            (ekp--split-hyphenated-word word)
+                          (ekp-hyphen-boxes
+                           (ekp-hyphen-create ekp-latin-lang) word)))
                  (n (length parts)))
             (when left (setcar parts (concat left (car parts))))
             (when right (setcar (last parts)
