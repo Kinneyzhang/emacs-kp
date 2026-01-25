@@ -198,6 +198,12 @@ static void process_dp_range(void *arg)
             uint8_t fit;
             double dem;
 
+            /* Single-box line: use flexibility=1 like Elisp does */
+            bool single_box = (k == i + 1);
+            if (single_box && flexibility == 0) {
+                flexibility = 1;
+            }
+
             if (is_last) {
                 /* Last line: minimal penalty if reasonably filled */
                 double fill_ratio = (double)ideal / line_width;
@@ -209,6 +215,17 @@ static void process_dp_range(void *arg)
                 fit = FITNESS_DECENT;
                 dem = prev_dem + (work->line_penalty + badness) *
                                  (work->line_penalty + badness);
+            } else if (single_box) {
+                /* Single-box line: use decent fitness class */
+                badness = compute_badness(adjustment, flexibility);
+                fit = FITNESS_DECENT;
+
+                int penalty = end_hyphen ? work->hyphen_penalty : 0;
+                dem = prev_dem + compute_demerits(badness, penalty,
+                                                  prev_fit, fit,
+                                                  end_hyphen, prev_hyph,
+                                                  work->line_penalty,
+                                                  work->fitness_penalty);
             } else {
                 badness = compute_badness(adjustment, flexibility);
                 fit = compute_fitness(adjustment, flexibility);
@@ -581,11 +598,24 @@ ekp_result_t *ekp_break_with_prefixes(
             uint8_t fit;
             double dem;
 
+            /* Single-box line: use flexibility=1 like Elisp does */
+            bool single_box = (k == i + 1);
+            if (single_box && flex == 0) {
+                flex = 1;
+            }
+
             if (is_last) {
                 double fill = (double)ideal / line_width;
                 bad = (fill < last_ratio) ? 50.0 * (1.0 - fill) : 0.0;
                 fit = FITNESS_DECENT;
                 dem = demerits[i] + (lp + bad) * (lp + bad);
+            } else if (single_box) {
+                /* Single-box line: use decent fitness class */
+                bad = compute_badness(adj, flex);
+                fit = FITNESS_DECENT;
+                int pen = end_hyph ? hp : 0;
+                dem = demerits[i] + compute_demerits(bad, pen, fitness[i], fit,
+                                                      end_hyph, hyph_counts[i], lp, fp);
             } else {
                 bad = compute_badness(adj, flex);
                 fit = compute_fitness(adj, flex);
