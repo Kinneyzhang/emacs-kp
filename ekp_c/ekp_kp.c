@@ -157,7 +157,6 @@ static void process_dp_range(void *arg)
             int32_t min_w = p->min_prefix[k] - p->min_prefix[i] -
                            (leading_glue_ideal - leading_glue_shrink);
             int32_t max_w = p->max_prefix[k] - p->max_prefix[i] -
-                           (leading_glue_ideal + leading_glue_stretch) +
                            (leading_glue_ideal + leading_glue_stretch);
 
             /* Add hyphen width if needed */
@@ -542,7 +541,7 @@ ekp_result_t *ekp_break_with_prefixes(
             /* Line width from i to k (exclude leading glue) */
             int32_t ideal = ideal_prefix[k] - ideal_prefix[i] - lead_ideal;
             int32_t min_w = min_prefix[k] - min_prefix[i] - (lead_ideal - lead_shrink);
-            int32_t max_w = max_prefix[k] - max_prefix[i] - (lead_ideal - lead_stretch);
+            int32_t max_w = max_prefix[k] - max_prefix[i] - (lead_ideal + lead_stretch);
 
             if (end_hyph) {
                 ideal += hyphen_width;
