@@ -612,23 +612,25 @@ Returns 0 if box at K-1 is not a space box."
 
 (defun ekp--dp-line-metrics (para i k glues-types ideal-prefixs min-prefixs max-prefixs)
   "Compute line metrics for boxes I to K using PARA's stored glue params.
-Returns (ideal-pixel min-pixel max-pixel) excluding leading glue and leading/trailing space boxes."
+Returns (ideal-pixel min-pixel max-pixel) excluding leading glue and
+leading/trailing space boxes (which are stripped during rendering)."
   (let* ((leading-glue-type (aref glues-types i))
          (boxes-types (ekp-para-boxes-types para))
          (boxes-widths (ekp-para-boxes-widths para))
-         ;; Compute width of leading/trailing space boxes (these will be stripped during rendering)
-         (leading-space-width (ekp--leading-space-width i boxes-types boxes-widths))
-         (trailing-space-width (ekp--trailing-space-width k boxes-types boxes-widths))
-         (space-width (+ leading-space-width trailing-space-width)))
+         ;; Compute width of leading/trailing space boxes
+         ;; These are stripped during rendering, so exclude from line metrics
+         (leading-space-w (ekp--leading-space-width i boxes-types boxes-widths))
+         (trailing-space-w (ekp--trailing-space-width k boxes-types boxes-widths))
+         (space-w (+ leading-space-w trailing-space-w)))
     (list (- (aref ideal-prefixs k) (aref ideal-prefixs i)
              (ekp--para-glue-ideal para leading-glue-type)
-             space-width)
+             space-w)
           (- (aref min-prefixs k) (aref min-prefixs i)
              (ekp--para-glue-min para leading-glue-type)
-             space-width)
+             space-w)
           (- (aref max-prefixs k) (aref max-prefixs i)
              (ekp--para-glue-max para leading-glue-type)
-             space-width))))
+             space-w))))
 
 (defun ekp--dp-force-break (para i k arrays glues-types hyphen-positions ideal-prefixs hyphen-pixel line-pixel)
   "Force a break at K-1 when no valid break found. Update ARRAYS.
@@ -643,15 +645,14 @@ Uses PARA's stored glue params for consistency."
          (hyphenate-p (ekp--hyphenate-p hyphen-positions break-pos))
          (boxes-types (ekp-para-boxes-types para))
          (boxes-widths (ekp-para-boxes-widths para))
-         ;; Exclude leading/trailing space boxes (will be stripped during rendering)
-         ;; Use k as the exclusive end for trailing space calculation
-         (leading-space-width (ekp--leading-space-width i boxes-types boxes-widths))
-         (trailing-space-width (ekp--trailing-space-width k boxes-types boxes-widths))
-         (space-width (+ leading-space-width trailing-space-width))
+         ;; Exclude leading/trailing space widths (stripped during rendering)
+         (leading-space-w (ekp--leading-space-width i boxes-types boxes-widths))
+         (trailing-space-w (ekp--trailing-space-width k boxes-types boxes-widths))
+         (space-w (+ leading-space-w trailing-space-w))
          (ideal-pixel (- (aref ideal-prefixs break-pos)
                          (aref ideal-prefixs i)
                          (ekp--para-glue-ideal para (aref glues-types i))
-                         space-width))
+                         space-w))
          (rest-pixel (- line-pixel ideal-pixel)))
     (when hyphenate-p (cl-incf ideal-pixel hyphen-pixel))
     ;; Force break with high demerits
