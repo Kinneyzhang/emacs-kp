@@ -25,17 +25,18 @@ ekp_state_t *ekp_global = NULL;
 #define FITNESS_LOOSE  2
 #define FITNESS_VERY_LOOSE 3
 
-/* Badness computation */
+/* Badness computation - matches Elisp's ekp--compute-badness */
 static inline double compute_badness(int32_t adjustment, int32_t flexibility)
 {
     if (adjustment == 0)
         return 0.0;
     if (flexibility <= 0)
-        return EKP_INFINITY;
+        return 10000.0;  /* Match Elisp: return 10000, not EKP_INFINITY */
 
     double ratio = (double)adjustment / flexibility;
     double badness = 100.0 * fabs(ratio * ratio * ratio);
-    return badness > 10000.0 ? EKP_INFINITY : badness;
+    /* Match Elisp: cap at 10000, not EKP_INFINITY */
+    return badness > 10000.0 ? 10000.0 : badness;
 }
 
 /* Fitness classification */
