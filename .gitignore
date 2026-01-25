@@ -2,3 +2,4 @@ archive
 *.dylib
 *.dll
 *.o
+_codeql_detected_source_root
