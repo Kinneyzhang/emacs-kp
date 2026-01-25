@@ -83,14 +83,26 @@ static inline double compute_demerits(double badness, int32_t penalty,
 
 /*
  * Check if position is a hyphenation break
+ * Uses binary search for O(log n) lookup (positions are sorted)
  */
 static inline bool is_hyphen_break(ekp_paragraph_t *p, size_t pos)
 {
-    for (size_t i = 0; i < p->hyphen_count; i++) {
-        if ((size_t)p->hyphen_positions[i] == pos)
-            return true;
+    if (p->hyphen_count == 0)
+        return false;
+    
+    /* Binary search in sorted hyphen_positions */
+    size_t lo = 0;
+    size_t hi = p->hyphen_count - 1;
+    
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((size_t)p->hyphen_positions[mid] < pos)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
-    return false;
+    
+    return (size_t)p->hyphen_positions[lo] == pos;
 }
 
 /*
@@ -418,13 +430,22 @@ void ekp_result_destroy(ekp_result_t *r)
 
 static inline bool is_hyphen_pos(const int32_t *positions, size_t count, int32_t pos)
 {
-    for (size_t i = 0; i < count; i++) {
-        if (positions[i] == pos)
-            return true;
-        if (positions[i] > pos)
-            return false;
+    if (count == 0)
+        return false;
+    
+    /* Binary search in sorted positions */
+    size_t lo = 0;
+    size_t hi = count - 1;
+    
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (positions[mid] < pos)
+            lo = mid + 1;
+        else
+            hi = mid;
     }
-    return false;
+    
+    return positions[lo] == pos;
 }
 
 ekp_result_t *ekp_break_with_prefixes(

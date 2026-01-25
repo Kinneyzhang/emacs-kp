@@ -69,11 +69,24 @@ Set to nil to force pure Elisp implementation.")
 (defvar ekp-adjacent-fitness-penalty 100
   "Penalty when adjacent lines differ in tightness by >1 class.")
 
+(defvar ekp-consecutive-hyphen-penalty 100
+  "Base penalty multiplier for consecutive hyphenated lines.
+Actual penalty = this × count², encouraging spread of hyphens.")
+
+(defvar ekp-forced-break-penalty 10000
+  "Base penalty for forced breaks where no valid break exists.
+High value ensures forced breaks are last resort.")
+
+(defvar ekp-last-line-short-penalty 50
+  "Penalty multiplier for underfilled last lines.
+Applied as: this × (1 - fill-ratio) when fill < ekp-last-line-min-ratio.")
+
 (defvar ekp-last-line-min-ratio 0.5
   "Minimum fill ratio for last line (0.0-1.0).")
 
 (defvar ekp-looseness 0
-  "Target line count offset: 0=optimal, +1=looser, -1=tighter.")
+  "Target line count offset: 0=optimal, +1=looser, -1=tighter.
+Note: Full looseness requires tracking multiple paths (not yet implemented).")
 
 ;;;; Paragraph Cache Structure
 ;;
@@ -460,7 +473,8 @@ Returns total demerits for this break."
          ;; Consecutive hyphen penalty (quadratic growth)
          (hyphen-count (if end-with-hyphenp (1+ prev-hyphen-count) 0))
          (with-hyphen (if end-with-hyphenp
-                          (+ with-fitness (* 100 hyphen-count hyphen-count))
+                          (+ with-fitness (* ekp-consecutive-hyphen-penalty
+                                             hyphen-count hyphen-count))
                         with-fitness)))
     with-hyphen))
 
@@ -504,9 +518,18 @@ Returns (:badness NUM :fitness NUM :gaps LIST :adjustment NUM :flexibility NUM).
 
 (defun ekp--hyphenate-p (hyphen-positions n)
   "Return non-nil if position N ends with hyphenation.
-HYPHEN-POSITIONS is a vector of indices where hyphenation can occur."
+HYPHEN-POSITIONS is a sorted vector of indices where hyphenation can occur.
+Uses binary search for O(log n) lookup instead of O(n) linear search."
   (and hyphen-positions
-       (cl-find n hyphen-positions)))
+       (> (length hyphen-positions) 0)
+       (let ((lo 0)
+             (hi (1- (length hyphen-positions))))
+         (while (< lo hi)
+           (let ((mid (/ (+ lo hi) 2)))
+             (if (< (aref hyphen-positions mid) n)
+                 (setq lo (1+ mid))
+               (setq hi mid))))
+         (= (aref hyphen-positions lo) n))))
 
 ;;;; Dynamic Programming Line Breaking
 
@@ -552,7 +575,7 @@ Uses PARA's stored glue params for consistency."
          (rest-pixel (- line-pixel ideal-pixel)))
     (when hyphenate-p (cl-incf ideal-pixel hyphen-pixel))
     ;; Force break with high demerits
-    (aset demerits break-pos (+ 10000 (expt rest-pixel 2)))
+    (aset demerits break-pos (+ ekp-forced-break-penalty (expt rest-pixel 2)))
     (aset rests break-pos rest-pixel)
     (aset backptrs break-pos i)
     (aset fitness-classes break-pos 3)  ; very loose
@@ -582,7 +605,7 @@ Returns (demerits gaps fitness new-hyphen-count)."
     (let* ((fill-ratio (/ (float ideal-pixel) line-pixel))
            ;; Penalize if last line is too short
            (badness (if (< fill-ratio ekp-last-line-min-ratio)
-                        (* 50 (- 1.0 fill-ratio))
+                        (* ekp-last-line-short-penalty (- 1.0 fill-ratio))
                       0))
            (dem (expt (+ ekp-line-penalty badness) 2)))
       (list dem nil 1 0)))
