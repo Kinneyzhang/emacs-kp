@@ -86,6 +86,8 @@ Set to nil to force pure Elisp implementation.")
   boxes boxes-widths boxes-types glues-types
   hyphen-pixel hyphen-positions
   ideal-prefixs min-prefixs max-prefixs
+  ;; Store glue params at para creation time for consistent C module calls
+  glue-params  ; plist (:lws-ideal :lws-shrink :lws-stretch :mws-* :cws-*)
   (dp-cache nil :type hash-table))
 
 (defvar ekp--para-cache nil
@@ -250,6 +252,40 @@ Space boxes (preserved whitespace) need no additional glue."
         ((eq 'mws type) ekp-mws-max-pixel)
         ((eq 'cws type) ekp-cws-max-pixel)))
 
+(defun ekp--para-glue-ideal (para type)
+  "Get ideal glue pixel for TYPE using PARA's stored glue params."
+  (let ((params (ekp-para-glue-params para)))
+    (cond ((or (null type) (eq 'nws type)) 0)
+          ((eq 'lws type) (plist-get params :lws-ideal))
+          ((eq 'mws type) (plist-get params :mws-ideal))
+          ((eq 'cws type) (plist-get params :cws-ideal)))))
+
+(defun ekp--para-glue-shrink (para type)
+  "Get shrink amount for TYPE using PARA's stored glue params."
+  (let ((params (ekp-para-glue-params para)))
+    (cond ((or (null type) (eq 'nws type)) 0)
+          ((eq 'lws type) (plist-get params :lws-shrink))
+          ((eq 'mws type) (plist-get params :mws-shrink))
+          ((eq 'cws type) (plist-get params :cws-shrink)))))
+
+(defun ekp--para-glue-stretch (para type)
+  "Get stretch amount for TYPE using PARA's stored glue params."
+  (let ((params (ekp-para-glue-params para)))
+    (cond ((or (null type) (eq 'nws type)) 0)
+          ((eq 'lws type) (plist-get params :lws-stretch))
+          ((eq 'mws type) (plist-get params :mws-stretch))
+          ((eq 'cws type) (plist-get params :cws-stretch)))))
+
+(defun ekp--para-glue-min (para type)
+  "Get minimum glue pixel (ideal - shrink) for TYPE using PARA's stored params."
+  (- (ekp--para-glue-ideal para type)
+     (ekp--para-glue-shrink para type)))
+
+(defun ekp--para-glue-max (para type)
+  "Get maximum glue pixel (ideal + stretch) for TYPE using PARA's stored params."
+  (+ (ekp--para-glue-ideal para type)
+     (ekp--para-glue-stretch para type)))
+
 ;;; ============================================================
 ;;; Cache Implementation: Fast Hash + Flat Structure
 ;;; ============================================================
@@ -307,7 +343,7 @@ Computes ALL data in one pass: text, params, and prefix arrays."
         (aset max-prefixs (1+ i)
               (+ (aref max-prefixs i) box-w
                  (ekp-glue-max-pixel glue-type)))))
-    ;; Create struct with all data
+    ;; Create struct with all data, including glue params at creation time
     (ekp-para--create
      :string string
      :latin-font latin-font
@@ -321,6 +357,15 @@ Computes ALL data in one pass: text, params, and prefix arrays."
      :ideal-prefixs ideal-prefixs
      :min-prefixs min-prefixs
      :max-prefixs max-prefixs
+     :glue-params (list :lws-ideal ekp-lws-ideal-pixel
+                        :lws-stretch ekp-lws-stretch-pixel
+                        :lws-shrink ekp-lws-shrink-pixel
+                        :mws-ideal ekp-mws-ideal-pixel
+                        :mws-stretch ekp-mws-stretch-pixel
+                        :mws-shrink ekp-mws-shrink-pixel
+                        :cws-ideal ekp-cws-ideal-pixel
+                        :cws-stretch ekp-cws-stretch-pixel
+                        :cws-shrink ekp-cws-shrink-pixel)
      :dp-cache (make-hash-table :test 'eql :size 20))))
 
 (defun ekp--get-para (string)
@@ -475,19 +520,20 @@ Returns (backptrs demerits rests gaps hyphen-counts fitness-classes line-counts)
     (list backptrs demerits rests gaps
           hyphen-counts fitness-classes line-counts)))
 
-(defun ekp--dp-line-metrics (i k glues-types ideal-prefixs min-prefixs max-prefixs)
-  "Compute line metrics for boxes I to K.
+(defun ekp--dp-line-metrics (para i k glues-types ideal-prefixs min-prefixs max-prefixs)
+  "Compute line metrics for boxes I to K using PARA's stored glue params.
 Returns (ideal-pixel min-pixel max-pixel) excluding leading glue."
   (let ((leading-glue-type (aref glues-types i)))
     (list (- (aref ideal-prefixs k) (aref ideal-prefixs i)
-             (ekp-glue-ideal-pixel leading-glue-type))
+             (ekp--para-glue-ideal para leading-glue-type))
           (- (aref min-prefixs k) (aref min-prefixs i)
-             (ekp-glue-min-pixel leading-glue-type))
+             (ekp--para-glue-min para leading-glue-type))
           (- (aref max-prefixs k) (aref max-prefixs i)
-             (ekp-glue-max-pixel leading-glue-type)))))
+             (ekp--para-glue-max para leading-glue-type)))))
 
-(defun ekp--dp-force-break (i k arrays glues-types hyphen-positions ideal-prefixs hyphen-pixel line-pixel)
-  "Force a break at K-1 when no valid break found. Update ARRAYS."
+(defun ekp--dp-force-break (para i k arrays glues-types hyphen-positions ideal-prefixs hyphen-pixel line-pixel)
+  "Force a break at K-1 when no valid break found. Update ARRAYS.
+Uses PARA's stored glue params for consistency."
   (let* ((backptrs (nth 0 arrays))
          (demerits (nth 1 arrays))
          (rests (nth 2 arrays))
@@ -498,7 +544,7 @@ Returns (ideal-pixel min-pixel max-pixel) excluding leading glue."
          (hyphenate-p (ekp--hyphenate-p hyphen-positions break-pos))
          (ideal-pixel (- (aref ideal-prefixs break-pos)
                          (aref ideal-prefixs i)
-                         (ekp-glue-ideal-pixel (aref glues-types i))))
+                         (ekp--para-glue-ideal para (aref glues-types i))))
          (rest-pixel (- line-pixel ideal-pixel)))
     (when hyphenate-p (cl-incf ideal-pixel hyphen-pixel))
     ;; Force break with high demerits
@@ -610,7 +656,8 @@ If `ekp-use-c-module' is non-nil and C module is available, uses it."
 (defun ekp--prepare-para-for-batch (para line-pixel)
   "Prepare PARA data as vector for batch API at LINE-PIXEL.
 Returns [ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks
-         glue-stretches hyphen-positions hyphen-width line-width]."
+         glue-stretches hyphen-positions hyphen-width line-width].
+Uses PARA's stored glue-params to ensure consistency with prefix arrays."
   (let* ((ideal-prefixs (ekp-para-ideal-prefixs para))
          (min-prefixs (ekp-para-min-prefixs para))
          (max-prefixs (ekp-para-max-prefixs para))
@@ -621,20 +668,19 @@ Returns [ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks
          (glue-ideals (make-vector n 0))
          (glue-shrinks (make-vector n 0))
          (glue-stretches (make-vector n 0)))
+    ;; Use para's stored glue params, not global variables
     (dotimes (i n)
       (let ((type (aref glues-types i)))
-        (aset glue-ideals i (ekp-glue-ideal-pixel type))
-        (aset glue-shrinks i (- (ekp-glue-ideal-pixel type)
-                                 (ekp-glue-min-pixel type)))
-        (aset glue-stretches i (- (ekp-glue-max-pixel type)
-                                   (ekp-glue-ideal-pixel type)))))
+        (aset glue-ideals i (ekp--para-glue-ideal para type))
+        (aset glue-shrinks i (ekp--para-glue-shrink para type))
+        (aset glue-stretches i (ekp--para-glue-stretch para type))))
     (vector ideal-prefixs min-prefixs max-prefixs
             glue-ideals glue-shrinks glue-stretches
             hyphen-positions hyphen-pixel line-pixel)))
 
 (defun ekp--store-batch-result (para line-pixel breaks cost)
   "Store batch result (BREAKS, COST) into PARA's dp-cache for LINE-PIXEL.
-Computes rests and gaps from breaks."
+Computes rests and gaps from breaks using PARA's stored glue params."
   (let* ((glues-types (ekp-para-glues-types para))
          (ideal-prefixs (ekp-para-ideal-prefixs para))
          (hyphen-positions (ekp-para-hyphen-positions para))
@@ -646,7 +692,7 @@ Computes rests and gaps from breaks."
              (end-with-hyphenp (ekp--hyphenate-p hyphen-positions (1- end)))
              (ideal-pixel (- (aref ideal-prefixs end)
                              (aref ideal-prefixs start)
-                             (ekp-glue-ideal-pixel leading-glue-type))))
+                             (ekp--para-glue-ideal para leading-glue-type))))
         (when end-with-hyphenp
           (cl-incf ideal-pixel hyphen-pixel))
         (push (- line-pixel ideal-pixel) lines-rests)
@@ -705,7 +751,8 @@ Only processes strings that aren't already cached."
 (defun ekp--dp-cache-via-c (para string line-pixel)
   "Compute breaks using C module with Elisp's pre-computed prefix arrays.
 C module receives ALL font-dependent data from Elisp's para struct:
-prefix sums, glue values, hyphen info. C only does pure DP."
+prefix sums, glue values, hyphen info. C only does pure DP.
+Uses PARA's stored glue-params for consistency with cached prefix arrays."
   (ignore string)  ; Use para's data instead
   (let* ((ideal-prefixs (ekp-para-ideal-prefixs para))
          (min-prefixs (ekp-para-min-prefixs para))
@@ -714,18 +761,16 @@ prefix sums, glue values, hyphen info. C only does pure DP."
          (hyphen-positions (ekp-para-hyphen-positions para))
          (hyphen-pixel (ekp-para-hyphen-pixel para))
          (n (length (ekp-para-boxes para)))
-         ;; Build glue value arrays for C
+         ;; Build glue value arrays for C using para's stored params
          (glue-ideals (make-vector n 0))
          (glue-shrinks (make-vector n 0))
          (glue-stretches (make-vector n 0)))
-    ;; Extract glue values from type symbols
+    ;; Extract glue values from para's stored params, not global variables
     (dotimes (i n)
       (let ((type (aref glues-types i)))
-        (aset glue-ideals i (ekp-glue-ideal-pixel type))
-        (aset glue-shrinks i (- (ekp-glue-ideal-pixel type)
-                                 (ekp-glue-min-pixel type)))
-        (aset glue-stretches i (- (ekp-glue-max-pixel type)
-                                   (ekp-glue-ideal-pixel type)))))
+        (aset glue-ideals i (ekp--para-glue-ideal para type))
+        (aset glue-shrinks i (ekp--para-glue-shrink para type))
+        (aset glue-stretches i (ekp--para-glue-stretch para type))))
     ;; Call C module with all Elisp-computed arrays
     (let* ((result (ekp-c-break-with-arrays
                     ideal-prefixs
@@ -746,13 +791,13 @@ prefix sums, glue values, hyphen info. C only does pure DP."
         (let* ((breaks c-breaks)
                (start 0)
                lines-rests lines-gaps)
-          ;; Compute rests and gaps for each line
+          ;; Compute rests and gaps for each line using para's stored params
           (dolist (end breaks)
             (let* ((leading-glue-type (aref glues-types start))
                    (end-with-hyphenp (ekp--hyphenate-p hyphen-positions (1- end)))
                    (ideal-pixel (- (aref ideal-prefixs end)
                                    (aref ideal-prefixs start)
-                                   (ekp-glue-ideal-pixel leading-glue-type))))
+                                   (ekp--para-glue-ideal para leading-glue-type))))
               (when end-with-hyphenp
                 (cl-incf ideal-pixel hyphen-pixel))
               (push (- line-pixel ideal-pixel) lines-rests)
@@ -803,7 +848,7 @@ prefix sums, glue values, hyphen info. C only does pure DP."
                      (end-with-hyphenp
                       (ekp--hyphenate-p hyphen-positions (1- k)))
                      (metrics (ekp--dp-line-metrics
-                               i k glues-types
+                               para i k glues-types
                                ideal-prefixs min-prefixs max-prefixs))
                      (ideal-pixel (nth 0 metrics))
                      (min-pixel (nth 1 metrics))
@@ -818,7 +863,7 @@ prefix sums, glue values, hyphen info. C only does pure DP."
                           (and is-last (> ideal-pixel line-pixel)))
                   (when (null (aref demerits (1- k)))
                     (ekp--dp-force-break
-                     i k arrays glues-types hyphen-positions
+                     para i k arrays glues-types hyphen-positions
                      ideal-prefixs hyphen-pixel line-pixel))
                   (throw 'break nil))
                 ;; Valid break point: compute demerits
@@ -919,9 +964,9 @@ Returns ((latin-adj . latin-extra) (mix-adj . mix-extra) (cjk-adj . cjk-extra)).
           (cons mix-adj mix-extra)
           (cons cjk-adj cjk-extra))))
 
-(defun ekp--compute-glue-pixels (glues-types gaps-distribution stretch-p)
+(defun ekp--compute-glue-pixels (para glues-types gaps-distribution stretch-p)
   "Compute actual glue pixels from GLUES-TYPES and GAPS-DISTRIBUTION.
-Returns list of pixel values for each glue."
+Returns list of pixel values for each glue. Uses PARA's stored glue params."
   (let ((latin-adj (car (nth 0 gaps-distribution)))
         (latin-extra (cdr (nth 0 gaps-distribution)))
         (mix-adj (car (nth 1 gaps-distribution)))
@@ -931,7 +976,7 @@ Returns list of pixel values for each glue."
         (latin-idx -1) (mix-idx -1) (cjk-idx -1))
     (mapcar
      (lambda (type)
-       (let* ((base (ekp-glue-ideal-pixel type))
+       (let* ((base (ekp--para-glue-ideal para type))
               (adj (pcase type
                      ('lws (cl-incf latin-idx)
                            (+ latin-adj (if (< latin-idx latin-extra) 1 0)))
@@ -949,27 +994,29 @@ Returns list of pixel values for each glue."
   (let ((trailing (- line-pixel box-width (if hyphen-p hyphen-pixel 0))))
     (list 0 trailing)))
 
-(defun ekp--line-glue-last-line (glues-types ideal-pixel line-pixel)
-  "Compute glues for last line (ragged right)."
+(defun ekp--line-glue-last-line (para glues-types ideal-pixel line-pixel)
+  "Compute glues for last line (ragged right). Uses PARA's stored glue params."
   (append '(0)
-          (mapcar #'ekp-glue-ideal-pixel glues-types)
+          (mapcar (lambda (type) (ekp--para-glue-ideal para type)) glues-types)
           (list (- line-pixel ideal-pixel))))
 
-(defun ekp--line-glue-normal (glues-types rest-pixel gaps-list)
-  "Compute glues for a normal (justified) line."
+(defun ekp--line-glue-normal (para glues-types rest-pixel gaps-list)
+  "Compute glues for a normal (justified) line. Uses PARA's stored glue params."
   (if (= rest-pixel 0)
-      (append '(0) (mapcar #'ekp-glue-ideal-pixel glues-types) '(0))
+      (append '(0) (mapcar (lambda (type) (ekp--para-glue-ideal para type)) glues-types) '(0))
     (let* ((stretch-p (> rest-pixel 0))
            (distribution (ekp--distribute-gap-adjustment
                           (abs rest-pixel) gaps-list stretch-p))
-           (glue-pixels (ekp--compute-glue-pixels glues-types distribution stretch-p)))
+           (glue-pixels (ekp--compute-glue-pixels para glues-types distribution stretch-p)))
       (append '(0) glue-pixels '(0)))))
 
 (defun ekp-line-glues (string line-pixel)
   "Compute glue pixels for each line after breaking STRING at LINE-PIXEL.
 Returns vector of vectors, each inner vector is glue pixels for one line.
-Each line's glues: [0 glue1 glue2 ... trailing-space]."
-  (let* ((boxes-widths (ekp--boxes-widths string))
+Each line's glues: [0 glue1 glue2 ... trailing-space].
+Uses the cached para's stored glue params for consistency."
+  (let* ((para (ekp--get-para string))
+         (boxes-widths (ekp--boxes-widths string))
          (boxes-num (length (ekp--boxes string)))
          (glues-types (ekp--glues-types string))
          (hyphen-positions (ekp--hyphen-positions string))
@@ -990,10 +1037,10 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
              (hyphen-p (ekp--hyphenate-p hyphen-positions (1- end)))
              (ideal-pixel (- (aref ideal-prefixs end)
                              (aref ideal-prefixs start)
-                             (ekp-glue-ideal-pixel (aref glues-types start))))
+                             (ekp--para-glue-ideal para (aref glues-types start))))
              (max-pixel (+ (- (aref max-prefixs end)
                               (aref max-prefixs start)
-                              (ekp-glue-max-pixel (aref glues-types start)))
+                              (ekp--para-glue-max para (aref glues-types start)))
                            (if hyphen-p hyphen-pixel 0)))
              glue-list)
         (setq glue-list
@@ -1006,15 +1053,17 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                ;; Last line: ragged right
                (is-last
                 (ekp--line-glue-last-line
-                 line-glues-types ideal-pixel line-pixel))
+                 para line-glues-types ideal-pixel line-pixel))
                ;; Forced break (line too short even at max stretch)
                ((< max-pixel line-pixel)
                 (append '(0)
-                        (mapcar #'ekp-glue-max-pixel line-glues-types)
+                        (mapcar (lambda (type)
+                                  (ekp--para-glue-max para type))
+                                line-glues-types)
                         (list (- line-pixel max-pixel))))
                ;; Normal justified line
                (t
-                (ekp--line-glue-normal line-glues-types
+                (ekp--line-glue-normal para line-glues-types
                                        (nth i lines-rests)
                                        (nth i lines-gaps)))))
         (aset line-glues i (vconcat glue-list))
