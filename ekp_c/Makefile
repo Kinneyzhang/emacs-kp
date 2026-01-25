@@ -52,6 +52,7 @@ all: $(MODULE)
 
 $(MODULE): $(OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDFLAGS)
+	@rm -f $(OBJS)
 	@echo "Built $@"
 
 %.o: %.c ekp_module.h

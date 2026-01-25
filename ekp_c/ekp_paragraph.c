@@ -22,15 +22,6 @@
 #define GLUE_CWS  3  /* CJK character space */
 
 /* UTF-8 helpers */
-static inline int utf8_char_len(unsigned char c)
-{
-    if ((c & 0x80) == 0) return 1;
-    if ((c & 0xE0) == 0xC0) return 2;
-    if ((c & 0xF0) == 0xE0) return 3;
-    if ((c & 0xF8) == 0xF0) return 4;
-    return 1;  /* invalid, treat as single byte */
-}
-
 static inline uint32_t utf8_decode(const char *s, int *len)
 {
     unsigned char c = s[0];
@@ -80,15 +71,6 @@ static inline bool is_cjk_punct(uint32_t cp)
            (cp >= 0xFF00 && cp <= 0xFF60) ||   /* Fullwidth Forms */
            cp == 0x201C || cp == 0x201D ||     /* " " */
            cp == 0x2018 || cp == 0x2019;       /* ' ' */
-}
-
-static inline bool is_latin(uint32_t cp)
-{
-    return (cp >= 'A' && cp <= 'Z') ||
-           (cp >= 'a' && cp <= 'z') ||
-           (cp >= 0xC0 && cp <= 0xFF) ||       /* Latin-1 Supplement */
-           (cp >= 0x100 && cp <= 0x24F) ||     /* Latin Extended */
-           (cp >= 0x1E00 && cp <= 0x1EFF);     /* Latin Extended Additional */
 }
 
 static inline bool is_whitespace(uint32_t cp)
@@ -179,7 +161,6 @@ ekp_paragraph_t *ekp_para_create(const char *text, size_t len,
     /* Tokenize into boxes */
     size_t box_count = 0;
     size_t pos = 0;
-    uint8_t prev_type = BOX_SPACE;
     size_t word_start = 0;
     bool in_latin_word = false;
 
@@ -212,7 +193,6 @@ ekp_paragraph_t *ekp_para_create(const char *text, size_t len,
             box_count++;
         }
 
-        prev_type = type;
         pos += char_len;
     }
 

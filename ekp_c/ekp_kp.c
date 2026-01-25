@@ -82,30 +82,6 @@ static inline double compute_demerits(double badness, int32_t penalty,
 }
 
 /*
- * Check if position is a hyphenation break
- * Uses binary search for O(log n) lookup (positions are sorted)
- */
-static inline bool is_hyphen_break(ekp_paragraph_t *p, size_t pos)
-{
-    if (p->hyphen_count == 0)
-        return false;
-    
-    /* Binary search in sorted hyphen_positions */
-    size_t lo = 0;
-    size_t hi = p->hyphen_count - 1;
-    
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        if ((size_t)p->hyphen_positions[mid] < pos)
-            lo = mid + 1;
-        else
-            hi = mid;
-    }
-    
-    return (size_t)p->hyphen_positions[lo] == pos;
-}
-
-/*
  * Parallel work item for demerits computation
  */
 typedef struct {

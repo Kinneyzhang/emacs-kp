@@ -620,11 +620,11 @@ static void defun(emacs_env *env, const char *name,
  */
 int emacs_module_init(struct emacs_runtime *runtime)
 {
-    if (runtime->size < sizeof(*runtime))
+    if ((size_t)runtime->size < sizeof(*runtime))
         return 1;
 
     emacs_env *env = runtime->get_environment(runtime);
-    if (env->size < sizeof(*env))
+    if ((size_t)env->size < sizeof(*env))
         return 2;
 
     /* Define functions */
