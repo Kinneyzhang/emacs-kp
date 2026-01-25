@@ -245,6 +245,36 @@ ekp_result_t *ekp_break_with_prefixes(
     int32_t line_width);
 
 /*
+ * Batch input for parallel processing
+ */
+typedef struct {
+    const int32_t *ideal_prefix;
+    const int32_t *min_prefix;
+    const int32_t *max_prefix;
+    const int32_t *glue_ideals;
+    const int32_t *glue_shrinks;
+    const int32_t *glue_stretches;
+    size_t n;
+    const int32_t *hyphen_positions;
+    size_t hyphen_count;
+    int32_t hyphen_width;
+    int32_t line_width;
+} ekp_batch_input_t;
+
+/*
+ * API: Batch line breaking (parallel across paragraphs)
+ *
+ * Processes multiple paragraphs concurrently using the thread pool.
+ * This is the correct parallelization granularity - paragraphs are
+ * independent, so no synchronization overhead.
+ *
+ * Returns array of results (caller must free each result and the array).
+ */
+ekp_result_t **ekp_break_batch(
+    ekp_batch_input_t *inputs,
+    size_t count);
+
+/*
  * API: Thread pool
  */
 ekp_thread_pool_t *ekp_pool_create(size_t num_threads);

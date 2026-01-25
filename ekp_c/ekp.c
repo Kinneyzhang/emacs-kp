@@ -408,6 +408,200 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
 }
 
 /*
+ * Helper to extract paragraph data from Elisp vectors
+ */
+static bool extract_paragraph_data(
+    emacs_env *env, emacs_value *args,
+    int32_t **ideal_prefix, int32_t **min_prefix, int32_t **max_prefix,
+    int32_t **glue_ideals, int32_t **glue_shrinks, int32_t **glue_stretches,
+    int32_t **hyph_pos, size_t *n, ptrdiff_t *hyph_count,
+    int32_t *hyph_width, int32_t *line_width)
+{
+    ptrdiff_t prefix_len = env->vec_size(env, args[0]);
+    if (prefix_len <= 1)
+        return false;
+
+    *n = prefix_len - 1;
+
+    *ideal_prefix = malloc(prefix_len * sizeof(int32_t));
+    *min_prefix = malloc(prefix_len * sizeof(int32_t));
+    *max_prefix = malloc(prefix_len * sizeof(int32_t));
+    *glue_ideals = malloc(*n * sizeof(int32_t));
+    *glue_shrinks = malloc(*n * sizeof(int32_t));
+    *glue_stretches = malloc(*n * sizeof(int32_t));
+
+    if (!*ideal_prefix || !*min_prefix || !*max_prefix ||
+        !*glue_ideals || !*glue_shrinks || !*glue_stretches) {
+        free(*ideal_prefix); free(*min_prefix); free(*max_prefix);
+        free(*glue_ideals); free(*glue_shrinks); free(*glue_stretches);
+        return false;
+    }
+
+    for (ptrdiff_t i = 0; i < prefix_len; i++) {
+        (*ideal_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[0], i));
+        (*min_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[1], i));
+        (*max_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[2], i));
+    }
+
+    for (size_t i = 0; i < *n; i++) {
+        (*glue_ideals)[i] = env->extract_integer(env, env->vec_get(env, args[3], i));
+        (*glue_shrinks)[i] = env->extract_integer(env, env->vec_get(env, args[4], i));
+        (*glue_stretches)[i] = env->extract_integer(env, env->vec_get(env, args[5], i));
+    }
+
+    *hyph_count = env->vec_size(env, args[6]);
+    *hyph_pos = NULL;
+    if (*hyph_count > 0) {
+        *hyph_pos = malloc(*hyph_count * sizeof(int32_t));
+        if (*hyph_pos) {
+            for (ptrdiff_t i = 0; i < *hyph_count; i++) {
+                (*hyph_pos)[i] = env->extract_integer(env, env->vec_get(env, args[6], i));
+            }
+        }
+    }
+
+    *hyph_width = env->extract_integer(env, args[7]);
+    *line_width = env->extract_integer(env, args[8]);
+
+    return true;
+}
+
+/*
+ * ekp-c-break-batch: Process multiple paragraphs in parallel
+ *
+ * Args: vector of (ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks
+ *                  glue-stretches hyphen-positions hyphen-width line-width)
+ *
+ * Each element is a vector of 9 elements (same as ekp-c-break-with-arrays args).
+ * Returns vector of (breaks . total-cost) for each paragraph.
+ *
+ * This is the high-performance API for processing multi-paragraph text.
+ */
+static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
+                                       emacs_value *args, void *data)
+{
+    (void)data;
+
+    if (!ekp_global || nargs < 1)
+        return env->intern(env, "nil");
+
+    ptrdiff_t para_count = env->vec_size(env, args[0]);
+    if (para_count <= 0)
+        return env->intern(env, "nil");
+
+    /* Allocate batch inputs and temporary storage */
+    ekp_batch_input_t *inputs = calloc(para_count, sizeof(ekp_batch_input_t));
+    int32_t **all_ideal = calloc(para_count, sizeof(int32_t *));
+    int32_t **all_min = calloc(para_count, sizeof(int32_t *));
+    int32_t **all_max = calloc(para_count, sizeof(int32_t *));
+    int32_t **all_glue_i = calloc(para_count, sizeof(int32_t *));
+    int32_t **all_glue_sh = calloc(para_count, sizeof(int32_t *));
+    int32_t **all_glue_st = calloc(para_count, sizeof(int32_t *));
+    int32_t **all_hyph = calloc(para_count, sizeof(int32_t *));
+
+    if (!inputs || !all_ideal || !all_min || !all_max ||
+        !all_glue_i || !all_glue_sh || !all_glue_st || !all_hyph) {
+        free(inputs); free(all_ideal); free(all_min); free(all_max);
+        free(all_glue_i); free(all_glue_sh); free(all_glue_st); free(all_hyph);
+        return env->intern(env, "nil");
+    }
+
+    /* Extract all paragraph data */
+    for (ptrdiff_t p = 0; p < para_count; p++) {
+        emacs_value para_vec = env->vec_get(env, args[0], p);
+
+        /* Extract 9 arguments from this paragraph's vector */
+        emacs_value para_args[9];
+        for (int i = 0; i < 9; i++) {
+            para_args[i] = env->vec_get(env, para_vec, i);
+        }
+
+        size_t n;
+        ptrdiff_t hyph_count;
+        int32_t hyph_width, line_width;
+
+        if (!extract_paragraph_data(env, para_args,
+                                     &all_ideal[p], &all_min[p], &all_max[p],
+                                     &all_glue_i[p], &all_glue_sh[p], &all_glue_st[p],
+                                     &all_hyph[p], &n, &hyph_count,
+                                     &hyph_width, &line_width)) {
+            /* Cleanup on failure */
+            for (ptrdiff_t j = 0; j < p; j++) {
+                free(all_ideal[j]); free(all_min[j]); free(all_max[j]);
+                free(all_glue_i[j]); free(all_glue_sh[j]); free(all_glue_st[j]);
+                free(all_hyph[j]);
+            }
+            free(inputs); free(all_ideal); free(all_min); free(all_max);
+            free(all_glue_i); free(all_glue_sh); free(all_glue_st); free(all_hyph);
+            return env->intern(env, "nil");
+        }
+
+        inputs[p].ideal_prefix = all_ideal[p];
+        inputs[p].min_prefix = all_min[p];
+        inputs[p].max_prefix = all_max[p];
+        inputs[p].glue_ideals = all_glue_i[p];
+        inputs[p].glue_shrinks = all_glue_sh[p];
+        inputs[p].glue_stretches = all_glue_st[p];
+        inputs[p].n = n;
+        inputs[p].hyphen_positions = all_hyph[p];
+        inputs[p].hyphen_count = hyph_count > 0 ? (size_t)hyph_count : 0;
+        inputs[p].hyphen_width = hyph_width;
+        inputs[p].line_width = line_width;
+    }
+
+    /* Process all paragraphs in parallel */
+    ekp_result_t **results = ekp_break_batch(inputs, para_count);
+
+    /* Cleanup input arrays */
+    for (ptrdiff_t p = 0; p < para_count; p++) {
+        free(all_ideal[p]); free(all_min[p]); free(all_max[p]);
+        free(all_glue_i[p]); free(all_glue_sh[p]); free(all_glue_st[p]);
+        free(all_hyph[p]);
+    }
+    free(inputs); free(all_ideal); free(all_min); free(all_max);
+    free(all_glue_i); free(all_glue_sh); free(all_glue_st); free(all_hyph);
+
+    if (!results)
+        return env->intern(env, "nil");
+
+    /* Build result vector */
+    emacs_value result_vec = env->funcall(env, env->intern(env, "make-vector"),
+                                           2, (emacs_value[]){
+                                               env->make_integer(env, para_count),
+                                               env->intern(env, "nil")
+                                           });
+    emacs_value cons_sym = env->intern(env, "cons");
+
+    for (ptrdiff_t p = 0; p < para_count; p++) {
+        ekp_result_t *r = results[p];
+        emacs_value entry;
+
+        if (r) {
+            /* Build (breaks . cost) */
+            emacs_value breaks_list = env->intern(env, "nil");
+            for (size_t i = r->break_count; i > 0; i--) {
+                emacs_value brk = env->make_integer(env, r->breaks[i - 1]);
+                emacs_value args2[2] = {brk, breaks_list};
+                breaks_list = env->funcall(env, cons_sym, 2, args2);
+            }
+
+            emacs_value cost = env->make_float(env, r->total_cost);
+            emacs_value args2[2] = {breaks_list, cost};
+            entry = env->funcall(env, cons_sym, 2, args2);
+
+            ekp_result_destroy(r);
+        } else {
+            entry = env->intern(env, "nil");
+        }
+
+        env->vec_set(env, result_vec, p, entry);
+    }
+
+    free(results);
+    return result_vec;
+}
+
+/*
  * Helper to define functions
  */
 static void defun(emacs_env *env, const char *name,
@@ -492,6 +686,15 @@ This API ensures C uses Elisp's font-dependent measurements.\n\n\
 
     defun(env, "ekp-c-thread-count", 0, 0, Fekp_c_thread_count,
           "Return number of worker threads in the thread pool.");
+
+    defun(env, "ekp-c-break-batch", 1, 1, Fekp_c_break_batch,
+          "Break multiple paragraphs in parallel.\n\n\
+PARAGRAPHS: vector of paragraph data, each element is a vector of 9 items:\n\
+  [ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks\n\
+   glue-stretches hyphen-positions hyphen-width line-width]\n\n\
+Returns vector of (BREAKS . COST) for each paragraph.\n\
+This is the high-performance API for multi-paragraph processing.\n\n\
+(fn PARAGRAPHS)");
 
     /* Provide feature */
     emacs_value provide_args[1] = {env->intern(env, "ekp-c")};

@@ -297,115 +297,46 @@ ekp_result_t *ekp_break_lines(ekp_paragraph_t *p, int32_t line_width)
     int fitness_penalty = ekp_global ? ekp_global->fitness_penalty : 100;
     double last_ratio = ekp_global ? ekp_global->last_line_ratio : 0.5;
 
-    /* For small paragraphs, single-threaded */
-    if (n < 100 || !ekp_global || !ekp_global->pool) {
-        dp_work_t work = {
-            .para = p,
-            .line_width = line_width,
-            .start = 0,
-            .end = n,
-            .demerits = demerits,
-            .backptrs = backptrs,
-            .rest_pixels = rest_pixels,
-            .fitness = fitness,
-            .hyphen_counts = hyphen_counts,
-            .line_counts = line_counts,
-            .prev_demerits = demerits,
-            .prev_fitness = fitness,
-            .prev_hyphen_counts = hyphen_counts,
-            .prev_line_counts = line_counts,
-            .line_penalty = line_penalty,
-            .hyphen_penalty = hyphen_penalty,
-            .fitness_penalty = fitness_penalty,
-            .last_line_ratio = last_ratio,
-        };
+    /*
+     * Single-threaded DP: simple and correct.
+     *
+     * Note: Previous "parallel" implementation had data races - multiple
+     * threads writing to shared demerits[] array without synchronization.
+     * DP has inherent sequential dependencies (demerits[k] depends on all
+     * demerits[i] where i < k), making intra-paragraph parallelism complex.
+     *
+     * For real parallelism, use ekp_break_batch() to process multiple
+     * paragraphs concurrently - that's the correct granularity.
+     */
+    dp_work_t work = {
+        .para = p,
+        .line_width = line_width,
+        .start = 0,
+        .end = n,
+        .demerits = demerits,
+        .backptrs = backptrs,
+        .rest_pixels = rest_pixels,
+        .fitness = fitness,
+        .hyphen_counts = hyphen_counts,
+        .line_counts = line_counts,
+        .prev_demerits = demerits,
+        .prev_fitness = fitness,
+        .prev_hyphen_counts = hyphen_counts,
+        .prev_line_counts = line_counts,
+        .line_penalty = line_penalty,
+        .hyphen_penalty = hyphen_penalty,
+        .fitness_penalty = fitness_penalty,
+        .last_line_ratio = last_ratio,
+    };
 
-        /* Simple iterative DP */
-        for (size_t i = 0; i < n; i++) {
-            if (demerits[i] >= EKP_INFINITY)
-                continue;
+    /* Iterative DP: O(n²) worst case, typically O(n·m) with early termination */
+    for (size_t i = 0; i < n; i++) {
+        if (demerits[i] >= EKP_INFINITY)
+            continue;
 
-            work.start = i;
-            work.end = i + 1;
-            process_dp_range(&work);
-        }
-    } else {
-        /* Parallel processing for large paragraphs */
-        /* Split work across threads (wavefront approach) */
-        size_t chunk_size = n / EKP_THREAD_POOL_SIZE;
-        if (chunk_size < 10)
-            chunk_size = 10;
-
-        dp_work_t *works = malloc(EKP_THREAD_POOL_SIZE * sizeof(dp_work_t));
-        if (!works) {
-            /* Fall back to single-threaded */
-            for (size_t i = 0; i < n; i++) {
-                if (demerits[i] >= EKP_INFINITY)
-                    continue;
-
-                dp_work_t work = {
-                    .para = p,
-                    .line_width = line_width,
-                    .start = i,
-                    .end = i + 1,
-                    .demerits = demerits,
-                    .backptrs = backptrs,
-                    .rest_pixels = rest_pixels,
-                    .fitness = fitness,
-                    .hyphen_counts = hyphen_counts,
-                    .line_counts = line_counts,
-                    .prev_demerits = demerits,
-                    .prev_fitness = fitness,
-                    .prev_hyphen_counts = hyphen_counts,
-                    .prev_line_counts = line_counts,
-                    .line_penalty = line_penalty,
-                    .hyphen_penalty = hyphen_penalty,
-                    .fitness_penalty = fitness_penalty,
-                    .last_line_ratio = last_ratio,
-                };
-                process_dp_range(&work);
-            }
-        } else {
-            /* Wavefront: process in chunks */
-            for (size_t wave = 0; wave < n; wave += chunk_size) {
-                size_t wave_end = wave + chunk_size;
-                if (wave_end > n)
-                    wave_end = n;
-
-                size_t work_count = 0;
-                for (size_t i = wave; i < wave_end; i++) {
-                    if (demerits[i] >= EKP_INFINITY)
-                        continue;
-
-                    works[work_count] = (dp_work_t){
-                        .para = p,
-                        .line_width = line_width,
-                        .start = i,
-                        .end = i + 1,
-                        .demerits = demerits,
-                        .backptrs = backptrs,
-                        .rest_pixels = rest_pixels,
-                        .fitness = fitness,
-                        .hyphen_counts = hyphen_counts,
-                        .line_counts = line_counts,
-                        .prev_demerits = demerits,
-                        .prev_fitness = fitness,
-                        .prev_hyphen_counts = hyphen_counts,
-                        .prev_line_counts = line_counts,
-                        .line_penalty = line_penalty,
-                        .hyphen_penalty = hyphen_penalty,
-                        .fitness_penalty = fitness_penalty,
-                        .last_line_ratio = last_ratio,
-                    };
-                    ekp_pool_submit(ekp_global->pool, process_dp_range,
-                                    &works[work_count]);
-                    work_count++;
-                }
-
-                ekp_pool_wait(ekp_global->pool);
-            }
-            free(works);
-        }
+        work.start = i;
+        work.end = i + 1;
+        process_dp_range(&work);
     }
 
     /* Trace back optimal path */
@@ -683,6 +614,91 @@ ekp_result_t *ekp_break_with_prefixes(
     free(fitness); free(hyph_counts); free(line_counts);
 
     return result;
+}
+
+/*
+ * Work item for batch processing
+ */
+typedef struct {
+    ekp_batch_input_t *input;
+    ekp_result_t *result;
+} batch_work_t;
+
+static void batch_worker(void *arg)
+{
+    batch_work_t *work = (batch_work_t *)arg;
+    ekp_batch_input_t *in = work->input;
+
+    work->result = ekp_break_with_prefixes(
+        in->ideal_prefix, in->min_prefix, in->max_prefix,
+        in->glue_ideals, in->glue_shrinks, in->glue_stretches,
+        in->n,
+        in->hyphen_positions, in->hyphen_count,
+        in->hyphen_width, in->line_width);
+}
+
+/*
+ * Batch line breaking: process multiple paragraphs in parallel
+ *
+ * This is the correct parallelization - each paragraph is completely
+ * independent, so we get linear speedup with zero synchronization overhead.
+ */
+ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
+{
+    if (!inputs || count == 0)
+        return NULL;
+
+    ekp_result_t **results = calloc(count, sizeof(ekp_result_t *));
+    if (!results)
+        return NULL;
+
+    /* Single paragraph: no point using threads */
+    if (count == 1 || !ekp_global || !ekp_global->pool) {
+        for (size_t i = 0; i < count; i++) {
+            ekp_batch_input_t *in = &inputs[i];
+            results[i] = ekp_break_with_prefixes(
+                in->ideal_prefix, in->min_prefix, in->max_prefix,
+                in->glue_ideals, in->glue_shrinks, in->glue_stretches,
+                in->n,
+                in->hyphen_positions, in->hyphen_count,
+                in->hyphen_width, in->line_width);
+        }
+        return results;
+    }
+
+    /* Multiple paragraphs: parallel processing */
+    batch_work_t *works = malloc(count * sizeof(batch_work_t));
+    if (!works) {
+        /* Fallback to sequential */
+        for (size_t i = 0; i < count; i++) {
+            ekp_batch_input_t *in = &inputs[i];
+            results[i] = ekp_break_with_prefixes(
+                in->ideal_prefix, in->min_prefix, in->max_prefix,
+                in->glue_ideals, in->glue_shrinks, in->glue_stretches,
+                in->n,
+                in->hyphen_positions, in->hyphen_count,
+                in->hyphen_width, in->line_width);
+        }
+        return results;
+    }
+
+    /* Submit all work items */
+    for (size_t i = 0; i < count; i++) {
+        works[i].input = &inputs[i];
+        works[i].result = NULL;
+        ekp_pool_submit(ekp_global->pool, batch_worker, &works[i]);
+    }
+
+    /* Wait for all to complete */
+    ekp_pool_wait(ekp_global->pool);
+
+    /* Collect results */
+    for (size_t i = 0; i < count; i++) {
+        results[i] = works[i].result;
+    }
+
+    free(works);
+    return results;
 }
 
 /*
