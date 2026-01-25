@@ -256,14 +256,14 @@ Space boxes (preserved whitespace) need no additional glue."
 
 (defun ekp--para-hash (string)
   "Compute fast hash key for STRING.
-Uses sxhash instead of MD5 for performance."
+Uses sxhash on serialized representation to correctly handle text properties."
   (let ((latin-font (ekp-latin-font string))
         (cjk-font (ekp-cjk-font string)))
-    ;; Combine: string identity + fonts + spacing params
-    ;; sxhash is O(n) but much faster than MD5
+    ;; Combine: string content + text properties + fonts + spacing params
+    ;; Use prin1-to-string on intervals to ensure property values are hashed
     (sxhash
      (list (sxhash string)
-           (object-intervals string)
+           (sxhash (prin1-to-string (object-intervals string)))
            latin-font cjk-font
            ekp-lws-ideal-pixel ekp-lws-stretch-pixel ekp-lws-shrink-pixel
            ekp-mws-ideal-pixel ekp-mws-stretch-pixel ekp-mws-shrink-pixel
@@ -606,6 +606,101 @@ If `ekp-use-c-module' is non-nil and C module is available, uses it."
     ('mws 2)
     ('cws 3)
     (_ 0)))  ; nws or nil
+
+(defun ekp--prepare-para-for-batch (para line-pixel)
+  "Prepare PARA data as vector for batch API at LINE-PIXEL.
+Returns [ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks
+         glue-stretches hyphen-positions hyphen-width line-width]."
+  (let* ((ideal-prefixs (ekp-para-ideal-prefixs para))
+         (min-prefixs (ekp-para-min-prefixs para))
+         (max-prefixs (ekp-para-max-prefixs para))
+         (glues-types (ekp-para-glues-types para))
+         (hyphen-positions (ekp-para-hyphen-positions para))
+         (hyphen-pixel (ekp-para-hyphen-pixel para))
+         (n (length (ekp-para-boxes para)))
+         (glue-ideals (make-vector n 0))
+         (glue-shrinks (make-vector n 0))
+         (glue-stretches (make-vector n 0)))
+    (dotimes (i n)
+      (let ((type (aref glues-types i)))
+        (aset glue-ideals i (ekp-glue-ideal-pixel type))
+        (aset glue-shrinks i (- (ekp-glue-ideal-pixel type)
+                                 (ekp-glue-min-pixel type)))
+        (aset glue-stretches i (- (ekp-glue-max-pixel type)
+                                   (ekp-glue-ideal-pixel type)))))
+    (vector ideal-prefixs min-prefixs max-prefixs
+            glue-ideals glue-shrinks glue-stretches
+            hyphen-positions hyphen-pixel line-pixel)))
+
+(defun ekp--store-batch-result (para line-pixel breaks cost)
+  "Store batch result (BREAKS, COST) into PARA's dp-cache for LINE-PIXEL.
+Computes rests and gaps from breaks."
+  (let* ((glues-types (ekp-para-glues-types para))
+         (ideal-prefixs (ekp-para-ideal-prefixs para))
+         (hyphen-positions (ekp-para-hyphen-positions para))
+         (hyphen-pixel (ekp-para-hyphen-pixel para))
+         (start 0)
+         lines-rests lines-gaps)
+    (dolist (end breaks)
+      (let* ((leading-glue-type (aref glues-types start))
+             (end-with-hyphenp (ekp--hyphenate-p hyphen-positions (1- end)))
+             (ideal-pixel (- (aref ideal-prefixs end)
+                             (aref ideal-prefixs start)
+                             (ekp-glue-ideal-pixel leading-glue-type))))
+        (when end-with-hyphenp
+          (cl-incf ideal-pixel hyphen-pixel))
+        (push (- line-pixel ideal-pixel) lines-rests)
+        (push (ekp--gaps-list
+               (seq-drop (cl-subseq glues-types start end) 1))
+              lines-gaps)
+        (setq start end)))
+    (let ((dp-result (list :rests (nreverse lines-rests)
+                           :gaps (nreverse lines-gaps)
+                           :breaks breaks
+                           :cost cost
+                           :line-count (length breaks))))
+      (puthash line-pixel dp-result (ekp-para-dp-cache para))
+      dp-result)))
+
+(defun ekp--dp-cache-batch (strings line-pixel)
+  "Compute DP for multiple STRINGS in parallel using C batch API.
+Returns list of dp-results in same order as STRINGS.
+Only processes strings that aren't already cached."
+  (let* ((paras (mapcar #'ekp--get-para strings))
+         (needs-compute '())  ; list of (index . para)
+         (results (make-vector (length strings) nil)))
+    ;; Check which paras need computation
+    (cl-loop for para in paras
+             for i from 0
+             for cached = (ekp--dp-get-cached para line-pixel)
+             do (if cached
+                    (aset results i cached)
+                  (push (cons i para) needs-compute)))
+    ;; If all cached, return immediately
+    (if (null needs-compute)
+        (append results nil)
+      ;; Prepare batch input for uncached paras
+      (let* ((needs-compute (nreverse needs-compute))
+             (batch-input (vconcat
+                           (mapcar (lambda (ip)
+                                     (ekp--prepare-para-for-batch (cdr ip) line-pixel))
+                                   needs-compute)))
+             (batch-results (ekp-c-break-batch batch-input)))
+        ;; Process results
+        (cl-loop for ip in needs-compute
+                 for j from 0
+                 for idx = (car ip)
+                 for para = (cdr ip)
+                 for res = (aref batch-results j)
+                 for breaks = (car res)
+                 for cost = (cdr res)
+                 do (if breaks
+                        (aset results idx
+                              (ekp--store-batch-result para line-pixel breaks cost))
+                      ;; C failed, fallback to Elisp
+                      (aset results idx
+                            (ekp--dp-cache-elisp para (ekp-para-string para) line-pixel)))))
+      (append results nil))))
 
 (defun ekp--dp-cache-via-c (para string line-pixel)
   "Compute breaks using C module with Elisp's pre-computed prefix arrays.
@@ -1063,8 +1158,17 @@ The removed space width is redistributed to remaining glues for proper justifica
 
 (defun ekp-pixel-justify (string line-pixel)
   "Justify multiline STRING to LINE-PIXEL.
-USE-CACHE is ignored; caching is always enabled via ekp--para-cache."
-  (let ((strs (split-string string "\n")))
+When C module is available and enabled, uses parallel batch processing."
+  (let* ((strs (split-string string "\n"))
+         (non-blank-strs (cl-remove-if #'string-blank-p strs))
+         (use-batch (and ekp-use-c-module
+                         (boundp 'ekp-c-module-loaded) ekp-c-module-loaded
+                         (fboundp 'ekp-c-break-batch)
+                         (> (length non-blank-strs) 1))))
+    ;; Pre-compute all DP results in parallel if using batch
+    (when use-batch
+      (ekp--dp-cache-batch non-blank-strs line-pixel))
+    ;; Now process each string (DP results are cached)
     (mapconcat (lambda (str)
                  (if (string-blank-p str)
                      ""
