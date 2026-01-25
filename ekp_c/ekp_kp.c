@@ -166,8 +166,10 @@ static void process_dp_range(void *arg)
                 max_w += p->hyphen_width;
             }
 
-            /* Too long? */
-            if (min_w > line_width) {
+            /* Too long? Also handle is_last && ideal > line_width.
+             * This matches Elisp's ekp--dp-cache-elisp which breaks when
+             * content won't fit even at the end of a paragraph. */
+            if (min_w > line_width || (is_last && ideal > line_width)) {
                 /* Force break if nothing else found */
                 if (k > 1 && work->demerits[k - 1] >= EKP_INFINITY) {
                     int32_t rest = line_width - (p->ideal_prefix[k - 1] -
@@ -497,8 +499,10 @@ ekp_result_t *ekp_break_with_prefixes(
                 max_w += hyphen_width;
             }
 
-            /* Too long? Force break at k-1 if no valid break found yet */
-            if (min_w > line_width) {
+            /* Too long? Also handle is_last && ideal > line_width.
+             * This matches Elisp's ekp--dp-cache-elisp which breaks when
+             * content won't fit even at the end of a paragraph. */
+            if (min_w > line_width || (is_last && ideal > line_width)) {
                 if (k > i + 1 && demerits[k - 1] >= EKP_INFINITY) {
                     /* Force break at previous position with high penalty */
                     int32_t prev_ideal = ideal_prefix[k - 1] - ideal_prefix[i] - lead_ideal;
