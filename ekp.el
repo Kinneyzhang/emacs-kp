@@ -175,31 +175,6 @@ Each takes ideal, stretch (+), and shrink (-) values."
   "[A-Za-z'\\-\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF\u0100-\u024F\u1E00-\u1EFF]"
   "Regexp matching Latin characters including accented forms.")
 
-(defun ekp--split-hyphenated-word (word)
-  "Split WORD at existing hyphens into parts with hyphens attached.
-E.g., \"help-echo\" -> (\"help-\" \"echo\").
-Handles edge cases: trailing hyphens, leading hyphens, consecutive hyphens.
-Does NOT apply dictionary hyphenation - just uses existing hyphens."
-  (let ((result nil)
-        (current nil)  ; list of chars (built in reverse)
-        (i 0)
-        (len (length word)))
-    (while (< i len)
-      (let ((char (aref word i)))
-        (if (= char ?-)
-            ;; Hyphen: attach to current segment and push
-            (progn
-              (push char current)
-              (push (apply #'string (nreverse current)) result)
-              (setq current nil))
-          ;; Non-hyphen: accumulate
-          (push char current)))
-      (cl-incf i))
-    ;; Push remaining content (last segment after final hyphen, or entire word if no hyphen)
-    (unless (null current)
-      (push (apply #'string (nreverse current)) result))
-    (nreverse result)))
-
 (defun ekp--split-with-hyphen (string)
   "Split STRING into boxes with hyphenation points marked.
 Returns (boxes-vector . hyphen-positions-vector)."
@@ -210,16 +185,12 @@ Returns (boxes-vector . hyphen-positions-vector)."
            (format "^\\([[{<„‚¿¡*@\"']*\\)\\(%s+\\)\\([]}>.,*?\"']*\\)$"
                    ekp--latin-regexp)
            box)
-          ;; Latin word (possibly with embedded hyphens)
+          ;; Latin word: apply hyphenation
           (let* ((left (match-string 1 box))
                  (word (match-string 2 box))
                  (right (match-string 3 box))
-                 ;; If word contains hyphens, split at those points only (no further hyphenation)
-                 ;; Otherwise, apply dictionary hyphenation
-                 (parts (if (string-match-p "-" word)
-                            (ekp--split-hyphenated-word word)
-                          (ekp-hyphen-boxes
-                           (ekp-hyphen-create ekp-latin-lang) word)))
+                 (parts (ekp-hyphen-boxes
+                         (ekp-hyphen-create ekp-latin-lang) word))
                  (n (length parts)))
             (when left (setcar parts (concat left (car parts))))
             (when right (setcar (last parts)
@@ -613,16 +584,51 @@ When looseness != 0, alt-paths tracks alternative paths by (position . line-coun
     (list backptrs demerits rests gaps
           hyphen-counts fitness-classes line-counts alt-paths)))
 
+(defun ekp--leading-space-width (i boxes-types boxes-widths)
+  "Compute total width of leading space boxes starting at position I.
+Returns 0 if box at I is not a space box."
+  (let ((n (length boxes-types))
+        (width 0)
+        (pos i))
+    (while (and (< pos n)
+                (let ((box-type (aref boxes-types pos)))
+                  (and box-type (eq (car box-type) 'space))))
+      (cl-incf width (aref boxes-widths pos))
+      (cl-incf pos))
+    width))
+
+(defun ekp--trailing-space-width (k boxes-types boxes-widths)
+  "Compute total width of trailing space boxes ending before position K.
+K is the exclusive end position (break point).
+Returns 0 if box at K-1 is not a space box."
+  (let ((width 0)
+        (pos (1- k)))
+    (while (and (>= pos 0)
+                (let ((box-type (aref boxes-types pos)))
+                  (and box-type (eq (car box-type) 'space))))
+      (cl-incf width (aref boxes-widths pos))
+      (cl-decf pos))
+    width))
+
 (defun ekp--dp-line-metrics (para i k glues-types ideal-prefixs min-prefixs max-prefixs)
   "Compute line metrics for boxes I to K using PARA's stored glue params.
-Returns (ideal-pixel min-pixel max-pixel) excluding leading glue."
-  (let ((leading-glue-type (aref glues-types i)))
+Returns (ideal-pixel min-pixel max-pixel) excluding leading glue and leading/trailing space boxes."
+  (let* ((leading-glue-type (aref glues-types i))
+         (boxes-types (ekp-para-boxes-types para))
+         (boxes-widths (ekp-para-boxes-widths para))
+         ;; Compute width of leading/trailing space boxes (these will be stripped during rendering)
+         (leading-space-width (ekp--leading-space-width i boxes-types boxes-widths))
+         (trailing-space-width (ekp--trailing-space-width k boxes-types boxes-widths))
+         (space-width (+ leading-space-width trailing-space-width)))
     (list (- (aref ideal-prefixs k) (aref ideal-prefixs i)
-             (ekp--para-glue-ideal para leading-glue-type))
+             (ekp--para-glue-ideal para leading-glue-type)
+             space-width)
           (- (aref min-prefixs k) (aref min-prefixs i)
-             (ekp--para-glue-min para leading-glue-type))
+             (ekp--para-glue-min para leading-glue-type)
+             space-width)
           (- (aref max-prefixs k) (aref max-prefixs i)
-             (ekp--para-glue-max para leading-glue-type)))))
+             (ekp--para-glue-max para leading-glue-type)
+             space-width))))
 
 (defun ekp--dp-force-break (para i k arrays glues-types hyphen-positions ideal-prefixs hyphen-pixel line-pixel)
   "Force a break at K-1 when no valid break found. Update ARRAYS.
@@ -635,9 +641,17 @@ Uses PARA's stored glue params for consistency."
          (line-counts (nth 6 arrays))
          (break-pos (1- k))
          (hyphenate-p (ekp--hyphenate-p hyphen-positions break-pos))
+         (boxes-types (ekp-para-boxes-types para))
+         (boxes-widths (ekp-para-boxes-widths para))
+         ;; Exclude leading/trailing space boxes (will be stripped during rendering)
+         ;; Use k as the exclusive end for trailing space calculation
+         (leading-space-width (ekp--leading-space-width i boxes-types boxes-widths))
+         (trailing-space-width (ekp--trailing-space-width k boxes-types boxes-widths))
+         (space-width (+ leading-space-width trailing-space-width))
          (ideal-pixel (- (aref ideal-prefixs break-pos)
                          (aref ideal-prefixs i)
-                         (ekp--para-glue-ideal para (aref glues-types i))))
+                         (ekp--para-glue-ideal para (aref glues-types i))
+                         space-width))
          (rest-pixel (- line-pixel ideal-pixel)))
     (when hyphenate-p (cl-incf ideal-pixel hyphen-pixel))
     ;; Force break with high demerits
