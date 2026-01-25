@@ -128,11 +128,16 @@
 PREV-STATE: 1=latin, 2=CJK (previous content type).
 NEXT-WIDTH: width of next character (1=latin, 2=CJK).
 Rules:
-- Latin-Latin: single space handled by glue, multiple preserves all but last
-- CJK involved (prev or next is CJK): preserve ALL spaces"
+- Leading spaces (boxes is nil): preserve all spaces
+- CJK involved (prev or next is CJK): preserve all spaces
+- Latin-Latin with single space: let glue handle it
+- Latin-Latin with multiple spaces: preserve all but last"
   (when (and spaces (not (string-empty-p spaces)))
     (let ((cjk-involved (or (= prev-state 2) (= next-width 2))))
       (cond
+       ;; Leading spaces (no previous boxes): preserve all
+       ((null boxes)
+        (setq boxes (cons spaces boxes)))
        ;; CJK involved: preserve all spaces
        (cjk-involved
         (setq boxes (cons spaces boxes)))
