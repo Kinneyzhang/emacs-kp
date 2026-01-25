@@ -470,26 +470,30 @@ Returns total demerits for this break."
         (seq-count (lambda (it) (eq 'mws it)) glues-types)
         (seq-count (lambda (it) (eq 'cws it)) glues-types)))
 
-(defun ekp--compute-stretch-capacity (gaps-list)
-  "Return total stretchable pixels for GAPS-LIST."
-  (+ (* (nth 0 gaps-list) ekp-lws-stretch-pixel)
-     (* (nth 1 gaps-list) ekp-mws-stretch-pixel)
-     (* (nth 2 gaps-list) ekp-cws-stretch-pixel)))
+(defun ekp--compute-stretch-capacity (para gaps-list)
+  "Return total stretchable pixels for GAPS-LIST using PARA's stored params."
+  (let ((params (ekp-para-glue-params para)))
+    (+ (* (nth 0 gaps-list) (plist-get params :lws-stretch))
+       (* (nth 1 gaps-list) (plist-get params :mws-stretch))
+       (* (nth 2 gaps-list) (plist-get params :cws-stretch)))))
 
-(defun ekp--compute-shrink-capacity (gaps-list)
-  "Return total shrinkable pixels for GAPS-LIST (CJK gaps don't shrink)."
-  (+ (* (nth 0 gaps-list) ekp-lws-shrink-pixel)
-     (* (nth 1 gaps-list) ekp-mws-shrink-pixel)))
+(defun ekp--compute-shrink-capacity (para gaps-list)
+  "Return total shrinkable pixels for GAPS-LIST using PARA's stored params.
+CJK gaps don't shrink."
+  (let ((params (ekp-para-glue-params para)))
+    (+ (* (nth 0 gaps-list) (plist-get params :lws-shrink))
+       (* (nth 1 gaps-list) (plist-get params :mws-shrink)))))
 
-(defun ekp--line-badness-and-fitness (ideal-pixel line-pixel glues-types)
+(defun ekp--line-badness-and-fitness (para ideal-pixel line-pixel glues-types)
   "Compute badness, fitness class, and gaps for a line.
+Uses PARA's stored glue params for consistent capacity calculation.
 Returns (:badness NUM :fitness NUM :gaps LIST :adjustment NUM :flexibility NUM)."
   (let* ((glues-types (seq-drop glues-types 1))
          (gaps-list (ekp--gaps-list glues-types))
          (adjustment (- line-pixel ideal-pixel))
          (flexibility (if (> adjustment 0)
-                          (ekp--compute-stretch-capacity gaps-list)
-                        (ekp--compute-shrink-capacity gaps-list)))
+                          (ekp--compute-stretch-capacity para gaps-list)
+                        (ekp--compute-shrink-capacity para gaps-list)))
          (badness (ekp--compute-badness adjustment flexibility))
          (fitness (ekp--compute-fitness-class adjustment flexibility)))
     (list :badness badness
@@ -556,11 +560,12 @@ Uses PARA's stored glue params for consistency."
     (aset gaps break-pos
           (ekp--gaps-list (seq-drop (cl-subseq glues-types i break-pos) 1)))))
 
-(defun ekp--dp-compute-line-demerits (j is-last end-with-hyphenp
+(defun ekp--dp-compute-line-demerits (para j is-last end-with-hyphenp
                                         ideal-pixel line-pixel
                                         glues-types i k
                                         prev-hyphen-count prev-fitness)
   "Compute line demerits using full K-P formula.
+Uses PARA's stored glue params for consistent badness calculation.
 Returns (demerits gaps fitness new-hyphen-count)."
   (cond
    ;; Single word line
@@ -584,7 +589,7 @@ Returns (demerits gaps fitness new-hyphen-count)."
    ;; Normal line
    (t
     (let* ((result (ekp--line-badness-and-fitness
-                    ideal-pixel line-pixel
+                    para ideal-pixel line-pixel
                     (seq-subseq glues-types i k)))
            (badness (plist-get result :badness))
            (fitness (plist-get result :fitness))
@@ -871,7 +876,7 @@ Uses PARA's stored glue-params for consistency with cached prefix arrays."
                           (and is-last (<= ideal-pixel line-pixel)))
                   (pcase-let ((`(,dem ,line-gaps ,fitness ,new-hyphen)
                                (ekp--dp-compute-line-demerits
-                                j is-last end-with-hyphenp
+                                para j is-last end-with-hyphenp
                                 ideal-pixel line-pixel glues-types i k
                                 prev-hyphen-count prev-fitness)))
                     (let ((total-dem (+ (aref demerits i) dem)))
@@ -917,22 +922,23 @@ return the value of KEY in plist."
 ;; Distributes extra/deficit space across glues (gaps between boxes)
 ;; Priority: latin gaps → mixed gaps → CJK gaps
 
-(defun ekp--distribute-gap-adjustment (rest-pixel gaps-list stretch-p)
-  "Distribute REST-PIXEL across GAPS-LIST.
+(defun ekp--distribute-gap-adjustment (para rest-pixel gaps-list stretch-p)
+  "Distribute REST-PIXEL across GAPS-LIST using PARA's stored glue params.
 STRETCH-P indicates stretch (t) or shrink (nil) mode.
 Returns ((latin-adj . latin-extra) (mix-adj . mix-extra) (cjk-adj . cjk-extra))."
-  (let* ((latin-gaps (nth 0 gaps-list))
+  (let* ((params (ekp-para-glue-params para))
+         (latin-gaps (nth 0 gaps-list))
          (mix-gaps (nth 1 gaps-list))
          (cjk-gaps (nth 2 gaps-list))
          (remaining rest-pixel)
-         ;; Per-gap adjustment values
+         ;; Per-gap adjustment values from para's stored params
          (latin-change (if stretch-p
-                           ekp-lws-stretch-pixel
-                         ekp-lws-shrink-pixel))
+                           (plist-get params :lws-stretch)
+                         (plist-get params :lws-shrink)))
          (mix-change (if stretch-p
-                         ekp-mws-stretch-pixel
-                       ekp-mws-shrink-pixel))
-         (cjk-change (if stretch-p ekp-cws-stretch-pixel 0))
+                         (plist-get params :mws-stretch)
+                       (plist-get params :mws-shrink)))
+         (cjk-change (if stretch-p (plist-get params :cws-stretch) 0))
          ;; Results
          (latin-adj 0) (latin-extra 0)
          (mix-adj 0) (mix-extra 0)
@@ -1006,7 +1012,7 @@ Returns list of pixel values for each glue. Uses PARA's stored glue params."
       (append '(0) (mapcar (lambda (type) (ekp--para-glue-ideal para type)) glues-types) '(0))
     (let* ((stretch-p (> rest-pixel 0))
            (distribution (ekp--distribute-gap-adjustment
-                          (abs rest-pixel) gaps-list stretch-p))
+                          para (abs rest-pixel) gaps-list stretch-p))
            (glue-pixels (ekp--compute-glue-pixels para glues-types distribution stretch-p)))
       (append '(0) glue-pixels '(0)))))
 
