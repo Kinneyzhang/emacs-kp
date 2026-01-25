@@ -178,14 +178,27 @@ Each takes ideal, stretch (+), and shrink (-) values."
 (defun ekp--split-hyphenated-word (word)
   "Split WORD at existing hyphens into parts with hyphens attached.
 E.g., \"help-echo\" -> (\"help-\" \"echo\").
+Handles edge cases: trailing hyphens, leading hyphens, consecutive hyphens.
 Does NOT apply dictionary hyphenation - just uses existing hyphens."
-  (let* ((segments (split-string word "-" t))  ; t = omit empty/null strings
-         (num-segs (length segments)))
-    (cl-loop for seg in segments
-             for i from 0
-             collect (if (< i (1- num-segs))
-                         (concat seg "-")
-                       seg))))
+  (let ((result nil)
+        (current nil)  ; list of chars (built in reverse)
+        (i 0)
+        (len (length word)))
+    (while (< i len)
+      (let ((char (aref word i)))
+        (if (= char ?-)
+            ;; Hyphen: attach to current segment and push
+            (progn
+              (push char current)
+              (push (apply #'string (nreverse current)) result)
+              (setq current nil))
+          ;; Non-hyphen: accumulate
+          (push char current)))
+      (cl-incf i))
+    ;; Push remaining content (last segment after final hyphen, or entire word if no hyphen)
+    (unless (null current)
+      (push (apply #'string (nreverse current)) result))
+    (nreverse result)))
 
 (defun ekp--split-with-hyphen (string)
   "Split STRING into boxes with hyphenation points marked.
