@@ -194,6 +194,12 @@ static void process_dp_range(void *arg)
             int32_t flexibility = (adjustment > 0) ?
                 (max_w - ideal) : (ideal - min_w);
 
+            /* Single-box line: use minimum flexibility of 1 to avoid infinite badness
+             * This matches Elisp's behavior for lines containing only one box */
+            bool is_single_box = (k == i + 1);
+            if (is_single_box && flexibility <= 0)
+                flexibility = 1;
+
             double badness;
             uint8_t fit;
             double dem;
@@ -209,6 +215,17 @@ static void process_dp_range(void *arg)
                 fit = FITNESS_DECENT;
                 dem = prev_dem + (work->line_penalty + badness) *
                                  (work->line_penalty + badness);
+            } else if (is_single_box) {
+                /* Single-box line: use fixed flexibility=1, fitness=decent */
+                badness = compute_badness(adjustment, 1);
+                fit = FITNESS_DECENT;
+
+                int penalty = end_hyphen ? work->hyphen_penalty : 0;
+                dem = prev_dem + compute_demerits(badness, penalty,
+                                                  prev_fit, fit,
+                                                  end_hyphen, prev_hyph,
+                                                  work->line_penalty,
+                                                  work->fitness_penalty);
             } else {
                 badness = compute_badness(adjustment, flexibility);
                 fit = compute_fitness(adjustment, flexibility);
@@ -577,6 +594,12 @@ ekp_result_t *ekp_break_with_prefixes(
             int32_t adj = line_width - ideal;
             int32_t flex = (adj > 0) ? (max_w - ideal) : (ideal - min_w);
 
+            /* Single-box line: use minimum flexibility of 1 to avoid infinite badness
+             * This matches Elisp's behavior for lines containing only one box */
+            bool is_single_box = (k == i + 1);
+            if (is_single_box && flex <= 0)
+                flex = 1;
+
             double bad;
             uint8_t fit;
             double dem;
@@ -586,6 +609,13 @@ ekp_result_t *ekp_break_with_prefixes(
                 bad = (fill < last_ratio) ? 50.0 * (1.0 - fill) : 0.0;
                 fit = FITNESS_DECENT;
                 dem = demerits[i] + (lp + bad) * (lp + bad);
+            } else if (is_single_box) {
+                /* Single-box line: use fixed flexibility=1, fitness=decent */
+                bad = compute_badness(adj, 1);
+                fit = FITNESS_DECENT;
+                int pen = end_hyph ? hp : 0;
+                dem = demerits[i] + compute_demerits(bad, pen, fitness[i], fit,
+                                                      end_hyph, hyph_counts[i], lp, fp);
             } else {
                 bad = compute_badness(adj, flex);
                 fit = compute_fitness(adj, flex);

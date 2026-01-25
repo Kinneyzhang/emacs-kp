@@ -57,6 +57,9 @@ Set to nil to force pure Elisp implementation.")
 
 ;;;; K-P Algorithm Parameters
 
+(defvar ekp-default-cws-stretch-pixel 2
+  "Max stretched pixel of whitespace between CJK chars.")
+
 (defvar ekp-line-penalty 10
   "Penalty for each line break. Higher = fewer lines. Default 10.")
 
@@ -119,7 +122,7 @@ Set to nil to force pure Elisp implementation.")
          (mws (- lws 1)))
     (ekp-param-set lws (ceiling (/ (float lws) 2)) (ceiling (/ (float lws) 3))
                    mws (ceiling (/ (float mws) 2)) (ceiling (/ (float mws) 3))
-                   0 3 0)))
+                   0 ekp-default-cws-stretch-pixel 0)))
 
 (defun ekp-param-set (lws-i lws-+ lws-- mws-i mws-+ mws-- cws-i cws-+ cws--)
   "Set all spacing parameters.
