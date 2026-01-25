@@ -275,7 +275,20 @@ static void dp_process_position(
         uint8_t fit;
         double dem;
         
-        if (is_last) {
+        /* Single-box line: use fixed flexibility=1, fitness=decent
+         * This must come BEFORE is_last check to match Elisp behavior
+         * where single-box lines use consistent calculation */
+        if (is_single_box) {
+            badness = compute_badness(adjustment, 1);
+            fit = FITNESS_DECENT;
+            
+            int penalty = end_hyphen ? in->hyphen_penalty : 0;
+            dem = prev_dem + compute_demerits(badness, penalty,
+                                              prev_fit, fit,
+                                              end_hyphen, prev_hyph,
+                                              in->line_penalty,
+                                              in->fitness_penalty);
+        } else if (is_last) {
             /* Last line: minimal penalty if reasonably filled */
             double fill_ratio = (double)ideal / line_width;
             if (fill_ratio < in->last_line_ratio) {
@@ -286,17 +299,6 @@ static void dp_process_position(
             fit = FITNESS_DECENT;
             dem = prev_dem + (in->line_penalty + badness) *
                              (in->line_penalty + badness);
-        } else if (is_single_box) {
-            /* Single-box line: use fixed flexibility=1, fitness=decent */
-            badness = compute_badness(adjustment, 1);
-            fit = FITNESS_DECENT;
-            
-            int penalty = end_hyphen ? in->hyphen_penalty : 0;
-            dem = prev_dem + compute_demerits(badness, penalty,
-                                              prev_fit, fit,
-                                              end_hyphen, prev_hyph,
-                                              in->line_penalty,
-                                              in->fitness_penalty);
         } else {
             badness = compute_badness(adjustment, flexibility);
             fit = compute_fitness(adjustment, flexibility);
