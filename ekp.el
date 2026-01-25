@@ -612,14 +612,19 @@ Returns 0 if box at K-1 is not a space box."
 
 (defun ekp--dp-line-metrics (para i k glues-types ideal-prefixs min-prefixs max-prefixs)
   "Compute line metrics for boxes I to K using PARA's stored glue params.
-Returns (ideal-pixel min-pixel max-pixel) excluding leading glue and
-leading/trailing space boxes (which are stripped during rendering)."
+Returns (ideal-pixel min-pixel max-pixel) excluding leading glue.
+For first line (i=0): includes leading space widths (paragraph indentation).
+For non-first lines (i>0): excludes leading space widths (line-break artifacts).
+Always excludes trailing space widths."
   (let* ((leading-glue-type (aref glues-types i))
          (boxes-types (ekp-para-boxes-types para))
          (boxes-widths (ekp-para-boxes-widths para))
-         ;; Compute width of leading/trailing space boxes
-         ;; These are stripped during rendering, so exclude from line metrics
-         (leading-space-w (ekp--leading-space-width i boxes-types boxes-widths))
+         ;; For non-first lines, exclude leading space width (will be stripped)
+         ;; First line (i=0) keeps leading spaces for paragraph indentation
+         (leading-space-w (if (> i 0)
+                              (ekp--leading-space-width i boxes-types boxes-widths)
+                            0))
+         ;; Always exclude trailing space width (always stripped)
          (trailing-space-w (ekp--trailing-space-width k boxes-types boxes-widths))
          (space-w (+ leading-space-w trailing-space-w)))
     (list (- (aref ideal-prefixs k) (aref ideal-prefixs i)
@@ -645,8 +650,11 @@ Uses PARA's stored glue params for consistency."
          (hyphenate-p (ekp--hyphenate-p hyphen-positions break-pos))
          (boxes-types (ekp-para-boxes-types para))
          (boxes-widths (ekp-para-boxes-widths para))
-         ;; Exclude leading/trailing space widths (stripped during rendering)
-         (leading-space-w (ekp--leading-space-width i boxes-types boxes-widths))
+         ;; For non-first lines, exclude leading space width
+         (leading-space-w (if (> i 0)
+                              (ekp--leading-space-width i boxes-types boxes-widths)
+                            0))
+         ;; Always exclude trailing space width
          (trailing-space-w (ekp--trailing-space-width k boxes-types boxes-widths))
          (space-w (+ leading-space-w trailing-space-w))
          (ideal-pixel (- (aref ideal-prefixs break-pos)
@@ -1323,8 +1331,11 @@ The extra width is distributed to all glues except leading (first) glue."
                        (last glues))))))))  ; trailing glue unchanged
   glues)
 
-(defun ekp--strip-line-spaces (line-boxes line-glues line-boxes-widths)
-  "Strip leading/trailing space boxes from LINE-BOXES.
+(defun ekp--strip-line-spaces (line-boxes line-glues line-boxes-widths
+                                &optional strip-leading strip-trailing)
+  "Strip leading/trailing space boxes from LINE-BOXES based on flags.
+STRIP-LEADING: if non-nil, strip leading space boxes (default: nil = keep).
+STRIP-TRAILING: if non-nil, strip trailing space boxes (default: nil = keep).
 Returns (stripped-boxes . adjusted-glues) with extra width redistributed.
 LINE-BOXES-WIDTHS is the pixel widths corresponding to LINE-BOXES.
 The removed space width is redistributed to remaining glues for proper justification."
@@ -1333,25 +1344,27 @@ The removed space width is redistributed to remaining glues for proper justifica
          (widths (append line-boxes-widths nil))
          (removed-width 0))  ; Track total width of removed space boxes
     (when (> (length boxes) 0)
-      ;; Strip trailing space boxes
-      (while (and boxes (ekp--box-space-p (car (last boxes))))
-        ;; Accumulate width of removed space box
-        (cl-incf removed-width (car (last widths)))
-        (setq boxes (butlast boxes))
-        (setq widths (butlast widths))
-        ;; Remove second-to-last glue (the one before the trailing space box)
-        ;; Keep the last glue which is trailing space for the line
-        (when (> (length glues) 1)
-          (setq glues (append (butlast (butlast glues)) (last glues)))))
-      ;; Strip leading space boxes
-      (while (and boxes (ekp--box-space-p (car boxes)))
-        ;; Accumulate width of removed space box
-        (cl-incf removed-width (car widths))
-        (setq boxes (cdr boxes))
-        (setq widths (cdr widths))
-        ;; Remove the second glue (the one after the leading glue)
-        (when (> (length glues) 1)
-          (setq glues (cons (car glues) (cddr glues))))))
+      ;; Strip trailing space boxes (if requested)
+      (when strip-trailing
+        (while (and boxes (ekp--box-space-p (car (last boxes))))
+          ;; Accumulate width of removed space box
+          (cl-incf removed-width (car (last widths)))
+          (setq boxes (butlast boxes))
+          (setq widths (butlast widths))
+          ;; Remove second-to-last glue (the one before the trailing space box)
+          ;; Keep the last glue which is trailing space for the line
+          (when (> (length glues) 1)
+            (setq glues (append (butlast (butlast glues)) (last glues))))))
+      ;; Strip leading space boxes (if requested)
+      (when strip-leading
+        (while (and boxes (ekp--box-space-p (car boxes)))
+          ;; Accumulate width of removed space box
+          (cl-incf removed-width (car widths))
+          (setq boxes (cdr boxes))
+          (setq widths (cdr widths))
+          ;; Remove the second glue (the one after the leading glue)
+          (when (> (length glues) 1)
+            (setq glues (cons (car glues) (cddr glues)))))))
     ;; Redistribute removed width to remaining glues for proper justification
     (when (> removed-width 0)
       (setq glues (ekp--redistribute-extra-width glues removed-width)))
@@ -1373,9 +1386,15 @@ The removed space width is redistributed to remaining glues for proper justifica
              (line-boxes-widths (cl-subseq boxes-widths start end))
              (line-glues-raw (mapcar #'ekp-pixel-spacing
                                      (aref lines-glues i)))
-             ;; Strip leading/trailing space boxes, adjust trailing glue
+             ;; Strip space boxes:
+             ;; - First line (i=0): keep leading spaces (paragraph indentation)
+             ;; - Other lines: strip leading spaces (line-break artifacts)
+             ;; - All lines: strip trailing spaces
+             (is-first-line (= i 0))
              (stripped (ekp--strip-line-spaces line-boxes line-glues-raw
-                                               line-boxes-widths))
+                                               line-boxes-widths
+                                               (not is-first-line)  ; strip-leading
+                                               t))                   ; strip-trailing
              (line-boxes (car stripped))
              (line-glues (cdr stripped))
              ;; Check if last box of this line needs hyphen
