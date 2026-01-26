@@ -4,10 +4,24 @@
 # Uses pthread for multi-threading, optimizes for native CPU.
 
 # Detect OS
-UNAME := $(shell uname)
+ifeq ($(OS),Windows_NT)
+    UNAME := Windows
+else
+    UNAME := $(shell uname 2>/dev/null || echo Unknown)
+endif
 
 # Compiler settings
-CC := cc
+# Default to gcc on Windows if cc is not found
+ifeq ($(UNAME), Windows)
+    CC = gcc
+    # Default Emacs root for this environment (can be overridden)
+    EMACS_ROOT ?= C:/Users/26289/Apps/emacs-30.2/emacs-30.2
+    EMACS ?= $(EMACS_ROOT)/bin/emacs.exe
+else
+    CC ?= cc
+    EMACS ?= emacs
+endif
+
 CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O3 -fPIC
 CFLAGS += -march=native -flto
 CFLAGS += -D_POSIX_C_SOURCE=200809L
@@ -32,9 +46,14 @@ else ifeq ($(UNAME), Linux)
     # Linux
     MODULE_EXT := so
     LDFLAGS := -shared -lpthread -lm
-else
+else ifeq ($(UNAME), Windows)
     # Windows (MinGW)
     MODULE_EXT := dll
+    LDFLAGS := -shared -lpthread
+    CFLAGS += -I$(EMACS_ROOT)/include
+else
+    # Fallback / Unknown
+    MODULE_EXT := so
     LDFLAGS := -shared -lpthread
 endif
 
@@ -70,7 +89,7 @@ install: $(MODULE)
 
 # Test with Emacs
 test: $(MODULE)
-	emacs -Q --batch \
+	$(EMACS) -Q --batch \
 		-L . \
 		--eval '(module-load (expand-file-name "./$(MODULE)"))' \
 		--eval '(message "ekp-c version: %s" (ekp-c-version))' \
@@ -86,6 +105,7 @@ info:
 	@echo "LDFLAGS: $(LDFLAGS)"
 	@echo "MODULE: $(MODULE)"
 	@echo "UNAME: $(UNAME)"
+	@echo "EMACS: $(EMACS)"
 ifdef EMACS_INCLUDE
 	@echo "EMACS_INCLUDE: $(EMACS_INCLUDE)"
 endif
