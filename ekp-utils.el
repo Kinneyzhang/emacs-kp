@@ -260,8 +260,7 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
 
 ;;; Rust Module Support (currently unused — ekp_rust/ directory does not exist)
 
-(defun ekp-rust-module-reload (module)
-  (ekp--module-reload module))
+(defalias 'ekp-rust-module-reload #'ekp--module-reload)
 
 (defun ekp-module-dir ()
   (when-let ((root-dir (ekp-root-dir)))

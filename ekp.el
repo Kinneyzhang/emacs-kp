@@ -541,10 +541,12 @@ Uses binary search for O(log n) lookup."
          (= (aref vec lo) n))))
 
 (defalias 'ekp--hyphenate-p #'ekp--sorted-vector-member-p
-  "Return non-nil if position N ends with hyphenation.")
+  "Return non-nil if position N in HYPHEN-POSITIONS ends with hyphenation.
+HYPHEN-POSITIONS is a sorted vector of indices where hyphenation can occur.")
 
 (defalias 'ekp--flagged-p #'ekp--sorted-vector-member-p
-  "Return non-nil if position N is a flagged (forced) break.")
+  "Return non-nil if position N in FLAGGED-POSITIONS is a flagged (forced) break.
+FLAGGED-POSITIONS is a sorted vector of indices where forced breaks occur.")
 
 ;;;; Dynamic Programming Line Breaking
 
