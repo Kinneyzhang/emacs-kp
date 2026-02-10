@@ -92,6 +92,7 @@ ekp_thread_pool_t *ekp_pool_create(size_t num_threads)
         }
     }
 
+    pool->thread_count = num_threads;
     return pool;
 }
 
@@ -105,9 +106,8 @@ void ekp_pool_destroy(ekp_thread_pool_t *pool)
     pthread_cond_broadcast(&pool->queue_cond);
     pthread_mutex_unlock(&pool->queue_lock);
 
-    for (size_t i = 0; i < EKP_THREAD_POOL_SIZE; i++) {
-        if (pool->threads[i])
-            pthread_join(pool->threads[i], NULL);
+    for (size_t i = 0; i < pool->thread_count; i++) {
+        pthread_join(pool->threads[i], NULL);
     }
 
     pthread_mutex_destroy(&pool->queue_lock);

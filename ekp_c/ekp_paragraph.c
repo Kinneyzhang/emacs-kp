@@ -311,6 +311,11 @@ ekp_paragraph_t *ekp_para_create(const char *text, size_t len,
         return NULL;
     }
 
+    if (!ekp_global) {
+        ekp_para_destroy(p);
+        return NULL;
+    }
+
     ekp_spacing_t *sp = &ekp_global->spacing;
 
     for (size_t i = 0; i < final_count; i++) {

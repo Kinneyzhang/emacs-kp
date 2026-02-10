@@ -228,12 +228,6 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
         (setq boxes (ekp--flush-trailing-spaces spaces boxes))
         (vconcat (nreverse boxes))))))
 
-(defun ekp-clear-caches ()
-  (interactive)
-  (setq ekp-caches
-        (make-hash-table
-         :test 'equal :size 100 :rehash-size 1.5 :weakness nil)))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defun ekp-start-process-with-callback
@@ -257,11 +251,17 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
                    ,buffer-name))))
     process))
 
-(defun ekp-rust-module-reload (module)
+(defun ekp--module-reload (module)
+  "Load MODULE from a temp copy to allow rebuilding."
   (let ((tmpfile (make-temp-file
                   (file-name-nondirectory module))))
     (copy-file module tmpfile t)
     (module-load tmpfile)))
+
+;;; Rust Module Support (currently unused — ekp_rust/ directory does not exist)
+
+(defun ekp-rust-module-reload (module)
+  (ekp--module-reload module))
 
 (defun ekp-module-dir ()
   (when-let ((root-dir (ekp-root-dir)))
@@ -279,7 +279,7 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
   (if (executable-find "cargo")
       (let ((file (ekp-module-file)))
         (if file
-            (ekp-rust-module-reload file)
+            (ekp--module-reload file)
           (ekp-module-build)))
     (error "Please install cargo and add it to executable path!")))
 
@@ -293,10 +293,10 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
         ((eq system-type 'windows-nt)
          `("cmd.exe" "/c" ,(format "cd %s && cargo build -r"
                                    (ekp-module-dir))))
-        (t `("zsh" "-c" ,(format "cd %s && cargo build -r"
+        (t `(,shell-file-name "-c" ,(format "cd %s && cargo build -r"
                                  (ekp-module-dir)))))
        (lambda (proc buffer)
-         (ekp-rust-module-reload (ekp-module-file))
+         (ekp--module-reload (ekp-module-file))
          (message "ekp rust module reload success!")))
     (error "Please install cargo and add it to executable path!")))
 
@@ -322,12 +322,8 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
                               (t "ekp.so"))))
     (expand-file-name filename module-dir)))
 
-(defun ekp-c-module-reload (module)
-  "Load MODULE from a temp copy to allow rebuilding."
-  (let ((tmpfile (make-temp-file
-                  (file-name-nondirectory module))))
-    (copy-file module tmpfile t)
-    (module-load tmpfile)))
+(defalias 'ekp-c-module-reload #'ekp--module-reload
+  "Load MODULE from a temp copy to allow rebuilding.")
 
 (defun ekp-c-module-load ()
   "Load EKP C module if available."
@@ -368,7 +364,7 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
          (cond
           ((eq system-type 'windows-nt)
            `("cmd.exe" "/c" ,(format "cd %s && make" module-dir)))
-          (t `("zsh" "-c" ,(format "cd %s && make" module-dir))))
+          (t `(,shell-file-name "-c" ,(format "cd %s && make" module-dir))))
          (lambda (proc buffer)
            (ekp-c-module-load)
            (message "ekp C module build success!")))
