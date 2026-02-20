@@ -155,6 +155,7 @@ typedef struct {
  */
 typedef struct {
     pthread_t threads[EKP_THREAD_POOL_SIZE];
+    size_t thread_count;
     pthread_mutex_t queue_lock;
     pthread_cond_t queue_cond;
     pthread_cond_t done_cond;

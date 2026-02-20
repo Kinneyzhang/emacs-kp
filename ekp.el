@@ -124,11 +124,7 @@ Used for explicit line breaks in poetry, code blocks, etc.")
   "Internal flag for parameter initialization.")
 
 ;;;; Initialization
-
-(defun ekp-root-dir ()
-  "Return directory containing ekp.el."
-  (when ekp--load-file
-    (file-name-directory ekp--load-file)))
+;; ekp-root-dir is provided by ekp-utils.el
 
 (defun ekp--load-dicts ()
   "Load hyphenation dictionaries."
@@ -530,35 +526,27 @@ Returns (:badness NUM :fitness NUM :gaps LIST :adjustment NUM :flexibility NUM).
           :adjustment adjustment
           :flexibility flexibility)))
 
-(defun ekp--hyphenate-p (hyphen-positions n)
-  "Return non-nil if position N ends with hyphenation.
-HYPHEN-POSITIONS is a sorted vector of indices where hyphenation can occur.
-Uses binary search for O(log n) lookup instead of O(n) linear search."
-  (and hyphen-positions
-       (> (length hyphen-positions) 0)
-       (let ((lo 0)
-             (hi (1- (length hyphen-positions))))
-         (while (< lo hi)
-           (let ((mid (/ (+ lo hi) 2)))
-             (if (< (aref hyphen-positions mid) n)
-                 (setq lo (1+ mid))
-               (setq hi mid))))
-         (= (aref hyphen-positions lo) n))))
-
-(defun ekp--flagged-p (flagged-positions n)
-  "Return non-nil if position N is a flagged (forced) break.
-FLAGGED-POSITIONS is a sorted vector of indices where forced breaks occur.
+(defun ekp--sorted-vector-member-p (vec n)
+  "Return non-nil if N exists in sorted vector VEC.
 Uses binary search for O(log n) lookup."
-  (and flagged-positions
-       (> (length flagged-positions) 0)
+  (and vec
+       (> (length vec) 0)
        (let ((lo 0)
-             (hi (1- (length flagged-positions))))
+             (hi (1- (length vec))))
          (while (< lo hi)
            (let ((mid (/ (+ lo hi) 2)))
-             (if (< (aref flagged-positions mid) n)
+             (if (< (aref vec mid) n)
                  (setq lo (1+ mid))
                (setq hi mid))))
-         (= (aref flagged-positions lo) n))))
+         (= (aref vec lo) n))))
+
+(defalias 'ekp--hyphenate-p #'ekp--sorted-vector-member-p
+  "Return non-nil if position N in HYPHEN-POSITIONS ends with hyphenation.
+HYPHEN-POSITIONS is a sorted vector of indices where hyphenation can occur.")
+
+(defalias 'ekp--flagged-p #'ekp--sorted-vector-member-p
+  "Return non-nil if position N in FLAGGED-POSITIONS is a flagged (forced) break.
+FLAGGED-POSITIONS is a sorted vector of indices where forced breaks occur.")
 
 ;;;; Dynamic Programming Line Breaking
 
