@@ -115,6 +115,14 @@
         (and (>= char #x3000) (<= char #x303F))
         (and (>= char #xFF00) (<= char #xFF60)))))
 
+(defun ekp-cjk-opening-punct-p (str)
+  "Return non-nil if STR ends with a CJK opening punctuation.
+These characters must not appear at the end of a line (kinsoku rule).
+When STR is held as cjk-char, this checks if it still needs attachment."
+  (let ((char (aref str (1- (length str)))))
+    (memq (get-char-code-property char 'general-category)
+          '(Ps Pi))))
+
 (defun ekp--flush-latin-word (word boxes)
   "Push latin WORD to BOXES if non-nil. Return updated boxes."
   (if word (cons word boxes) boxes))
@@ -161,20 +169,41 @@ Return (new-state new-latin-word new-cjk-char new-boxes)."
       ;; Already in latin mode: accumulate
       (list 1 (concat latin-word str) nil boxes)
     ;; Was in CJK mode: flush CJK char, switch to latin
-    (list 1 str nil (ekp--flush-cjk-char cjk-char boxes))))
+    ;; If held cjk-char is opening punct, prepend it to the latin word
+    (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
+        (list 1 (concat cjk-char str) nil boxes)
+      (list 1 str nil (ekp--flush-cjk-char cjk-char boxes)))))
 
 (defun ekp--handle-cjk-char (str state latin-word cjk-char boxes)
   "Handle a CJK (width=2) character.
 Return (new-state new-latin-word new-cjk-char new-boxes)."
   (if (= state 1)
       ;; Was in latin mode: flush latin word, push CJK directly
-      (list 2 nil nil (cons str (ekp--flush-latin-word latin-word boxes)))
+      (let ((new-boxes (ekp--flush-latin-word latin-word boxes)))
+        (if (ekp-cjk-opening-punct-p str)
+            ;; Opening punct: hold as cjk-char (will attach to next char)
+            (list 2 nil str new-boxes)
+          (list 2 nil nil (cons str new-boxes))))
     ;; Already in CJK mode
-    (if (ekp-cjk-fw-punct-p str)
-        ;; Punctuation attaches to previous CJK char
-        (list 2 nil nil (cons (concat cjk-char str) boxes))
-      ;; Regular CJK char: flush previous, hold current
-      (list 2 nil str (ekp--flush-cjk-char cjk-char boxes)))))
+    (cond
+     ((ekp-cjk-opening-punct-p str)
+      ;; Opening punct: cannot end a line (kinsoku rule).
+      ;; If previous held char is also opening punct, concatenate them.
+      ;; Otherwise flush previous and hold this opening punct.
+      (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
+          (list 2 nil (concat cjk-char str) boxes)
+        (list 2 nil str (ekp--flush-cjk-char cjk-char boxes))))
+     ((ekp-cjk-fw-punct-p str)
+      ;; Closing/other punct: attaches to previous CJK char
+      (list 2 nil nil (cons (concat cjk-char str) boxes)))
+     (t
+      ;; Regular CJK char: prepend any held opening punct
+      (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
+          ;; Previous was opening punct: combine with current char and hold.
+          ;; Now last char is regular, so this won't be detected as opening.
+          (list 2 nil (concat cjk-char str) boxes)
+        ;; Normal case: flush previous, hold current
+        (list 2 nil str (ekp--flush-cjk-char cjk-char boxes)))))))
 
 (defun ekp-split-to-boxes (string)
   "Split STRING into typographic boxes.
@@ -197,9 +226,12 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
             (cond
              ;; Whitespace or zero-width: flush content, accumulate spaces
              ((or (string-blank-p str) (= 0 width))
-              (setq boxes (ekp--flush-cjk-char cjk-char boxes))
-              (when cjk-char (setq prev-state 2))
-              (setq cjk-char nil)
+              ;; Don't flush opening punct - keep it held for attachment to next char
+              (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
+                  nil  ; keep cjk-char as-is
+                (setq boxes (ekp--flush-cjk-char cjk-char boxes))
+                (when cjk-char (setq prev-state 2))
+                (setq cjk-char nil))
               (setq boxes (ekp--flush-latin-word latin-word boxes))
               (when latin-word (setq prev-state 1))
               (setq latin-word nil)
