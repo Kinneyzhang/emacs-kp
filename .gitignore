@@ -3,3 +3,4 @@ archive
 *.dylib
 *.dll
 *.o
+*.elc
