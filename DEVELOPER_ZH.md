@@ -212,6 +212,21 @@ C 端任何失败——NULL 结果、分配失败或非法参数——都回落�
 `ekp-test-c-parity-simple` / `ekp-test-c-parity-files` 及 300 例性质
 fuzz 验证。
 
+### 未来方向:段落句柄 API
+
+每次 `ekp-c-break-with-arrays` 调用都会重新编组段落的宽度无关数组
+(约 18·n 次 `env` 提取)。单次 justify 时这无关紧要,但
+`ekp-pixel-range-justify` 会对每个候选宽度重新编组同一批数组:即便
+段落缓存已暖,C 路径每个宽度仍约 12 ms,其中大部分是编组而非 DP
+(整篇样本的 DP 约 2.5 ms)。
+
+解法是 `make_user_ptr` 句柄:`ekp-c-para-upload` 把数组一次性拷进 C
+结构体并返回带 GC finalizer 的句柄,`ekp-c-break (handle, width)` 之后
+只传两个宽度相关标量。它**有意**不纳入本次发布——这是引入 C 端对象
+生命周期的破坏性(2.0)ABI 变更,而常见交互路径(单次 justify、
+`ekp-auto-justify-mode`)本就命中 dp-cache、避开了重复编组。当宽度
+搜索或超大批处理成为瓶颈时,这是明确的下一步。
+
 ## 8. 断词(ekp-hyphen.el)
 
 Liang 模式算法,兼容 Pyphen:

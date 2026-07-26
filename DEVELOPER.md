@@ -246,6 +246,25 @@ produces a different layout on partial failure.  The two engines are
 verified byte-identical by `ekp-test-c-parity-simple` /
 `ekp-test-c-parity-files` and the 300-case property fuzz.
 
+### Future direction: a paragraph-handle API
+
+Each `ekp-c-break-with-arrays` call re-marshals the paragraph's
+width-independent arrays (≈18·n `env` extractions).  This is invisible
+for a single justify but dominates `ekp-pixel-range-justify`, which
+re-marshals the same arrays once per candidate width: with a warm
+paragraph cache the C path still costs ≈12 ms per width, most of it
+marshal, not DP (the DP is ≈2.5 ms for the whole sample).
+
+The fix is a `make_user_ptr` handle: `ekp-c-para-upload` copies the
+arrays into a C struct once and returns a handle with a GC finalizer;
+`ekp-c-break (handle, width)` then passes only the two width-dependent
+scalars.  It is deliberately **not** part of this release — it is a
+breaking (2.0) ABI change introducing C-side object lifetime, and the
+common interactive paths (single justify, `ekp-auto-justify-mode`)
+already avoid the repeated marshal because they hit the dp-cache.  It
+is the clear next step whenever range search or very large batches
+become a bottleneck.
+
 ## 8. Hyphenation (ekp-hyphen.el)
 
 Liang's pattern algorithm, Pyphen-compatible:
