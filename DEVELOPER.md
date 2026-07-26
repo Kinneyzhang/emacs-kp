@@ -193,6 +193,16 @@ C module 1.4: `ekp-c-break-with-arrays` takes 14 args
 (…, forbidden-positions, tail-protrudes, hyphen-protrude); batch
 vectors have 14 elements; `ekp-c-set-penalties` takes 4–7.
 
+Performance after the feature wave (byte-compiled + C, Apple
+Silicon, batch): justify zh w=200 ≈ 54 ms, range zh ≈ 117 ms —
+justify at parity with the pre-feature numbers, range ≈ +55 % from
+the larger box count.  Hot-path caches: per-char `ekp--str-type'
+memo, interned glue strings, per-(paragraph, width) rendered-output
+cache in the dp-cache (capped at 64 widths).  Continuous-reflow
+reality check (60-paragraph, 26 k-char article, region layer
+included): ≈ 73 ms per width change cold, less on revisit;
+incremental single-paragraph re-justify after an edit ≈ 17 ms.
+
 ## 6. Looseness
 
 `ekp-looseness` ≠ 0 switches to `ekp--dp-run-loose`, a full

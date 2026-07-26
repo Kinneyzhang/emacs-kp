@@ -173,6 +173,9 @@ when non-zero the C module is bypassed automatically.")
   ;; zeros when `ekp-protrusion' is off); hyphen-protrude = same for
   ;; the soft hyphen at a hyphenated break.
   tail-protrudes hyphen-protrude
+  ;; Lazily memoized (START . END) offsets of each box in the source
+  ;; string (render-time lossless payloads); content-invariant.
+  (box-offsets-memo nil)
   ;; Glue params snapshot at para creation time (plist)
   glue-params
   (dp-cache nil :type hash-table))
@@ -305,11 +308,20 @@ Returns (boxes-vector . hyphen-positions-vector)."
     (cons (vconcat (apply #'append (nreverse new-boxes)))
           (vconcat (nreverse hyphen-idxs)))))
 
+(defvar ekp--str-type-table (make-char-table 'ekp-str-type)
+  "Per-character memo for `ekp--str-type' (a pure classification).")
+
 (defun ekp--str-type (str)
   "Classify single-character string STR.
 Returns one of `space', `latin', `cjk', `cjk-open', `cjk-close'.
 `cjk-open' must not end a line; `cjk-close' must not start one
 \(kinsoku) — enforced via `ekp-para-breaks-allowed'."
+  (let ((c (aref str 0)))
+    (or (aref ekp--str-type-table c)
+        (aset ekp--str-type-table c (ekp--str-type-1 str)))))
+
+(defun ekp--str-type-1 (str)
+  "Uncached `ekp--str-type'."
   (cond
    ;; Whitespace or zero-width characters
    ((or (string-blank-p str) (= (string-width str) 0)) 'space)
@@ -390,9 +402,12 @@ class instead.")
 Same box-level rule as `ekp--no-line-start-chars'; fullwidth openers
 are covered by the `cjk-open' class.")
 
-(defun ekp--box-pure-set-p (box set)
-  "Non-nil when BOX is non-empty and every char is a member of SET."
-  (let ((len (length box)) (chars (append set nil)) (i 0) (all t))
+(defconst ekp--no-line-start-char-list (append ekp--no-line-start-chars nil))
+(defconst ekp--no-line-end-char-list (append ekp--no-line-end-chars nil))
+
+(defun ekp--box-pure-set-p (box chars)
+  "Non-nil when BOX is non-empty and every char is a member of CHARS."
+  (let ((len (length box)) (i 0) (all t))
     (when (> len 0)
       (while (and all (< i len))
         (unless (memq (aref box i) chars)
@@ -403,12 +418,12 @@ are covered by the `cjk-open' class.")
 (defun ekp--box-no-line-start-p (box box-type)
   "Non-nil if BOX must not appear at the start of a line."
   (or (eq (car box-type) 'cjk-close)
-      (ekp--box-pure-set-p box ekp--no-line-start-chars)))
+      (ekp--box-pure-set-p box ekp--no-line-start-char-list)))
 
 (defun ekp--box-no-line-end-p (box box-type)
   "Non-nil if BOX must not appear at the end of a line."
   (or (eq (cdr box-type) 'cjk-open)
-      (ekp--box-pure-set-p box ekp--no-line-end-chars)))
+      (ekp--box-pure-set-p box ekp--no-line-end-char-list)))
 
 (defun ekp--compute-glue-types (boxes boxes-types hyphen-positions)
   "Compute glue types for BOXES. Positions after HYPHEN-POSITIONS are `nws'."
@@ -546,7 +561,7 @@ reduces the number of `string-pixel-width' calls."
                    ((eq tail-type 'cjk-close)
                     (alist-get 'cjk-close ekp-protrusion-ratios 0))
                    ((memq (aref box (1- (length box)))
-                          (append ekp--no-line-start-chars nil))
+                          ekp--no-line-start-char-list)
                     (alist-get 'latin-close ekp-protrusion-ratios 0))
                    (t 0))))
       (if (> ratio 0)
@@ -1819,14 +1834,34 @@ leftmost scan aligns them unambiguously."
       string
     (propertize string 'ekp-hidden t 'display "")))
 
+(defvar ekp--glue-string-cache (make-hash-table :test 'eql)
+  "PIXEL → shared glue string for empty payloads (pure, shareable).")
+
+(defvar ekp--glue-space-string-cache (make-hash-table :test 'eql)
+  "PIXEL → shared glue string for a plain single-space payload.")
+
 (defun ekp--render-glue (pixel payload)
   "Render a glue of PIXEL width that replaced original text PAYLOAD.
 Zero-width glue renders as the hidden PAYLOAD itself, so no original
-character is ever dropped."
+character is ever dropped.  The common payloads (empty, plain space)
+are interned per width: glue strings are immutable, so sharing is
+safe and avoids re-allocating properties for every gap."
   (cond
-   ((> pixel 0)
-    (propertize " " 'display `(space :width (,pixel)) 'ekp-glue payload))
-   (t (ekp--hide-string payload))))
+   ((and (= pixel 0) (string-empty-p payload)) "")
+   ((<= pixel 0) (ekp--hide-string payload))
+   ((string-empty-p payload)
+    (or (gethash pixel ekp--glue-string-cache)
+        (puthash pixel
+                 (propertize " " 'display `(space :width (,pixel))
+                             'ekp-glue payload)
+                 ekp--glue-string-cache)))
+   ((and (string= payload " ") (null (object-intervals payload)))
+    (or (gethash pixel ekp--glue-space-string-cache)
+        (puthash pixel
+                 (propertize " " 'display `(space :width (,pixel))
+                             'ekp-glue payload)
+                 ekp--glue-space-string-cache)))
+   (t (propertize " " 'display `(space :width (,pixel)) 'ekp-glue payload))))
 
 (defun ekp--hyphen-for-box (box)
   "Return a hyphen string styled like the end of BOX.
@@ -1837,6 +1872,22 @@ The `ekp-soft-hyphen' property marks it as synthesized, so
     (apply #'propertize "-" 'ekp-soft-hyphen t props)))
 
 (defun ekp--pixel-justify (string line-pixel)
+  "Justify single-paragraph STRING to LINE-PIXEL, with render caching.
+The rendered string for a (paragraph, width) pair is deterministic,
+so it is stored in the paragraph's dp-cache entry and reused — resize
+sweeps that revisit a width pay nothing."
+  (let* ((para (ekp--get-para string))
+         (dp (ekp-dp-data string line-pixel))
+         (hit (plist-get dp :rendered)))
+    (or hit
+        (let ((rendered (ekp--pixel-justify-1 string line-pixel))
+              (cache (ekp-para-dp-cache para)))
+          ;; keep memory bounded during long resize sessions
+          (when (<= (hash-table-count cache) 64)
+            (puthash line-pixel (plist-put dp :rendered rendered) cache))
+          rendered))))
+
+(defun ekp--pixel-justify-1 (string line-pixel)
   "Justify single-paragraph STRING to LINE-PIXEL.
 
 The output is lossless with respect to STRING:
@@ -1848,8 +1899,11 @@ The output is lossless with respect to STRING:
   survives as zero-display `ekp-hidden' text,
 - break hyphens carry `ekp-soft-hyphen'.
 `ekp-unjustify-region' inverts all four structurally."
-  (let* ((boxes (append (ekp--boxes string) nil))
-         (offsets (ekp--box-offsets string boxes))
+  (let* ((para (ekp--get-para string))
+         (boxes (append (ekp-para-boxes para) nil))
+         (offsets (or (ekp-para-box-offsets-memo para)
+                      (setf (ekp-para-box-offsets-memo para)
+                            (ekp--box-offsets string boxes))))
          (breaks (ekp-line-breaks string line-pixel))
          (num (length breaks))
          (lines-glues (ekp-line-glues string line-pixel))

@@ -238,7 +238,13 @@ tails.  Text the user typed into the justified region is preserved."
                 (remove-text-properties pos (1+ pos)
                                         '(ekp-hidden nil display nil))
                 (forward-char 1))
-               (t (forward-char 1)))))
+               ;; Plain text: our markers are sparse, so hop straight
+               ;; to the next property boundary instead of stepping
+               ;; char by char.
+               (t (goto-char (min (marker-position end-m)
+                                  (next-property-change pos nil
+                                                        (marker-position
+                                                         end-m))))))))
           (remove-text-properties (min beg end) end-m '(ekp-justified nil)))
       (set-marker end-m nil))))
 

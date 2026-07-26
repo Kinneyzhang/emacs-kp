@@ -170,6 +170,13 @@ C 模块 1.4:`ekp-c-break-with-arrays` 14 参(…、
 forbidden-positions、tail-protrudes、hyphen-protrude);batch 向量
 14 元;`ekp-c-set-penalties` 4–7 参。
 
+特性完成后的性能(字节编译 + C,Apple Silicon,batch):justify zh
+w=200 ≈ 54 ms、range zh ≈ 117 ms——justify 与特性前持平,range 因盒
+数增加约 +55%。热路径缓存:`ekp--str-type` 按字符记忆化、glue 字符
+串驻留、(段落, 宽度) 渲染结果缓存进 dp-cache(上限 64 个宽度)。连
+续变宽实测(60 段 2.6 万字文章,含 region 层全链路):每次变宽约
+73 ms,重访宽度更快;编辑后单段增量重排约 17 ms。
+
 ## 6. Looseness
 
 `ekp-looseness` ≠ 0 时切换到 `ekp--dp-run-loose`:完整的
