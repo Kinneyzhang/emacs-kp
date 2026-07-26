@@ -1,7 +1,23 @@
 ;;; ekp-utils.el --- Utility functions for EKP -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024
-;; Author: emacs-kp contributors
+;; Copyright (C) 2024-2026 Kinney Zhang
+
+;; Author: Kinney Zhang <kinneyzhang666@gmail.com>
+
+;; This file is NOT part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
@@ -350,6 +366,7 @@ after CALLBACK returns."
 (defconst ekp-c-module-required-version "1.4"
   "Minimum C module version compatible with this Elisp code.")
 
+;;;###autoload
 (defun ekp-c-module-load ()
   "Load EKP C module if available.
 Refuses to enable a module older than
@@ -386,6 +403,7 @@ Run 'make' in ekp_c/ to rebuild; falling back to Elisp."
           (message "Loaded hyphenator for %s (index %d)"
                    lang ekp-c-hyphenator-index))))))
 
+;;;###autoload
 (defun ekp-c-module-build ()
   "Build the C module using make."
   (interactive)

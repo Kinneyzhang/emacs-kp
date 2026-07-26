@@ -1,6 +1,16 @@
 /*
  * ekp.c - Emacs Knuth-Plass module entry point
  *
+ * Copyright (C) 2024-2026 Kinney Zhang
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of emacs-kp, which is free software: you can
+ * redistribute it and/or modify it under the terms of the GNU General
+ * Public License as published by the Free Software Foundation, either
+ * version 3 of the License, or (at your option) any later version.
+ * It is distributed WITHOUT ANY WARRANTY; see the GNU General Public
+ * License (COPYING) for details.
+ *
  * This is the main entry file for the Emacs dynamic module.
  * Naming follows Emacs module convention: module name = file name.
  * (require 'ekp-c) loads ekp.so, entry point in ekp.c

@@ -304,5 +304,4 @@ ekp_c/            C dynamic module (see ekp_c/README.md)
 dictionaries/     Hunspell hyphenation patterns (from Pyphen)
 tests/            ekp-tests.el (ERT), ekp-bench.el, ekp-demo.el,
                   sample texts, run-tests.sh
-archive/          Historical prototypes; not loaded, kept for reference
 ```

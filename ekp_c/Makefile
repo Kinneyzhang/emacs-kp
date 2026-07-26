@@ -1,5 +1,8 @@
 # Makefile for EKP C dynamic module
 #
+# Copyright (C) 2024-2026 Kinney Zhang
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
 # Builds ekp.so (or ekp.dylib on macOS) for Emacs dynamic loading.
 # Uses pthread for multi-threading, optimizes for native CPU.
 
@@ -14,9 +17,15 @@ endif
 # Default to gcc on Windows if cc is not found
 ifeq ($(UNAME), Windows)
     CC = gcc
-    # Default Emacs root for this environment (can be overridden)
-    EMACS_ROOT ?= C:/Users/26289/Apps/emacs-30.2/emacs-30.2
-    EMACS ?= $(EMACS_ROOT)/bin/emacs.exe
+    # Point EMACS_ROOT at your Emacs installation (the directory that
+    # contains include/emacs-module.h), e.g.:
+    #   make EMACS_ROOT=C:/path/to/emacs-30.2
+    EMACS_ROOT ?=
+    ifeq ($(EMACS_ROOT),)
+        $(warning EMACS_ROOT is not set; emacs-module.h may not be found. \
+Set it to your Emacs installation directory.)
+    endif
+    EMACS ?= emacs.exe
 else
     CC ?= cc
     EMACS ?= emacs

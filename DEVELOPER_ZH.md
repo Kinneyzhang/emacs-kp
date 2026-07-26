@@ -265,5 +265,4 @@ ekp_c/            C 动态模块(见 ekp_c/README.md)
 dictionaries/     Hunspell 断词模式(来自 Pyphen)
 tests/            ekp-tests.el(ERT)、ekp-bench.el、ekp-demo.el、
                   示例文本、run-tests.sh
-archive/          历史原型;不参与加载,仅作参考
 ```

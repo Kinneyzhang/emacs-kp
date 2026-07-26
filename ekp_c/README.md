@@ -1,6 +1,6 @@
 # EKP C Dynamic Module
 
-C implementation of the Knuth-Plass DP for emacs-kp (module version 1.1).
+C implementation of the Knuth-Plass DP for emacs-kp (module version 1.4).
 
 The division of labor: **Elisp owns all font-dependent data**
 (tokenization, pixel measurement, glue values, prefix sums); the C
@@ -44,7 +44,7 @@ make info
 
 ```elisp
 (ekp-c-init)             ; init global state + thread pool
-(ekp-c-version)          ; => "1.1" — checked by ekp-c-module-load
+(ekp-c-version)          ; => "1.4" — checked by ekp-c-module-load
 (ekp-c-thread-count)     ; => 8
 (ekp-c-cleanup)
 
@@ -65,7 +65,7 @@ make info
 
 `LEAD-SPACES` / `TRAIL-SPACES` are the space-box run widths that the
 Elisp renderer strips from line edges; the DP excludes them from line
-metrics so both layers agree exactly (new in 1.1).
+metrics so both layers agree exactly (since 1.1).
 
 The DP uses the same two-pass strategy as the Elisp engine: a strict
 Knuth-Plass pass, then — only when the paragraph end is unreachable —

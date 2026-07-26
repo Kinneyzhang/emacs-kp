@@ -1,6 +1,16 @@
 /*
  * ekp_paragraph.c - Text preprocessing and box/glue construction
  *
+ * Copyright (C) 2024-2026 Kinney Zhang
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * This file is part of emacs-kp, which is free software: you can
+ * redistribute it and/or modify it under the terms of the GNU General
+ * Public License as published by the Free Software Foundation, either
+ * version 3 of the License, or (at your option) any later version.
+ * It is distributed WITHOUT ANY WARRANTY; see the GNU General Public
+ * License (COPYING) for details.
+ *
  * The boring part that makes everything else fast.
  * Get the data layout right, and the algorithm sings.
  */

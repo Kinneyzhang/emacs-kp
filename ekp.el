@@ -1,11 +1,28 @@
-;;; ekp.el --- Knuth-Plass line breaking for Emacs -*- lexical-binding: t; -*-
+;;; ekp.el --- Knuth-Plass line breaking with CJK support -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2024
-;; Author: emacs-kp contributors
+;; Copyright (C) 2024-2026 Kinney Zhang
+
+;; Author: Kinney Zhang <kinneyzhang666@gmail.com>
+;; Maintainer: Kinney Zhang <kinneyzhang666@gmail.com>
 ;; Version: 1.0.0
 ;; URL: https://github.com/Kinneyzhang/emacs-kp
-;; Keywords: text, typesetting, CJK
+;; Keywords: wp, text, typesetting, CJK
 ;; Package-Requires: ((emacs "29.1"))
+
+;; This file is NOT part of GNU Emacs.
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
@@ -32,13 +49,23 @@
 (defconst ekp--load-file (or load-file-name (buffer-file-name))
   "Path to this file, for locating dictionaries.")
 
-(defvar ekp-latin-lang "en_US"
-  "Language code for hyphenation (e.g., \"en_US\", \"de_DE\").")
+(defgroup ekp nil
+  "Knuth-Plass optimal line breaking with CJK support."
+  :group 'text
+  :prefix "ekp-"
+  :link '(url-link "https://github.com/Kinneyzhang/emacs-kp"))
 
-(defvar ekp-use-c-module t
+(defcustom ekp-latin-lang "en_US"
+  "Language code for hyphenation (e.g., \"en_US\", \"de_DE\")."
+  :type 'string
+  :group 'ekp)
+
+(defcustom ekp-use-c-module t
   "When non-nil, use C dynamic module for DP computation if available.
 The C module provides significant performance improvement for large texts.
-Set to nil to force pure Elisp implementation.")
+Set to nil to force pure Elisp implementation."
+  :type 'boolean
+  :group 'ekp)
 
 ;;;; Glue Parameters
 ;; Glue = flexible space between boxes (Knuth-Plass terminology)
@@ -64,31 +91,45 @@ Set to nil to force pure Elisp implementation.")
 
 ;;;; K-P Algorithm Parameters
 
-(defvar ekp-default-cws-stretch-pixel 2
-  "Max stretched pixel of whitespace between CJK chars.")
+(defcustom ekp-default-cws-stretch-pixel 2
+  "Max stretched pixel of whitespace between CJK chars."
+  :type 'natnum
+  :group 'ekp)
 
-(defvar ekp-line-penalty 10
-  "Penalty for each line break. Higher = fewer lines. Default 10.")
+(defcustom ekp-line-penalty 10
+  "Penalty for each line break.  Higher = fewer lines.  Default 10."
+  :type 'number
+  :group 'ekp)
 
-(defvar ekp-hyphen-penalty 50
-  "Penalty for hyphenated breaks. Higher = avoid hyphenation. Default 50.
-Note: added to demerits as penalty², following the K-P formula.")
+(defcustom ekp-hyphen-penalty 50
+  "Penalty for hyphenated breaks.  Higher = avoid hyphenation.  Default 50.
+Note: added to demerits as penalty², following the K-P formula."
+  :type 'number
+  :group 'ekp)
 
-(defvar ekp-adjacent-fitness-penalty 100
-  "Penalty when adjacent lines differ in tightness by >1 class.")
+(defcustom ekp-adjacent-fitness-penalty 100
+  "Penalty when adjacent lines differ in tightness by >1 class."
+  :type 'number
+  :group 'ekp)
 
-(defvar ekp-consecutive-hyphen-penalty 100
+(defcustom ekp-consecutive-hyphen-penalty 100
   "Base penalty multiplier for consecutive hyphenated lines.
-Actual penalty = this × count², encouraging spread of hyphens.")
+Actual penalty = this × count², encouraging spread of hyphens."
+  :type 'number
+  :group 'ekp)
 
-(defvar ekp-last-line-short-penalty 50
+(defcustom ekp-last-line-short-penalty 50
   "Penalty multiplier for underfilled last lines.
-Applied as: this × (1 - fill-ratio) when fill < `ekp-last-line-min-ratio'.")
+Applied as: this × (1 - fill-ratio) when fill < `ekp-last-line-min-ratio'."
+  :type 'number
+  :group 'ekp)
 
-(defvar ekp-last-line-min-ratio 0.5
-  "Minimum fill ratio for last line (0.0-1.0).")
+(defcustom ekp-last-line-min-ratio 0.5
+  "Minimum fill ratio for last line (0.0-1.0)."
+  :type 'float
+  :group 'ekp)
 
-(defvar ekp-alignment 'justify
+(defcustom ekp-alignment 'justify
   "Paragraph alignment mode.
 `justify'      — flush both edges (default)
 `ragged-right' — natural spacing, lines end ragged on the right
@@ -96,51 +137,73 @@ Applied as: this × (1 - fill-ratio) when fill < `ekp-last-line-min-ratio'.")
 `center'       — natural spacing, both edges share the leftover
 Non-justify modes keep inter-word glue rigid; the K-P optimizer still
 picks breaks that minimize raggedness within
-`ekp-ragged-stretch-pixel' per line.")
+`ekp-ragged-stretch-pixel' per line."
+  :type '(choice (const :tag "Justify (flush both edges)" justify)
+                 (const :tag "Ragged right" ragged-right)
+                 (const :tag "Ragged left" ragged-left)
+                 (const :tag "Center" center))
+  :group 'ekp)
 
-(defvar ekp-ragged-stretch-pixel nil
+(defcustom ekp-ragged-stretch-pixel nil
   "Per-line end-of-line flexibility (pixels) for non-justify alignment.
 This is what a ragged line may fall short of the target width without
 badness reaching infinity (like \\raggedright with a finite \\rightskip
-stretch).  nil derives 8× the Latin word-space ideal (≈2 em).")
+stretch).  nil derives 8× the Latin word-space ideal (≈2 em)."
+  :type '(choice (const :tag "Auto (≈2 em)" nil) natnum)
+  :group 'ekp)
 
-(defvar ekp-protrusion nil
+(defcustom ekp-protrusion nil
   "Non-nil enables right-edge character protrusion (hanging punctuation).
 A line ending in punctuation lets part of that glyph hang past the
 flush edge, per `ekp-protrusion-ratios' — CLREQ line-end punctuation
 squeeze and microtype-style hanging periods/hyphens in one mechanism.
 Left-edge protrusion is not implemented: Emacs cannot render text
 before the line origin.  When enabled, reserve the protrusion width
-in the layout (see `ekp-region-protrusion-reserve')." )
+in the layout (see `ekp-region-protrusion-reserve')."
+  :type 'boolean
+  :group 'ekp)
 
-(defvar ekp-protrusion-ratios
+(defcustom ekp-protrusion-ratios
   '((cjk-close . 0.5) (latin-close . 0.5) (hyphen . 1.0))
   "Alist CLASS → RATIO of the glyph width allowed to protrude.
 `cjk-close': fullwidth closers (。、」); 0.5 hangs exactly the
 whitespace half of the glyph — visually equivalent to CLREQ line-end
 compression.  `latin-close': chars from `ekp--no-line-start-chars'
 ending a word (period, comma, quotes).  `hyphen': the soft hyphen
-inserted at a break.")
+inserted at a break."
+  :type '(alist :key-type (choice (const cjk-close)
+                                  (const latin-close)
+                                  (const hyphen))
+                :value-type float)
+  :group 'ekp)
 
-(defvar ekp-parshape nil
+(defcustom ekp-parshape nil
   "Per-line layout, as a sequence of (INDENT . WIDTH) cons cells.
 Line i (0-based) uses element i; lines beyond the last element reuse
 it (like TeX \\parshape).  INDENT is the left offset in pixels,
 WIDTH the text width — the rendered line occupies INDENT + WIDTH.
 Line-number-dependent widths require the (position × line-count) DP,
-so this is Elisp-only: the C module is bypassed while set.")
+so this is Elisp-only: the C module is bypassed while set."
+  :type '(choice (const :tag "Off" nil) sexp)
+  :group 'ekp)
 
-(defvar ekp-first-line-indent nil
+(defcustom ekp-first-line-indent nil
   "First-line indentation: pixels, or t for 2 em of the paragraph font.
 Sugar for the common CJK paragraph convention; ignored when
-`ekp-parshape' is set.  Elisp-only, like `ekp-parshape'.")
+`ekp-parshape' is set."
+  :type '(choice (const :tag "Off" nil)
+                 (const :tag "2 em" t)
+                 natnum)
+  :group 'ekp)
 
-(defvar ekp-looseness 0
+(defcustom ekp-looseness 0
   "Target line count offset: 0=optimal, +1=looser (more lines), -1=tighter.
 When non-zero, a full (position × line-count) dynamic program is run
 and the path whose line count is closest to (optimal + looseness) with
 the lowest demerits is selected.  Only supported by the Elisp engine;
-when non-zero the C module is bypassed automatically.")
+when non-zero the C module is bypassed automatically."
+  :type 'integer
+  :group 'ekp)
 
 (defconst ekp--infinite-badness 10000
   "Badness value treated as infinitely bad (matches TeX).")
@@ -191,9 +254,11 @@ One justification call resolves the same string object many times;
 this avoids recomputing the full cache key each time.  Invalidated
 by parameter changes, language changes and `ekp-clear-caches'.")
 
-(defvar ekp-para-cache-limit 256
+(defcustom ekp-para-cache-limit 256
   "Maximum number of cached paragraphs.
-When exceeded, the whole paragraph cache is flushed (cheap to rebuild).")
+When exceeded, the whole paragraph cache is flushed (cheap to rebuild)."
+  :type 'natnum
+  :group 'ekp)
 
 (defvar ekp--params-explicit nil
   "Non-nil after `ekp-param-set'; spacing params then persist until
@@ -203,9 +268,14 @@ When exceeded, the whole paragraph cache is flushed (cheap to rebuild).")
 ;; ekp-root-dir is provided by ekp-utils.el
 
 (defun ekp--load-dicts ()
-  "Load hyphenation dictionaries."
-  (ekp-hyphen-load-languages
-   (expand-file-name "dictionaries" (ekp-root-dir))))
+  "Register bundled hyphenation dictionaries, if the directory exists.
+A missing directory (e.g., an incomplete install) only disables
+hyphenation; it must not break loading the package."
+  (let ((dir (expand-file-name "dictionaries" (ekp-root-dir))))
+    (if (file-directory-p dir)
+        (ekp-hyphen-load-languages dir)
+      (lwarn 'ekp :warning
+             "Dictionary directory %s not found; hyphenation disabled" dir))))
 
 (ekp--load-dicts)
 
@@ -248,6 +318,7 @@ Does not mark parameters as explicit; each paragraph gets fresh defaults."
                       mws (ceiling (/ (float mws) 2)) (ceiling (/ (float mws) 3))
                       0 ekp-default-cws-stretch-pixel 0)))
 
+;;;###autoload
 (defun ekp-param-reset ()
   "Clear explicit spacing parameters; defaults are derived per string again."
   (interactive)
@@ -282,18 +353,26 @@ Returns (boxes-vector . hyphen-positions-vector)."
                           ekp--word-left-punct
                           ekp--latin-regexp
                           ekp--word-right-punct))
+         ;; Resolved lazily on the first Latin word, at most once per
+         ;; call; nil (no usable dictionary) just disables hyphenation.
+         (hyphenator 'unset)
          (idx 0) new-boxes hyphen-idxs)
     (dolist (box (append boxes nil))
       (if (and (string-match word-re box)
                ;; Never hyphenate inside a no-break span (verbatim atoms)
                (null (text-property-not-all 0 (length box)
-                                            'ekp-no-break nil box)))
+                                            'ekp-no-break nil box))
+               (or (and (eq hyphenator 'unset)
+                        (setq hyphenator
+                              (condition-case nil
+                                  (ekp-hyphen-create ekp-latin-lang)
+                                (error nil))))
+                   hyphenator))
           ;; Latin word: apply hyphenation
           (let* ((left (match-string 1 box))
                  (word (match-string 2 box))
                  (right (match-string 3 box))
-                 (parts (ekp-hyphen-boxes
-                         (ekp-hyphen-create ekp-latin-lang) word))
+                 (parts (ekp-hyphen-boxes hyphenator word))
                  (n (length parts)))
             (when (> (length left) 0)
               (setcar parts (concat left (car parts))))
@@ -805,6 +884,7 @@ This is the main entry point for cached paragraph data."
       (setq ekp--last-para (list string ekp-latin-lang para))
       para)))
 
+;;;###autoload
 (defun ekp-clear-caches ()
   "Clear all paragraph caches."
   (interactive)
