@@ -1910,6 +1910,13 @@ leftmost scan aligns them unambiguously."
         (setq i (1+ i))))
     offsets))
 
+;; Text typed next to a marker character must never inherit the
+;; marker: a self-inserted char inheriting `ekp-glue' would be treated
+;; as a synthesized space by the next unjustification and deleted.
+(dolist (prop '(ekp-glue ekp-soft-break ekp-soft-hyphen ekp-hidden
+                ekp-justified))
+  (setf (alist-get prop text-property-default-nonsticky) t))
+
 (defun ekp--hide-string (string)
   "Return STRING marked `ekp-hidden' and displayed as nothing."
   (if (string-empty-p string)

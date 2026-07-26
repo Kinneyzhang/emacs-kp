@@ -285,6 +285,111 @@ the displaying WINDOW, with an arbitrary buffer current."
           (ekp-justify-region (point-min) (point-max) 50)
           (should (equal-including-properties (buffer-string) lazy)))))))
 
+;;;; Editor-state integrity (save / modified / undo / stickiness)
+
+(ert-deftest ekp-region-test-typed-char-inherits-no-marker ()
+  "Text typed right after a glue must not inherit renderer markers.
+Regression: `self-insert-command' uses insert-and-inherit; a char
+inheriting `ekp-glue' was deleted as a synthesized space by the next
+unjustification."
+  (ekp-region-test--with-text "aaa bbb 中文 ccc"
+    (ekp-justify-region (point-min) (point-max) 200)
+    (let ((glue-pos (text-property-not-all (point-min) (point-max)
+                                           'ekp-glue nil)))
+      (should glue-pos)
+      (goto-char (1+ glue-pos))
+      (insert-and-inherit "X")
+      (let ((x (1+ glue-pos)))
+        (should-not (get-text-property x 'ekp-glue))
+        (should-not (get-text-property x 'display))
+        (should-not (get-text-property x 'ekp-soft-break))))
+    (ekp-unjustify-region (point-min) (point-max))
+    (should (= 1 (cl-count ?X (buffer-string))))))
+
+(ert-deftest ekp-region-test-save-writes-logical-text ()
+  "Saving a justified file buffer writes the logical text to disk,
+keeps the buffer justified, and leaves it unmodified."
+  (let* ((file (make-temp-file "ekp-save-test"))
+         (text "中文保存测试内容足够长会断行的样子,再加一句凑长度。")
+         (make-backup-files nil)
+         (create-lockfiles nil))
+    (unwind-protect
+        (with-current-buffer (find-file-noselect file)
+          (insert text)
+          (ekp-justify-region (point-min) (point-max) 20)
+          (should (> (cl-count ?\n (buffer-string)) 0))
+          (save-buffer)
+          ;; Disk: logical text only, no layout newlines.
+          (should (equal (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string))
+                         text))
+          ;; Buffer: still justified, and not "modified" vs its file.
+          (should (get-text-property (point-min) 'ekp-justified))
+          (should-not (buffer-modified-p))
+          ;; And a second save still works (state was reset).
+          (insert "x")
+          (goto-char (point-min))
+          (save-buffer)
+          (should (equal (with-temp-buffer
+                           (insert-file-contents file)
+                           (buffer-string))
+                         (concat text "x")))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer)))
+      (delete-file file))))
+
+(ert-deftest ekp-region-test-justify-preserves-unmodified ()
+  "Pure re-layout must not flip `buffer-modified-p'."
+  (let* ((file (make-temp-file "ekp-mod-test"))
+         (make-backup-files nil)
+         (create-lockfiles nil))
+    (unwind-protect
+        (with-current-buffer (find-file-noselect file)
+          (insert "modified 标志保持检查内容足够长断行")
+          (save-buffer)
+          (should-not (buffer-modified-p))
+          (ekp-justify-region (point-min) (point-max) 30)
+          (should-not (buffer-modified-p))
+          (ekp-unjustify-region (point-min) (point-max))
+          (should-not (buffer-modified-p))
+          ;; A real edit still marks the buffer modified.
+          (insert "y")
+          (should (buffer-modified-p))
+          (let ((kill-buffer-query-functions nil))
+            (set-buffer-modified-p nil)
+            (kill-buffer)))
+      (delete-file file))))
+
+(ert-deftest ekp-region-test-undo-changes-not-redirtied ()
+  "Changes applied by undo must not schedule a re-flow."
+  (ekp-region-test--with-mode "undo guard 检查内容 aaa bbb ccc" 100
+    (setq ekp-region--dirty nil)
+    (let ((undo-in-progress t))
+      (ekp-region--after-change (point-min) (1+ (point-min)) 0))
+    (should-not ekp-region--dirty)
+    (let ((undo-in-progress nil))
+      (ekp-region--after-change (point-min) (1+ (point-min)) 0))
+    (should ekp-region--dirty)
+    (dolist (p ekp-region--dirty)
+      (set-marker (car p) nil)
+      (set-marker (cdr p) nil))
+    (setq ekp-region--dirty nil)
+    (when (timerp ekp-region--edit-timer)
+      (cancel-timer ekp-region--edit-timer))))
+
+(ert-deftest ekp-region-test-major-mode-change-restores ()
+  "Switching major mode tears the justified state down cleanly."
+  (let ((text "major mode 切换检查 aaa bbb ccc ddd"))
+    (ekp-region-test--with-text text
+      (cl-letf (((symbol-function 'ekp-region--window-pixel)
+                 (lambda (&optional _) 80)))
+        (ekp-auto-justify-mode 1)
+        (should (get-text-property (point-min) 'ekp-justified))
+        (fundamental-mode)
+        (should (equal (buffer-string) text))
+        (should-not ekp-auto-justify-mode)))))
+
 (provide 'ekp-region-tests)
 
 ;;; ekp-region-tests.el ends here

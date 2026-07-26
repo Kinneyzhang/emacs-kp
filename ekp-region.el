@@ -27,7 +27,7 @@
 ;; - `ekp-justify-region' / `ekp-unjustify-region': justify buffer text
 ;;   in place.  Unjustification is a pure structural transform driven by
 ;;   the text properties the renderer leaves behind (`ekp-glue',
-;;   `ekp-soft-break', `ekp-soft-hyphen', `ekp-soft-trail'), so the
+;;   `ekp-soft-break', `ekp-soft-hyphen', `ekp-hidden'), so the
 ;;   original text — including whitespace runs stripped at line breaks —
 ;;   is recovered exactly, even after the justified text was edited.
 ;;
@@ -101,6 +101,22 @@ they suffice.")
 
 (defvar ekp-region--inhibit nil
   "Non-nil while ekp-region is modifying the buffer itself.")
+
+(defvar-local ekp-region--save-state nil
+  "Spans unjustified for saving: list of (BEG-MARKER END-MARKER WIDTH).
+Set by `ekp-region--before-save', consumed by `ekp-region--after-save'.")
+
+(defmacro ekp-region--preserving-modified (&rest body)
+  "Run BODY, keeping the buffer unmodified if it was unmodified.
+Justification is a reversible re-layout of the same logical text, so
+it must not flip `buffer-modified-p' on its own — that would create
+lock files, trigger auto-saves and \"buffer modified\" prompts for
+buffers the user never edited."
+  (declare (indent 0) (debug t))
+  `(let ((ekp-region--modified-was (buffer-modified-p)))
+     (prog1 (progn ,@body)
+       (unless ekp-region--modified-was
+         (restore-buffer-modified-p nil)))))
 
 (defvar-local ekp-region--auto-width nil
   "Pixel width the buffer is currently auto-justified to.")
@@ -231,22 +247,26 @@ idempotent and can re-flow to a new width."
         (ekp-region--inhibit t)
         (inhibit-read-only t))
     (unwind-protect
-        (atomic-change-group
-          ;; Re-flow support: strip previous justification first.
-          (when (text-property-not-all beg end 'ekp-justified nil)
-            (ekp-unjustify-region beg end))
-          (let* ((text (buffer-substring beg end))
-                 (justified (ekp-region--justify-string text pixel))
-                 (point-offset (and (>= (point) beg) (< (point) end)
-                                    (- (point) beg))))
-            (unless (equal-including-properties text justified)
-              (goto-char beg)
-              (delete-region beg end)
-              (insert justified)
-              (when point-offset
-                (goto-char (+ beg (ekp-region--pos-for-offset
-                                   justified point-offset)))))
-            (add-text-properties beg end (list 'ekp-justified pixel))))
+        (ekp-region--preserving-modified
+          (atomic-change-group
+            ;; Re-flow support: strip previous justification first.
+            (when (text-property-not-all beg end 'ekp-justified nil)
+              (ekp-unjustify-region beg end))
+            (let* ((text (buffer-substring beg end))
+                   (justified (ekp-region--justify-string text pixel))
+                   (point-offset (and (>= (point) beg) (< (point) end)
+                                      (- (point) beg))))
+              (unless (equal-including-properties text justified)
+                (goto-char beg)
+                (delete-region beg end)
+                (insert justified)
+                (when point-offset
+                  (goto-char (+ beg (ekp-region--pos-for-offset
+                                     justified point-offset)))))
+              (add-text-properties beg end (list 'ekp-justified pixel))))
+          ;; Saving a justified buffer must write the logical text.
+          (add-hook 'before-save-hook #'ekp-region--before-save nil t)
+          (add-hook 'after-save-hook #'ekp-region--after-save nil t))
       (set-marker beg nil)
       (set-marker end nil))))
 
@@ -261,35 +281,83 @@ tails.  Text the user typed into the justified region is preserved."
         (ekp-region--inhibit t)
         (inhibit-read-only t))
     (unwind-protect
-        (save-excursion
-          (goto-char (min beg end))
-          (while (< (point) end-m)
-            (let* ((pos (point))
-                   (glue (get-text-property pos 'ekp-glue)))
-              (cond
-               (glue
-                (delete-region pos (1+ pos))
-                (when (stringp glue) (insert glue)))
-               ((get-text-property pos 'ekp-soft-hyphen)
-                (delete-region pos (1+ pos)))
-               ((and (eq (char-after pos) ?\n)
-                     (get-text-property pos 'ekp-soft-break))
-                (let ((payload (get-text-property pos 'ekp-soft-break)))
-                  (delete-region pos (1+ pos))
-                  (insert payload)))
-               ((get-text-property pos 'ekp-hidden)
-                (remove-text-properties pos (1+ pos)
-                                        '(ekp-hidden nil display nil))
-                (forward-char 1))
-               ;; Plain text: our markers are sparse, so hop straight
-               ;; to the next property boundary instead of stepping
-               ;; char by char.
-               (t (goto-char (min (marker-position end-m)
-                                  (next-property-change pos nil
-                                                        (marker-position
-                                                         end-m))))))))
-          (remove-text-properties (min beg end) end-m '(ekp-justified nil)))
+        (ekp-region--preserving-modified
+         (save-excursion
+           (goto-char (min beg end))
+           (while (< (point) end-m)
+             (let* ((pos (point))
+                    (glue (get-text-property pos 'ekp-glue)))
+               (cond
+                (glue
+                 (delete-region pos (1+ pos))
+                 (when (stringp glue) (insert glue)))
+                ((get-text-property pos 'ekp-soft-hyphen)
+                 (delete-region pos (1+ pos)))
+                ((and (eq (char-after pos) ?\n)
+                      (get-text-property pos 'ekp-soft-break))
+                 (let ((payload (get-text-property pos 'ekp-soft-break)))
+                   (delete-region pos (1+ pos))
+                   (insert payload)))
+                ((get-text-property pos 'ekp-hidden)
+                 (remove-text-properties pos (1+ pos)
+                                         '(ekp-hidden nil display nil))
+                 (forward-char 1))
+                ;; Plain text: our markers are sparse, so hop straight
+                ;; to the next property boundary instead of stepping
+                ;; char by char.
+                (t (goto-char (min (marker-position end-m)
+                                   (next-property-change pos nil
+                                                         (marker-position
+                                                          end-m))))))))
+           (remove-text-properties (min beg end) end-m '(ekp-justified nil))))
       (set-marker end-m nil))))
+
+;;;; Saving: the file always receives the logical text
+
+(defun ekp-region--justified-spans ()
+  "Return justified spans of the buffer as a list of (BEG END WIDTH).
+BEG/END are positions; WIDTH is the span's `ekp-justified' value."
+  (let ((pos (point-min)) spans)
+    (while (< pos (point-max))
+      (let ((w (get-text-property pos 'ekp-justified))
+            (next (next-single-property-change pos 'ekp-justified
+                                               nil (point-max))))
+        (when w (push (list pos next w) spans))
+        (setq pos next)))
+    (nreverse spans)))
+
+(defun ekp-region--before-save ()
+  "Restore the logical text before the buffer is written to disk.
+Saving a justified buffer must never persist soft line breaks, glue
+spaces or break hyphens: they are layout, not content.  The spans are
+remembered (as markers) and re-justified by `ekp-region--after-save',
+so the user never sees the buffer un-justified."
+  (let ((spans (ekp-region--justified-spans)))
+    (when spans
+      ;; The unjustify+rejustify pair is deterministic and cancels out
+      ;; exactly, so keep it off the undo history.
+      (let ((buffer-undo-list t))
+        ;; Marker-ize every span before the first unjustification
+        ;; shifts the positions of the spans after it.
+        (setq ekp-region--save-state
+              (mapcar (pcase-lambda (`(,beg ,end ,width))
+                        (list (copy-marker beg) (copy-marker end t) width))
+                      spans))
+        (pcase-dolist (`(,beg ,end ,_width) ekp-region--save-state)
+          (ekp-unjustify-region beg end))))))
+
+(defun ekp-region--after-save ()
+  "Re-justify the spans un-done by `ekp-region--before-save'."
+  (when ekp-region--save-state
+    (let ((buffer-undo-list t))
+      (pcase-dolist (`(,beg ,end ,width) ekp-region--save-state)
+        (when (and (marker-position beg) (marker-position end))
+          (ekp-justify-region beg end width))
+        (set-marker beg nil)
+        (set-marker end nil)))
+    (setq ekp-region--save-state nil)
+    ;; The file on disk holds exactly this buffer's logical text.
+    (set-buffer-modified-p nil)))
 
 ;;;###autoload
 (defun ekp-no-break-region (beg end)
@@ -355,8 +423,12 @@ unbreakable span inside prose, use `ekp-no-break-region' instead."
     (nreverse merged)))
 
 (defun ekp-region--after-change (beg end _len)
-  "Record the edit between BEG and END for incremental re-justification."
-  (when (and ekp-auto-justify-mode (not ekp-region--inhibit))
+  "Record the edit between BEG and END for incremental re-justification.
+Changes applied by undo are not re-flowed: re-justifying behind the
+user's back would fight the undo sequence (and immediately dirty what
+undo just restored).  The next real edit or resize re-flows normally."
+  (when (and ekp-auto-justify-mode (not ekp-region--inhibit)
+             (not undo-in-progress))
     (push (cons (copy-marker beg) (copy-marker end)) ekp-region--dirty)
     (when (timerp ekp-region--edit-timer)
       (cancel-timer ekp-region--edit-timer))
@@ -513,18 +585,43 @@ the buffer text is restored exactly when the mode is turned off."
               (ekp-region--window-pixel (get-buffer-window)))
         (ekp-region--reflow (current-buffer) ekp-region--auto-width)
         (add-hook 'window-size-change-functions #'ekp-region--on-resize nil t)
-        (add-hook 'after-change-functions #'ekp-region--after-change nil t))
+        (add-hook 'after-change-functions #'ekp-region--after-change nil t)
+        (add-hook 'before-save-hook #'ekp-region--before-save nil t)
+        (add-hook 'after-save-hook #'ekp-region--after-save nil t)
+        ;; Turning the major mode off/over kills local hooks silently;
+        ;; the buffer must get its logical text back first.
+        (add-hook 'change-major-mode-hook #'ekp-region--teardown nil t))
     (remove-hook 'window-size-change-functions #'ekp-region--on-resize t)
     (remove-hook 'after-change-functions #'ekp-region--after-change t)
-    (when (timerp ekp-region--resize-timer)
-      (cancel-timer ekp-region--resize-timer))
-    (when (timerp ekp-region--edit-timer)
-      (cancel-timer ekp-region--edit-timer))
-    (ekp-region--cancel-pending)
-    (setq ekp-region--resize-timer nil
-          ekp-region--edit-timer nil
-          ekp-region--dirty nil
-          ekp-region--auto-width nil)
+    (remove-hook 'change-major-mode-hook #'ekp-region--teardown t)
+    (ekp-region--teardown)
+    ;; Keep the save hooks only while justified text remains (the
+    ;; teardown above removed all of it; a later ekp-justify-region
+    ;; re-adds them).
+    (remove-hook 'before-save-hook #'ekp-region--before-save t)
+    (remove-hook 'after-save-hook #'ekp-region--after-save t)))
+
+(defun ekp-region--teardown ()
+  "Cancel timers and restore the whole buffer's logical text.
+Runs when `ekp-auto-justify-mode' is turned off and, via
+`change-major-mode-hook', when a major-mode switch is about to
+discard the mode silently."
+  (when (timerp ekp-region--resize-timer)
+    (cancel-timer ekp-region--resize-timer))
+  (when (timerp ekp-region--edit-timer)
+    (cancel-timer ekp-region--edit-timer))
+  (ekp-region--cancel-pending)
+  (dolist (p ekp-region--dirty)
+    (set-marker (car p) nil)
+    (set-marker (cdr p) nil))
+  (setq ekp-region--resize-timer nil
+        ekp-region--edit-timer nil
+        ekp-region--dirty nil
+        ekp-region--auto-width nil)
+  ;; Narrowing must not leave justified orphans outside the visible
+  ;; region.
+  (save-restriction
+    (widen)
     (ekp-unjustify-region (point-min) (point-max))))
 
 (provide 'ekp-region)
