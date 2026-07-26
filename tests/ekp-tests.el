@@ -137,6 +137,67 @@ Used to verify no content is lost by justification."
     (dolist (k '(1 5 7 10))
       (should (aref ok k)))))
 
+(defun ekp-test--line-glue-widths (line)
+  "Pixel widths of synthesized glue spaces in LINE, in order."
+  (let (ws)
+    (dotimes (i (length line))
+      (let ((d (get-text-property i 'display line)))
+        (when (and (consp d) (eq (car d) 'space)
+                   (get-text-property i 'ekp-glue line))
+          (push (car (plist-get (cdr d) :width)) ws))))
+    (nreverse ws)))
+
+(ert-deftest ekp-test-alignment-ragged-right ()
+  "Ragged-right: lines fit, interior spacing stays at ideal."
+  (let ((ekp-alignment 'ragged-right)
+        (text "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll"))
+    (let ((lines (split-string (ekp-pixel-justify text 12) "\n")))
+      (should (> (length lines) 1))
+      (dolist (line lines)
+        (should (<= (string-pixel-width line) 12))
+        ;; all interior glues at ideal (1px word space in batch);
+        ;; only the trailing filler may be wider
+        (let ((interior (butlast (ekp-test--line-glue-widths line))))
+          (dolist (w interior) (should (<= w 1))))))))
+
+(ert-deftest ekp-test-alignment-ragged-left ()
+  "Ragged-left: every line is pushed flush to the right edge."
+  (let ((ekp-alignment 'ragged-left)
+        (text "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll"))
+    (dolist (line (split-string (ekp-pixel-justify text 12) "\n"))
+      (should (= (string-pixel-width line) 12)))))
+
+(ert-deftest ekp-test-alignment-center ()
+  "Center: leftover splits evenly between the two edges."
+  (let ((ekp-alignment 'center)
+        (text "aaa bbb ccc ddd eee fff ggg hhh iii jjj kkk lll"))
+    (dolist (line (split-string (ekp-pixel-justify text 12) "\n"))
+      (should (= (string-pixel-width line) 12))
+      (let* ((len (length line))
+             (lead (if (and (> len 0)
+                            (get-text-property 0 'ekp-glue line))
+                       (or (car (ekp-test--line-glue-widths line)) 0)
+                     0))
+             (trail (if (and (> len 0)
+                             (get-text-property (1- len) 'ekp-glue line))
+                        (or (car (last (ekp-test--line-glue-widths line))) 0)
+                      0)))
+        (should (<= (abs (- lead trail)) 1))))))
+
+(ert-deftest ekp-test-alignment-c-parity ()
+  "C and elisp engines agree under every alignment mode."
+  (skip-unless (ekp-tests--c-available))
+  (dolist (align '(justify ragged-right ragged-left center))
+    (let ((ekp-alignment align)
+          (text "对齐 parity 检查内容 mixed 中英文字 several words here too"))
+      (let ((a (let ((ekp-use-c-module nil))
+                 (ekp-clear-caches)
+                 (ekp-pixel-justify text 60)))
+            (b (let ((ekp-use-c-module t))
+                 (ekp-clear-caches)
+                 (ekp-pixel-justify text 60))))
+        (should (string= a b))))))
+
 (ert-deftest ekp-test-no-break-span-atomic ()
   "An ekp-no-break span never splits, stretches, or hyphenates."
   (let* ((code (propertize "foo bar baz" 'ekp-no-break t))

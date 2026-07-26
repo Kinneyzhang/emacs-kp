@@ -16,7 +16,7 @@
 
 /* Version */
 #define EKP_VERSION_MAJOR 1
-#define EKP_VERSION_MINOR 2
+#define EKP_VERSION_MINOR 3
 
 /* Limits */
 #define EKP_MAX_PATTERN_LEN 64
@@ -193,6 +193,8 @@ typedef struct {
     double last_line_ratio;
     int consec_hyphen_penalty;      /* multiplier for consecutive hyphens */
     double last_line_short_penalty; /* multiplier for short last lines */
+    int32_t extra_stretch;          /* per-line flexibility for non-justify
+                                     * alignment (0 = justify) */
 } ekp_state_t;
 
 /* Global state instance */

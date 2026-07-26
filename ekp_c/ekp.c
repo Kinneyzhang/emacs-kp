@@ -152,6 +152,10 @@ static emacs_value Fekp_c_set_penalties(emacs_env *env, ptrdiff_t nargs,
         ekp_global->consec_hyphen_penalty = env->extract_integer(env, args[4]);
     if (nargs > 5)
         ekp_global->last_line_short_penalty = env->extract_float(env, args[5]);
+    /* Per-line extra stretch for non-justify alignment; reset to 0
+     * when the caller omits it so stale values never leak. */
+    ekp_global->extra_stretch =
+        (nargs > 6) ? (int32_t)env->extract_integer(env, args[6]) : 0;
 
     return env->intern(env, "t");
 }
@@ -707,7 +711,7 @@ Arguments are: LWS-IDEAL LWS-STRETCH LWS-SHRINK\n\
 LWS = Latin Word Space, MWS = Mixed, CWS = CJK.\n\n\
 (fn LWS-I LWS-+ LWS-- MWS-I MWS-+ MWS-- CWS-I CWS-+ CWS--)");
 
-    defun(env, "ekp-c-set-penalties", 4, 6, Fekp_c_set_penalties,
+    defun(env, "ekp-c-set-penalties", 4, 7, Fekp_c_set_penalties,
           "Set Knuth-Plass algorithm penalties.\n\n\
 LINE-PENALTY: base penalty per line break (default 10)\n\
 HYPHEN-PENALTY: penalty for hyphenated breaks (default 50)\n\

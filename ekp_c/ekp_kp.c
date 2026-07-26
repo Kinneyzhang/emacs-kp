@@ -162,6 +162,9 @@ typedef struct {
     double last_line_ratio;
     int consec_hyphen_penalty;
     double last_line_short_penalty;
+    /* Per-line flexibility for non-justify alignment (0 = justify):
+     * widens max_w, so flexibility = max_w - ideal includes it. */
+    int32_t extra_stretch;
 
     /* Two-pass strategy: strict K-P first; emergency single-box
      * breaks only in the second pass (when no valid layout exists). */
@@ -301,7 +304,8 @@ static void dp_process_position(
         int32_t min_w = in->min_prefix[k] - in->min_prefix[i] -
                        (lead_ideal - lead_shrink) - space_w + hyph_w;
         int32_t max_w = in->max_prefix[k] - in->max_prefix[i] -
-                       (lead_ideal + lead_stretch) - space_w + hyph_w;
+                       (lead_ideal + lead_stretch) - space_w + hyph_w +
+                       in->extra_stretch;
 
         /* Too long? (last line is never shrunk below its ideal) */
         if (min_w > line_width || (is_last && ideal > line_width)) {
@@ -680,6 +684,7 @@ ekp_result_t *ekp_break_with_prefixes(
     double last_ratio = ekp_global ? ekp_global->last_line_ratio : 0.5;
     int chp = ekp_global ? ekp_global->consec_hyphen_penalty : 100;
     double llsp = ekp_global ? ekp_global->last_line_short_penalty : 50.0;
+    int32_t xstretch = ekp_global ? ekp_global->extra_stretch : 0;
 
     /* Create unified input structure */
     dp_input_t in = {
@@ -704,6 +709,7 @@ ekp_result_t *ekp_break_with_prefixes(
         .last_line_ratio = last_ratio,
         .consec_hyphen_penalty = chp,
         .last_line_short_penalty = llsp,
+        .extra_stretch = xstretch,
         .allow_emergency = false
     };
 

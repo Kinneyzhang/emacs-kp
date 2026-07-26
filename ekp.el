@@ -86,6 +86,22 @@ Applied as: this × (1 - fill-ratio) when fill < `ekp-last-line-min-ratio'.")
 (defvar ekp-last-line-min-ratio 0.5
   "Minimum fill ratio for last line (0.0-1.0).")
 
+(defvar ekp-alignment 'justify
+  "Paragraph alignment mode.
+`justify'      — flush both edges (default)
+`ragged-right' — natural spacing, lines end ragged on the right
+`ragged-left'  — natural spacing, lines start ragged on the left
+`center'       — natural spacing, both edges share the leftover
+Non-justify modes keep inter-word glue rigid; the K-P optimizer still
+picks breaks that minimize raggedness within
+`ekp-ragged-stretch-pixel' per line.")
+
+(defvar ekp-ragged-stretch-pixel nil
+  "Per-line end-of-line flexibility (pixels) for non-justify alignment.
+This is what a ragged line may fall short of the target width without
+badness reaching infinity (like \\raggedright with a finite \\rightskip
+stretch).  nil derives 8× the Latin word-space ideal (≈2 em).")
+
 (defvar ekp-looseness 0
   "Target line count offset: 0=optimal, +1=looser (more lines), -1=tighter.
 When non-zero, a full (position × line-count) dynamic program is run
@@ -441,6 +457,8 @@ are derived per string)."
           (prin1-to-string (object-intervals string))
           latin-font cjk-font
           ekp-latin-lang
+          ekp-alignment
+          ekp-ragged-stretch-pixel
           (if (and ekp--params-explicit (ekp--params-set-p))
               (list ekp-lws-ideal-pixel ekp-lws-stretch-pixel
                     ekp-lws-shrink-pixel ekp-mws-ideal-pixel
@@ -478,6 +496,11 @@ reduces the number of `string-pixel-width' calls."
 (defun ekp--space-box-type-p (box-type)
   "Return non-nil if BOX-TYPE describes a whitespace box."
   (and box-type (eq (car box-type) 'space)))
+
+(defun ekp--ragged-extra-stretch ()
+  "Resolve the per-line flexibility for non-justify alignment."
+  (or ekp-ragged-stretch-pixel
+      (max 1 (* 8 (or ekp-lws-ideal-pixel 1)))))
 
 (defun ekp--make-para (string)
   "Create and fully initialize `ekp-para' struct for STRING.
@@ -547,8 +570,14 @@ Computes ALL data in one pass: text, params, and prefix arrays."
       (let* ((box-w (aref boxes-widths i))
              (glue-type (aref glues-types i))
              (g-ideal (ekp-glue-ideal-pixel glue-type))
-             (g-min (ekp-glue-min-pixel glue-type))
-             (g-max (ekp-glue-max-pixel glue-type)))
+             ;; Non-justify alignment: inter-word glue is rigid; the
+             ;; per-line flexibility comes from :extra-stretch instead.
+             (g-min (if (eq ekp-alignment 'justify)
+                        (ekp-glue-min-pixel glue-type)
+                      g-ideal))
+             (g-max (if (eq ekp-alignment 'justify)
+                        (ekp-glue-max-pixel glue-type)
+                      g-ideal)))
         (aset glue-ideals i g-ideal)
         (aset glue-shrinks i (- g-ideal g-min))
         (aset glue-stretches i (- g-max g-ideal))
@@ -599,15 +628,19 @@ Computes ALL data in one pass: text, params, and prefix arrays."
      :trail-spaces trail-spaces
      :breaks-allowed breaks-allowed
      :forbidden-positions (vconcat (nreverse forbidden))
-     :glue-params (list :lws-ideal ekp-lws-ideal-pixel
-                        :lws-stretch ekp-lws-stretch-pixel
-                        :lws-shrink ekp-lws-shrink-pixel
-                        :mws-ideal ekp-mws-ideal-pixel
-                        :mws-stretch ekp-mws-stretch-pixel
-                        :mws-shrink ekp-mws-shrink-pixel
-                        :cws-ideal ekp-cws-ideal-pixel
-                        :cws-stretch ekp-cws-stretch-pixel
-                        :cws-shrink ekp-cws-shrink-pixel)
+     :glue-params (let ((justify (eq ekp-alignment 'justify)))
+                    (list :lws-ideal ekp-lws-ideal-pixel
+                          :lws-stretch (if justify ekp-lws-stretch-pixel 0)
+                          :lws-shrink (if justify ekp-lws-shrink-pixel 0)
+                          :mws-ideal ekp-mws-ideal-pixel
+                          :mws-stretch (if justify ekp-mws-stretch-pixel 0)
+                          :mws-shrink (if justify ekp-mws-shrink-pixel 0)
+                          :cws-ideal ekp-cws-ideal-pixel
+                          :cws-stretch (if justify ekp-cws-stretch-pixel 0)
+                          :cws-shrink (if justify ekp-cws-shrink-pixel 0)
+                          :alignment ekp-alignment
+                          :extra-stretch (if justify 0
+                                           (ekp--ragged-extra-stretch))))
      :dp-cache (make-hash-table :test 'eql :size 20))))
 
 (defun ekp--get-para (string)
@@ -817,6 +850,7 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
          (lws-shrink (plist-get params :lws-shrink))
          (mws-shrink (plist-get params :mws-shrink))
          (cws-shrink (plist-get params :cws-shrink))
+         (extra-stretch (or (plist-get params :extra-stretch) 0))
          (backptrs (make-vector (1+ n) nil))
          (demerits (make-vector (1+ n) nil))
          (rests (make-vector (1+ n) nil))
@@ -861,7 +895,7 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                               hyph-w))
                      (maxw (+ (- (aref max-prefixs k) mx-i lead-glue-max
                                  space-w)
-                              hyph-w)))
+                              hyph-w extra-stretch)))
                 (cond
                  ;; Line already too long: emergency-record atomic run,
                  ;; then stop extending.
@@ -916,7 +950,8 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                               (if (> adjustment 0)
                                   (+ (* lcnt lws-stretch)
                                      (* mcnt mws-stretch)
-                                     (* ccnt cws-stretch))
+                                     (* ccnt cws-stretch)
+                                     extra-stretch)
                                 (+ (* lcnt lws-shrink)
                                    (* mcnt mws-shrink)
                                    (* ccnt cws-shrink))))
@@ -1035,6 +1070,7 @@ breaks when no valid layout exists."
          (lws-shrink (plist-get params :lws-shrink))
          (mws-shrink (plist-get params :mws-shrink))
          (cws-shrink (plist-get params :cws-shrink))
+         (extra-stretch (or (plist-get params :extra-stretch) 0))
          ;; state: (pos . lines) -> [dem backptr fitness hyph rest gaps]
          (states (make-hash-table :test 'equal :size (* 4 (1+ n))))
          (counts-at (make-vector (1+ n) nil)))
@@ -1075,7 +1111,7 @@ breaks when no valid layout exists."
                               hyph-w))
                      (maxw (+ (- (aref max-prefixs k) mx-i lead-glue-max
                                  space-w)
-                              hyph-w))
+                              hyph-w extra-stretch))
                      (adjustment (- line-pixel ideal))
                      candidate)
                 (cond
@@ -1127,7 +1163,8 @@ breaks when no valid layout exists."
                                   (if (> adjustment 0)
                                       (+ (* lcnt lws-stretch)
                                          (* mcnt mws-stretch)
-                                         (* ccnt cws-stretch))
+                                         (* ccnt cws-stretch)
+                                         extra-stretch)
                                     (+ (* lcnt lws-shrink)
                                        (* mcnt mws-shrink)
                                        (* ccnt cws-shrink))))
@@ -1228,7 +1265,10 @@ CANDIDATE is (DEM-DELTA REST GAPS FITNESS HYPHEN-COUNT)."
                          ekp-adjacent-fitness-penalty
                          (float ekp-last-line-min-ratio)
                          ekp-consecutive-hyphen-penalty
-                         (float ekp-last-line-short-penalty))))
+                         (float ekp-last-line-short-penalty)
+                         (if (eq ekp-alignment 'justify)
+                             0
+                           (ekp--ragged-extra-stretch)))))
 
 (defun ekp-dp-cache (string line-pixel)
   "Compute optimal line breaks for STRING at LINE-PIXEL width.
@@ -1478,6 +1518,9 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
   (let* ((para (ekp--get-para string))
          (boxes-num (length (ekp-para-boxes para)))
          (glues-types (ekp-para-glues-types para))
+         (alignment (or (plist-get (ekp-para-glue-params para) :alignment)
+                        'justify))
+         (ragged (not (eq alignment 'justify)))
          (hyphen-positions (ekp-para-hyphen-positions para))
          (breaks (ekp-line-breaks string line-pixel))
          (lines-rests (ekp-dp-data string line-pixel :rests))
@@ -1517,8 +1560,9 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                                            (- ideal-pixel
                                               (if hyphen-p hyphen-pixel 0))
                                            hyphen-p hyphen-pixel))
-               ;; Last line: ragged right
-               (is-last
+               ;; Last line, or any line under non-justify alignment:
+               ;; natural glue widths plus a trailing filler.
+               ((or is-last ragged)
                 (ekp--line-glue-last-line
                  para line-glues-types ideal-pixel line-pixel))
                ;; Emergency underfull line (can't stretch to width):
@@ -1534,6 +1578,21 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                 (ekp--line-glue-normal para line-glues-types
                                        (nth i lines-rests)
                                        (nth i lines-gaps)))))
+        ;; Non-justify alignment: place the leftover per mode
+        ;; (ragged-right keeps it trailing; center splits it; ragged-left
+        ;; moves it to the head).
+        (when (and ragged (>= (length glue-list) 2)
+                   (memq alignment '(center ragged-left)))
+          (let ((filler (car (last glue-list))))
+            (setq glue-list
+                  (if (eq alignment 'center)
+                      (let ((lead (/ filler 2)))
+                        (append (list lead)
+                                (cdr (butlast glue-list))
+                                (list (- filler lead))))
+                    (append (list filler)
+                            (cdr (butlast glue-list))
+                            (list 0))))))
         (aset line-glues i (vconcat glue-list))
         (setq start end)))
     line-glues))
