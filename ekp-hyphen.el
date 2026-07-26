@@ -112,9 +112,13 @@ E.g., \"a1bc2\" -> letters=\"abc\", values=(0 1 0 2)."
         (list letters start (cl-subseq values start end))))))
 
 (defun ekp-hyphen--compile (path)
-  "Compile dictionary at PATH into ekp-hyphen struct."
+  "Compile dictionary at PATH into ekp-hyphen struct.
+Honors the dictionary's LEFTHYPHENMIN / RIGHTHYPHENMIN declarations
+\(minimum characters kept before/after any break — e.g. en_US
+declares 2/3, so \"quick-ly\" is not a valid break); absent
+declarations default to 2/2."
   (let ((patterns (make-hash-table :test 'equal))
-        (maxlen 0))
+        (maxlen 0) (left 2) (right 2))
     (with-temp-buffer
       (insert-file-contents path)
       (forward-line 1)  ; skip encoding line
@@ -124,7 +128,15 @@ E.g., \"a1bc2\" -> letters=\"abc\", values=(0 1 0 2)."
                (skip (or (string-empty-p line)
                          (string-match-p "^[%#]\\|HYPHENMIN" line)
                          (string-match-p "/" line))))  ; skip alt patterns
-          (unless skip
+          (cond
+           ((string-match "^\\(LEFT\\|RIGHT\\)HYPHENMIN[ \t]*\\([0-9]+\\)"
+                          line)
+            (let ((n (string-to-number (match-string 2 line))))
+              (if (equal (match-string 1 line) "LEFT")
+                  (setq left n)
+                (setq right n))))
+           (skip nil)
+           (t
             ;; Handle ^^XX hex escapes
             (setq line (replace-regexp-in-string
                         "\\^\\^\\([0-9a-fA-F]\\{2\\}\\)"
@@ -133,12 +145,12 @@ E.g., \"a1bc2\" -> letters=\"abc\", values=(0 1 0 2)."
                         line))
             (when-let ((parsed (ekp-hyphen--parse-pattern line)))
               (puthash (car parsed) (cdr parsed) patterns)
-              (setq maxlen (max maxlen (length (car parsed)))))))
+              (setq maxlen (max maxlen (length (car parsed))))))))
         (forward-line 1)))
     (ekp-hyphen--create :patterns patterns
                         :cache (make-hash-table :test 'equal)
                         :maxlen maxlen
-                        :left 2 :right 2)))
+                        :left left :right right)))
 
 ;;; Hyphenation Algorithm
 
@@ -178,7 +190,9 @@ E.g., \"a1bc2\" -> letters=\"abc\", values=(0 1 0 2)."
 
 (defun ekp-hyphen-create (&optional lang file left right)
   "Create hyphenator for LANG or dictionary FILE.
-LEFT/RIGHT: min chars before/after breaks (default 2)."
+LEFT/RIGHT override the minimum characters kept before/after breaks;
+by default the dictionary's own LEFTHYPHENMIN/RIGHTHYPHENMIN apply
+\(2/2 when it declares none)."
   (let ((path (or (and lang (ekp-hyphen--resolve-lang lang)) file)))
     (unless path (error "No dictionary for: %s" lang))
     (let ((h (or (gethash path ekp-hyphen--cache)
@@ -188,7 +202,8 @@ LEFT/RIGHT: min chars before/after breaks (default 2)."
           (ekp-hyphen--create :patterns (ekp-hyphen-patterns h)
                               :cache (ekp-hyphen-cache h)
                               :maxlen (ekp-hyphen-maxlen h)
-                              :left (or left 2) :right (or right 2))
+                              :left (or left (ekp-hyphen-left h))
+                              :right (or right (ekp-hyphen-right h)))
         h))))
 
 (defun ekp-hyphen-positions (h word)

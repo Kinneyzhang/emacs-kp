@@ -320,11 +320,13 @@ static emacs_value Fekp_c_thread_count(emacs_env *env, ptrdiff_t nargs,
 /*
  * ekp-c-break-with-arrays: Pure DP with Elisp-provided prefix arrays
  *
- * Args: (ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks glue-stretches
- *        hyphen-positions hyphen-width line-width)
+ * Args: (ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks
+ *        glue-stretches hyphen-positions hyphen-width line-width
+ *        lead-spaces trail-spaces forbidden-positions tail-protrudes
+ *        hyphen-protrude first-line-width)
  *
- * All 6 arrays must have consistent sizes:
- *   - ideal/min/max-prefix: (n+1) elements
+ * Array sizes must be consistent:
+ *   - ideal/min/max-prefix, lead/trail-spaces, tail-protrudes: n+1
  *   - glue-ideals/shrinks/stretches: n elements
  *
  * Returns: (breaks . total-cost) where breaks is a list of box indices.
@@ -337,7 +339,7 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
 {
     (void)data;
 
-    if (!ekp_global || nargs < 14)
+    if (!ekp_global || nargs < 15)
         return env->intern(env, "nil");
 
     /* Get prefix array sizes (n+1 elements) */
@@ -405,6 +407,7 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
         }
     }
     int32_t hyphen_protrude = env->extract_integer(env, args[13]);
+    int32_t first_line_width = env->extract_integer(env, args[14]);
 
     /* Forbidden break positions (sorted gap indices, may be empty) */
     ptrdiff_t forb_count = env->vec_size(env, args[11]);
@@ -427,7 +430,7 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
         hyph_width, line_width,
         lead_spaces, trail_spaces,
         forb_pos, (forb_pos && forb_count > 0) ? (size_t)forb_count : 0,
-        tail_pro, hyphen_protrude);
+        tail_pro, hyphen_protrude, first_line_width);
 
     free(ideal_prefix); free(min_prefix); free(max_prefix);
     free(glue_ideals); free(glue_shrinks); free(glue_stretches);
@@ -469,7 +472,8 @@ static bool extract_paragraph_data(
     int32_t *hyph_width, int32_t *line_width,
     int32_t **lead_spaces, int32_t **trail_spaces,
     int32_t **forb_pos, ptrdiff_t *forb_count,
-    int32_t **tail_pro, int32_t *hyphen_protrude)
+    int32_t **tail_pro, int32_t *hyphen_protrude,
+    int32_t *first_line_width)
 {
     ptrdiff_t prefix_len = env->vec_size(env, args[0]);
     if (prefix_len <= 1)
@@ -541,6 +545,7 @@ static bool extract_paragraph_data(
         }
     }
     *hyphen_protrude = env->extract_integer(env, args[13]);
+    *first_line_width = env->extract_integer(env, args[14]);
 
     return true;
 }
@@ -595,15 +600,15 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
     for (ptrdiff_t p = 0; p < para_count; p++) {
         emacs_value para_vec = env->vec_get(env, args[0], p);
 
-        /* Extract 14 arguments from this paragraph's vector */
-        emacs_value para_args[14];
-        for (int i = 0; i < 14; i++) {
+        /* Extract 15 arguments from this paragraph's vector */
+        emacs_value para_args[15];
+        for (int i = 0; i < 15; i++) {
             para_args[i] = env->vec_get(env, para_vec, i);
         }
 
         size_t n;
         ptrdiff_t hyph_count, forb_count;
-        int32_t hyph_width, line_width, hyphen_protrude;
+        int32_t hyph_width, line_width, hyphen_protrude, first_line_width;
 
         if (!extract_paragraph_data(env, para_args,
                                      &all_ideal[p], &all_min[p], &all_max[p],
@@ -612,7 +617,8 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
                                      &hyph_width, &line_width,
                                      &all_lead[p], &all_trail[p],
                                      &all_forb[p], &forb_count,
-                                     &all_pro[p], &hyphen_protrude)) {
+                                     &all_pro[p], &hyphen_protrude,
+                                     &first_line_width)) {
             /* Cleanup on failure */
             for (ptrdiff_t j = 0; j < p; j++) {
                 free(all_ideal[j]); free(all_min[j]); free(all_max[j]);
@@ -644,6 +650,7 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
             (all_forb[p] && forb_count > 0) ? (size_t)forb_count : 0;
         inputs[p].tail_protrudes = all_pro[p];
         inputs[p].hyphen_protrude = hyphen_protrude;
+        inputs[p].first_line_width = first_line_width;
     }
 
     /* Process all paragraphs in parallel */
@@ -768,7 +775,7 @@ MEASURE-FUNC: function that takes a string and returns pixel width\n\n\
 Returns (BREAKS . TOTAL-COST) where BREAKS is list of break positions.\n\n\
 (fn STRING HYPHENATOR-INDEX LINE-WIDTH MEASURE-FUNC)");
 
-    defun(env, "ekp-c-break-with-arrays", 14, 14, Fekp_c_break_with_arrays,
+    defun(env, "ekp-c-break-with-arrays", 15, 15, Fekp_c_break_with_arrays,
           "Break lines using Elisp's pre-computed prefix arrays (preferred API).\n\n\
 IDEAL-PREFIX: vector of ideal width prefix sums (n+1 elements)\n\
 MIN-PREFIX: vector of min width prefix sums (n+1 elements)\n\
@@ -780,11 +787,16 @@ HYPHEN-POS: vector of hyphenable box indices (sorted)\n\
 HYPHEN-WIDTH: pixel width of hyphen character\n\
 LINE-WIDTH: target line width in pixels\n\
 LEAD-SPACES: vector (n+1) of space-box run widths starting at box i\n\
-TRAIL-SPACES: vector (n+1) of space-box run widths ending at box k-1\n\n\
+TRAIL-SPACES: vector (n+1) of space-box run widths ending at box k-1\n\
+FORBIDDEN-POS: vector of gap indices where breaking is forbidden (sorted)\n\
+TAIL-PROTRUDES: vector (n+1) of right-edge protrusion pixels per gap\n\
+HYPHEN-PROTRUDE: protrusion pixels for the soft hyphen\n\
+FIRST-LINE-WIDTH: width of line 0 (first-line indent); <=0 = LINE-WIDTH\n\n\
 Returns (BREAKS . TOTAL-COST) where BREAKS is list of box indices.\n\
 This API ensures C uses Elisp's font-dependent measurements.\n\n\
 (fn IDEAL-PREFIX MIN-PREFIX MAX-PREFIX GLUE-IDEALS GLUE-SHRINKS GLUE-STRETCHES \
-HYPHEN-POS HYPHEN-WIDTH LINE-WIDTH LEAD-SPACES TRAIL-SPACES)");
+HYPHEN-POS HYPHEN-WIDTH LINE-WIDTH LEAD-SPACES TRAIL-SPACES FORBIDDEN-POS \
+TAIL-PROTRUDES HYPHEN-PROTRUDE FIRST-LINE-WIDTH)");
 
     defun(env, "ekp-c-version", 0, 0, Fekp_c_version,
           "Return EKP C module version string.");
@@ -794,10 +806,8 @@ HYPHEN-POS HYPHEN-WIDTH LINE-WIDTH LEAD-SPACES TRAIL-SPACES)");
 
     defun(env, "ekp-c-break-batch", 1, 1, Fekp_c_break_batch,
           "Break multiple paragraphs in parallel.\n\n\
-PARAGRAPHS: vector of paragraph data, each element is a vector of 11 items:\n\
-  [ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks\n\
-   glue-stretches hyphen-positions hyphen-width line-width\n\
-   lead-spaces trail-spaces]\n\n\
+PARAGRAPHS: vector of paragraph data, each element a vector of the\n\
+same 15 items `ekp-c-break-with-arrays' takes, in the same order.\n\n\
 Returns vector of (BREAKS . COST) for each paragraph.\n\
 This is the high-performance API for multi-paragraph processing.\n\n\
 (fn PARAGRAPHS)");

@@ -79,8 +79,10 @@ Used to verify no content is lost by justification."
   (let ((h (ekp-hyphen-create "en_US")))
     (should (equal (ekp-hyphen-boxes h "hyphenation")
                    '("hy" "phen" "ation")))
+    ;; RIGHTHYPHENMIN 3 (declared by en_US): no "gen-cy" break,
+    ;; "cy" would leave only 2 characters after the hyphen.
     (should (equal (ekp-hyphen-boxes h "emergency")
-                   '("emer" "gen" "cy")))
+                   '("emer" "gency")))
     ;; Words with no break points come back whole
     (should (equal (ekp-hyphen-boxes h "cat") '("cat")))))
 
@@ -695,6 +697,72 @@ kept returning the paragraph resolved under the previous style."
              (let ((ekp-alignment 'center)) (ekp-pixel-justify s 30))))
     (ekp-clear-caches)
     (should (equal-including-properties out-j (ekp-pixel-justify s 30)))))
+
+;;;; Typography quality (M3 wave)
+
+(ert-deftest ekp-test-hyphenmin-honored ()
+  "Dictionary LEFTHYPHENMIN/RIGHTHYPHENMIN are parsed and applied.
+en_US declares 2/3; the old hardcoded 2/2 allowed \"quick-ly\"."
+  (let ((h (ekp-hyphen-create "en_US")))
+    (should (= (ekp-hyphen-left h) 2))
+    (should (= (ekp-hyphen-right h) 3))
+    (dolist (w '("quickly" "mainly" "activity" "hyphenation" "reader"))
+      (dolist (p (ekp-hyphen-positions h w))
+        (should (>= p 2))
+        (should (<= p (- (length w) 3)))))
+    ;; explicit overrides still work, partial override keeps the
+    ;; dictionary's value for the other side
+    (let ((h2 (ekp-hyphen-create "en_US" nil 1 1))
+          (h3 (ekp-hyphen-create "en_US" nil 4 nil)))
+      (should (= (ekp-hyphen-left h2) 1))
+      (should (= (ekp-hyphen-right h2) 1))
+      (should (= (ekp-hyphen-left h3) 4))
+      (should (= (ekp-hyphen-right h3) 3)))))
+
+(ert-deftest ekp-test-jis-kinsoku-line-start ()
+  "Small kana and the prolonged sound mark never start a line.
+JIS X 4051 line-start prohibition for っゃー々 etc."
+  (ekp-tests--with-clean-state
+   (let ((text "がっこうへいくよラーメンをたべたいなあそうかなぁいいなぁと")
+         (forbidden (append ekp-cjk-no-line-start-extra nil)))
+     (dolist (w '(20 28 40 60))
+       (let ((out (ekp-pixel-justify text w)))
+         (dolist (line (split-string out "\n"))
+           (when (> (length line) 0)
+             (should-not (memq (aref line 0) forbidden)))))))))
+
+(ert-deftest ekp-test-first-line-indent-1d-matches-parshape ()
+  "A plain first-line indent equals the equivalent parshape.
+The indent runs on the 1D DP (and the C engine); parshape runs on
+the (position × line-count) Elisp DP — they must agree."
+  (ekp-tests--with-clean-state
+   (let* ((s "首行缩进等价性检查内容足够长会断行几次的样子哦")
+          (w 30)
+          (via-indent (let ((ekp-first-line-indent 8))
+                        (ekp-pixel-justify s w)))
+          (via-parshape (progn
+                          (ekp-clear-caches)
+                          (let ((ekp-parshape (list (cons 8 (- w 8))
+                                                    (cons 0 w))))
+                            (ekp-pixel-justify s w)))))
+     (should (equal-including-properties via-indent via-parshape)))))
+
+(ert-deftest ekp-test-first-line-indent-c-parity ()
+  "First-line indent: C and Elisp engines agree byte-for-byte."
+  (skip-unless (ekp-tests--c-available))
+  (ekp-tests--with-clean-state
+   (dolist (indent '(t 8))
+     (let ((ekp-first-line-indent indent))
+       (dolist (s '("中文首行缩进检查内容足够长会断行几次的样子哦"
+                    "Mixed 混排 first line indent parity with words"))
+         (dolist (w '(30 60 90))
+           (let* ((via-c (let ((ekp-use-c-module t))
+                           (ekp-pixel-justify s w)))
+                  (_ (ekp-clear-caches))
+                  (via-el (let ((ekp-use-c-module nil))
+                            (ekp-pixel-justify s w))))
+             (ekp-clear-caches)
+             (should (equal-including-properties via-c via-el)))))))))
 
 (provide 'ekp-tests)
 

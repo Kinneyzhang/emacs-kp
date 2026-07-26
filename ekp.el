@@ -370,34 +370,39 @@ Returns (boxes-vector . hyphen-positions-vector)."
          (hyphenator 'unset)
          (idx 0) new-boxes hyphen-idxs)
     (dolist (box (append boxes nil))
-      (if (and (string-match word-re box)
-               ;; Never hyphenate inside a no-break span (verbatim atoms)
-               (null (text-property-not-all 0 (length box)
-                                            'ekp-no-break nil box))
-               (or (and (eq hyphenator 'unset)
-                        (setq hyphenator
-                              (condition-case nil
-                                  (ekp-hyphen-create ekp-latin-lang)
-                                (error nil))))
-                   hyphenator))
-          ;; Latin word: apply hyphenation
-          (let* ((left (match-string 1 box))
-                 (word (match-string 2 box))
-                 (right (match-string 3 box))
-                 (parts (ekp-hyphen-boxes hyphenator word))
-                 (n (length parts)))
-            (when (> (length left) 0)
-              (setcar parts (concat left (car parts))))
-            (when (> (length right) 0)
-              (setcar (last parts)
-                      (concat (car (last parts)) right)))
-            (push parts new-boxes)
-            (dotimes (i n)
-              (when (< i (1- n)) (push idx hyphen-idxs))
-              (cl-incf idx)))
-        ;; Non-Latin: single box
-        (push (list box) new-boxes)
-        (cl-incf idx)))
+      (let ((parts nil))
+        (when (and (string-match word-re box)
+                   ;; Never hyphenate inside a no-break span
+                   (null (text-property-not-all 0 (length box)
+                                                'ekp-no-break nil box)))
+          ;; Extract the groups BEFORE resolving the hyphenator:
+          ;; dictionary compilation runs regexps of its own and
+          ;; clobbers the match data.
+          (let ((left (match-string 1 box))
+                (word (match-string 2 box))
+                (right (match-string 3 box)))
+            (when (eq hyphenator 'unset)
+              (setq hyphenator
+                    (condition-case nil
+                        (ekp-hyphen-create ekp-latin-lang)
+                      (error nil))))
+            (when hyphenator
+              (setq parts (ekp-hyphen-boxes hyphenator word))
+              (when (> (length left) 0)
+                (setcar parts (concat left (car parts))))
+              (when (> (length right) 0)
+                (setcar (last parts)
+                        (concat (car (last parts)) right))))))
+        (if parts
+            ;; Latin word: hyphenated into syllable boxes
+            (let ((n (length parts)))
+              (push parts new-boxes)
+              (dotimes (i n)
+                (when (< i (1- n)) (push idx hyphen-idxs))
+                (cl-incf idx)))
+          ;; Non-Latin box, or hyphenation unavailable
+          (push (list box) new-boxes)
+          (cl-incf idx))))
     (cons (vconcat (apply #'append (nreverse new-boxes)))
           (vconcat (nreverse hyphen-idxs)))))
 
@@ -498,6 +503,36 @@ are covered by the `cjk-open' class.")
 (defconst ekp--no-line-start-char-list (append ekp--no-line-start-chars nil))
 (defconst ekp--no-line-end-char-list (append ekp--no-line-end-chars nil))
 
+(defcustom ekp-cjk-no-line-start-extra
+  (concat "ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ"
+          "ㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ"
+          "ーゝゞヽヾ々〻")
+  "CJK letters that must not start a line (JIS X 4051 kinsoku).
+Small kana, the prolonged sound mark ー and iteration marks are
+letters for spacing purposes but are line-start-prohibited in
+Japanese typesetting.  Stored as a string of characters."
+  :type 'string
+  :group 'ekp)
+
+(defvar ekp--extra-nls-table nil
+  "Char-table view of `ekp-cjk-no-line-start-extra' (fast lookup).")
+
+(defun ekp--extra-nls-rebuild (chars)
+  "Rebuild `ekp--extra-nls-table' from the string CHARS."
+  (let ((table (make-char-table 'ekp-extra-nls)))
+    (dolist (c (append (if (stringp chars) chars "") nil))
+      (aset table c t))
+    (setq ekp--extra-nls-table table)))
+
+(ekp--extra-nls-rebuild ekp-cjk-no-line-start-extra)
+
+(add-variable-watcher
+ 'ekp-cjk-no-line-start-extra
+ (lambda (_sym new op _where)
+   (when (memq op '(set let unlet makunbound))
+     (ekp--extra-nls-rebuild new)
+     (setq ekp--last-para nil))))
+
 (defun ekp--box-pure-set-p (box chars)
   "Non-nil when BOX is non-empty and every char is a member of CHARS."
   (let ((len (length box)) (i 0) (all t))
@@ -511,6 +546,8 @@ are covered by the `cjk-open' class.")
 (defun ekp--box-no-line-start-p (box box-type)
   "Non-nil if BOX must not appear at the start of a line."
   (or (eq (car box-type) 'cjk-close)
+      (and (> (length box) 0)
+           (aref ekp--extra-nls-table (aref box 0)))
       (ekp--box-pure-set-p box ekp--no-line-start-char-list)))
 
 (defun ekp--box-no-line-end-p (box box-type)
@@ -651,6 +688,7 @@ are derived per string)."
           (and ekp-protrusion ekp-protrusion-ratios)
           ekp-parshape
           ekp-first-line-indent
+          ekp-cjk-no-line-start-extra
           (if (and ekp--params-explicit (ekp--params-set-p))
               (list ekp-lws-ideal-pixel ekp-lws-stretch-pixel
                     ekp-lws-shrink-pixel ekp-mws-ideal-pixel
@@ -720,16 +758,13 @@ box's.  0 when `ekp-protrusion' was off at paragraph build time."
   (or ekp-ragged-stretch-pixel
       (max 1 (* 8 (or ekp-lws-ideal-pixel 1)))))
 
-(defun ekp--parshape-active-p ()
-  "Non-nil when per-line widths are in effect (parshape or indent)."
-  (or ekp-parshape ekp-first-line-indent))
-
 (defun ekp--first-indent-pixel (para)
-  "Resolve `ekp-first-line-indent' to pixels for PARA."
+  "Resolve `ekp-first-line-indent' to pixels for PARA.
+Goes through the width cache: this runs for every rendered line."
   (cond
    ((numberp ekp-first-line-indent) ekp-first-line-indent)
    (ekp-first-line-indent
-    (* 2 (string-pixel-width
+    (* 2 (ekp--measured-width
           (propertize "字" 'face
                       (list :family (ekp-para-cjk-font para))))))
    (t 0)))
@@ -1093,9 +1128,9 @@ width, so results at different looseness values must not alias
 
 (defun ekp--dp-cache-elisp (para line-pixel)
   "Pure Elisp DP implementation. Returns and caches the dp-result plist.
-Looseness and per-line widths (parshape/first-line indent) need the
-\(position × line-count) DP."
-  (if (or (/= ekp-looseness 0) (ekp--parshape-active-p))
+Looseness and parshape need the (position × line-count) DP; a plain
+first-line indent is handled by the 1D pass (line 0 = start at box 0)."
+  (if (or (/= ekp-looseness 0) ekp-parshape)
       (ekp--dp-cache-elisp-loose para line-pixel)
     (let ((dp-result (or (ekp--dp-run-1d para line-pixel nil)
                          (ekp--dp-run-1d para line-pixel t))))
@@ -1132,6 +1167,10 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
          (breaks-ok (ekp-para-breaks-allowed para))
          (tail-protrudes (ekp-para-tail-protrudes para))
          (hyphen-protrude (ekp-para-hyphen-protrude para))
+         ;; First-line indent shrinks line 0 only; a line starts at
+         ;; box 0 exactly when i = 0, so the 1D DP handles it without
+         ;; the (position × line-count) state (parshape still needs it).
+         (first-line-pixel (cdr (ekp--line-spec para 0 line-pixel)))
          (params (ekp-para-glue-params para))
          (lws-stretch (plist-get params :lws-stretch))
          (mws-stretch (plist-get params :mws-stretch))
@@ -1176,7 +1215,7 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                      (end-with-hyphenp (aref hyph-flags (1- k)))
                      (hyph-w (if end-with-hyphenp hyphen-pixel 0))
                      ;; right-edge protrusion releases width at this k
-                     (lw (+ line-pixel
+                     (lw (+ (if (= i 0) first-line-pixel line-pixel)
                             (if end-with-hyphenp
                                 hyphen-protrude
                               (aref tail-protrudes k))))
@@ -1557,10 +1596,10 @@ CANDIDATE is (DEM-DELTA REST GAPS FITNESS HYPHEN-COUNT)."
   (and ekp-use-c-module
        (boundp 'ekp-c-module-loaded) ekp-c-module-loaded
        (fboundp 'ekp-c-break-with-arrays)
-       ;; looseness and per-line widths need the (position × line-count)
-       ;; DP, Elisp only
+       ;; looseness and parshape need the (position × line-count) DP,
+       ;; Elisp only; first-line indent is a scalar the C engine takes
        (= ekp-looseness 0)
-       (not (ekp--parshape-active-p))))
+       (not ekp-parshape)))
 
 (defun ekp--c-sync-params ()
   "Push current K-P penalty settings to the C module."
@@ -1589,10 +1628,13 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
      (t (ekp--dp-cache-elisp para line-pixel)))))
 
 (defun ekp--lines-data-from-breaks (para line-pixel breaks)
-  "Compute (RESTS . GAPS) lists for BREAKS, matching the DP's metrics."
-  (let ((start 0) rests gapss)
+  "Compute (RESTS . GAPS) lists for BREAKS, matching the DP's metrics.
+Per-line widths (first-line indent) must mirror the DP exactly, or
+the reconstructed rests overfill the indented line."
+  (let ((start 0) (idx 0) rests gapss)
     (dolist (end breaks)
-      (push (- (+ line-pixel (ekp--line-edge-release para start end))
+      (push (- (+ (cdr (ekp--line-spec para idx line-pixel))
+                  (ekp--line-edge-release para start end))
                (ekp--line-ideal-pixel para start end))
             rests)
       (push (if (or (= end (1+ start))
@@ -1600,7 +1642,8 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
                 nil
               (ekp--gaps-between para start end))
             gapss)
-      (setq start end))
+      (setq start end
+            idx (1+ idx)))
     (cons (nreverse rests) (nreverse gapss))))
 
 (defun ekp--store-c-result (para line-pixel breaks cost)
@@ -1615,7 +1658,7 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
     dp-result))
 
 (defun ekp--prepare-para-for-c (para line-pixel)
-  "Prepare PARA data as a 14-element vector for the C batch API."
+  "Prepare PARA data as a 15-element vector for the C batch API."
   (vector (ekp-para-ideal-prefixs para)
           (ekp-para-min-prefixs para)
           (ekp-para-max-prefixs para)
@@ -1629,7 +1672,8 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
           (ekp-para-trail-spaces para)
           (ekp-para-forbidden-positions para)
           (ekp-para-tail-protrudes para)
-          (ekp-para-hyphen-protrude para)))
+          (ekp-para-hyphen-protrude para)
+          (cdr (ekp--line-spec para 0 line-pixel))))
 
 (defun ekp--dp-cache-via-c (para line-pixel)
   "Compute breaks using the C module with PARA's precomputed arrays.
@@ -1650,7 +1694,8 @@ runs the pure DP.  Falls back to Elisp when the C call fails."
                   (ekp-para-trail-spaces para)
                   (ekp-para-forbidden-positions para)
                   (ekp-para-tail-protrudes para)
-                  (ekp-para-hyphen-protrude para)))
+                  (ekp-para-hyphen-protrude para)
+                  (cdr (ekp--line-spec para 0 line-pixel))))
          (c-breaks (car result))
          (c-cost (cdr result)))
     (if (null c-breaks)

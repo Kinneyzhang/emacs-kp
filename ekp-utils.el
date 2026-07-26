@@ -363,7 +363,7 @@ after CALLBACK returns."
 (defalias 'ekp-c-module-reload #'ekp--module-reload
   "Load MODULE from a temp copy to allow rebuilding.")
 
-(defconst ekp-c-module-required-version "1.4"
+(defconst ekp-c-module-required-version "1.5"
   "Minimum C module version compatible with this Elisp code.")
 
 ;;;###autoload

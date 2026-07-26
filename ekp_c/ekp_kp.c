@@ -170,6 +170,10 @@ typedef struct {
     /* Dimensions */
     size_t n;  /* box count */
     int32_t line_width;
+    /* Width of line 0 (first-line indent support); equals line_width
+     * when no indent is active.  In the forward DP a line starts at
+     * box 0 exactly when i == 0, so this needs no extra state. */
+    int32_t first_line_width;
 
     /* K-P parameters */
     int line_penalty;
@@ -281,7 +285,10 @@ static void dp_process_position(
     int32_t *line_counts)
 {
     size_t n = in->n;
-    int32_t line_width = in->line_width;
+    /* Line 0 (i == 0) may have a different width: first-line indent */
+    int32_t line_width = (i == 0 && in->first_line_width > 0)
+                             ? in->first_line_width
+                             : in->line_width;
 
     /* Get leading glue for line starting at i */
     int32_t lead_ideal = (in->glue_ideals && i < n) ? in->glue_ideals[i] : 0;
@@ -670,10 +677,13 @@ ekp_result_t *ekp_break_with_prefixes(
     const int32_t *forbidden_positions,
     size_t forbidden_count,
     const int32_t *tail_protrudes,
-    int32_t hyphen_protrude)
+    int32_t hyphen_protrude,
+    int32_t first_line_width)
 {
     if (!ideal_prefix || !min_prefix || !max_prefix || n == 0 || line_width <= 0)
         return NULL;
+    if (first_line_width <= 0)
+        first_line_width = line_width;
 
     /* Allocate DP arrays */
     double *demerits = malloc((n + 1) * sizeof(double));
@@ -728,6 +738,7 @@ ekp_result_t *ekp_break_with_prefixes(
         .trail_spaces = trail_spaces,
         .n = n,
         .line_width = line_width,
+        .first_line_width = first_line_width,
         .line_penalty = lp,
         .hyphen_penalty = hp,
         .fitness_penalty = fp,
@@ -847,7 +858,8 @@ static void batch_worker(void *arg)
         in->hyphen_width, in->line_width,
         in->lead_spaces, in->trail_spaces,
         in->forbidden_positions, in->forbidden_count,
-        in->tail_protrudes, in->hyphen_protrude);
+        in->tail_protrudes, in->hyphen_protrude,
+        in->first_line_width);
 }
 
 /*
@@ -877,7 +889,8 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
                 in->hyphen_width, in->line_width,
                 in->lead_spaces, in->trail_spaces,
                 in->forbidden_positions, in->forbidden_count,
-                in->tail_protrudes, in->hyphen_protrude);
+                in->tail_protrudes, in->hyphen_protrude,
+                in->first_line_width);
         }
         return results;
     }
@@ -896,7 +909,8 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
                 in->hyphen_width, in->line_width,
                 in->lead_spaces, in->trail_spaces,
                 in->forbidden_positions, in->forbidden_count,
-                in->tail_protrudes, in->hyphen_protrude);
+                in->tail_protrudes, in->hyphen_protrude,
+                in->first_line_width);
         }
         return results;
     }

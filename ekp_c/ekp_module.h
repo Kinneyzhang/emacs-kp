@@ -26,7 +26,7 @@
 
 /* Version */
 #define EKP_VERSION_MAJOR 1
-#define EKP_VERSION_MINOR 4
+#define EKP_VERSION_MINOR 5
 
 /* Limits */
 #define EKP_MAX_PATTERN_LEN 64
@@ -270,7 +270,8 @@ ekp_result_t *ekp_break_with_prefixes(
     const int32_t *forbidden_positions,
     size_t forbidden_count,
     const int32_t *tail_protrudes,
-    int32_t hyphen_protrude);
+    int32_t hyphen_protrude,
+    int32_t first_line_width);
 
 /*
  * Batch input for parallel processing
@@ -293,6 +294,7 @@ typedef struct {
     size_t forbidden_count;
     const int32_t *tail_protrudes;  /* nullable, n+1 elements */
     int32_t hyphen_protrude;
+    int32_t first_line_width;  /* width of line 0; <=0 = line_width */
 } ekp_batch_input_t;
 
 /*
