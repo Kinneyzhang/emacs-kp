@@ -202,6 +202,18 @@ Silicon 测得;方法见 DEVELOPER_ZH.md:
   代价关于宽度并非严格单峰,结果是很好的局部最优,不保证全局最优。
 - batch/tty 模式下像素宽度退化为字符列数(整条管线仍可工作,便于测试)。
 
+## 交互式演示
+
+```bash
+emacs -Q -L /path/to/emacs-kp -l tests/ekp-showcase.el -f ekp-showcase
+```
+
+单 buffer 按键交互:`-`/`+` 增减像素宽度(头行实时显示本次重排毫秒
+数),`d` 宽度扫掠动画并报告 fps,`a` 循环四种对齐,`p` 标点悬挂,
+`i` 首行缩进,`s` 楔形 parshape,`c` 切换 C/Elisp 引擎对比性能,
+`w` 进入跟随窗口宽度模式(真实 `ekp-auto-justify-mode`)。样例文本
+内置受保护代码块、行内不可断原子与 NBSP 锁定的数字。
+
 ## 测试
 
 ```bash

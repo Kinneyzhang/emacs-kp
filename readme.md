@@ -233,6 +233,20 @@ off most for optimal-width search and long multi-paragraph texts.
 - In batch/tty Emacs, pixel widths degrade to character columns (the
   full pipeline still works; useful for testing).
 
+## Interactive Demo
+
+```bash
+emacs -Q -L /path/to/emacs-kp -l tests/ekp-showcase.el -f ekp-showcase
+```
+
+One buffer, live keys: `-`/`+` change the pixel width (per-reflow time
+in the header line), `d` runs an animated width sweep with an fps
+report, `a` cycles alignment, `p` toggles hanging punctuation, `i`
+first-line indent, `s` a wedge parshape, `c` compares the C engine
+with pure Elisp, `w` follows the window width via
+`ekp-auto-justify-mode`.  The sample text includes a protected code
+block, an inline no-break atom and NBSP-joined numbers.
+
 ## Testing
 
 ```bash
