@@ -57,8 +57,24 @@
         (en "Purely Latin paragraphs justify with natural word spacing, hyphenation, and hanging periods. Try width sweeps with the d key and compare the C engine against pure Elisp with c."))
     (string-join (list zh1 mixed atoms code zh2 en) "\n\n")))
 
-(defun ekp-showcase--header ()
-  (format " EKP 展示  宽 %dpx  对齐 %s  悬挂 %s  缩进 %s  parshape %s  引擎 %s%s  |  重排 %s  |  ? 帮助 q 退出"
+(defun ekp-showcase--keys-line ()
+  "The always-visible key cheat sheet (header line)."
+  (let ((key (lambda (k) (propertize k 'face 'help-key-binding))))
+    (concat " " (funcall key "-") "/" (funcall key "+") " 宽度±20  "
+            (funcall key "←") (funcall key "→") " ±4  "
+            (funcall key "d") " 扫掠  "
+            (funcall key "a") " 对齐  "
+            (funcall key "p") " 悬挂  "
+            (funcall key "i") " 缩进  "
+            (funcall key "s") " parshape  "
+            (funcall key "c") " 引擎  "
+            (funcall key "w") " 跟随窗口  "
+            (funcall key "r") " 重置  "
+            (funcall key "q") " 退出")))
+
+(defun ekp-showcase--state-line ()
+  "The live state readout (mode line)."
+  (format " EKP  宽 %dpx │ 对齐 %s │ 悬挂 %s │ 缩进 %s │ parshape %s │ 引擎 %s%s │ 重排 %s"
           ekp-showcase--width
           ekp-alignment
           (if ekp-protrusion "on" "off")
@@ -88,7 +104,7 @@
         (t0 (float-time)))
     (ekp-justify-region (point-min) (point-max) ekp-showcase--width)
     (setq ekp-showcase--last-ms (* 1000 (- (float-time) t0))))
-  (setq header-line-format (ekp-showcase--header))
+  (setq mode-line-format (ekp-showcase--state-line))
   (force-mode-line-update))
 
 (defun ekp-showcase-set-width (w)
@@ -167,7 +183,8 @@
              (ekp-showcase--refresh)
              (message "退出跟随窗口模式"))
     (ekp-auto-justify-mode 1)
-    (setq header-line-format (ekp-showcase--header))
+    (setq mode-line-format (ekp-showcase--state-line))
+    (force-mode-line-update)
     (message "跟随窗口模式:拖动改变窗口/边框宽度试试(防抖 %.2fs)"
              ekp-auto-justify-resize-delay)))
 
@@ -212,7 +229,10 @@
 (define-derived-mode ekp-showcase-mode special-mode "EKP-Showcase"
   "Interactive showcase for ekp typesetting features."
   (setq-local truncate-lines t)
-  (setq-local cursor-type 'bar))
+  (setq-local cursor-type 'bar)
+  ;; keys stay pinned in the header line; live state lives in the
+  ;; mode line (both always visible)
+  (setq header-line-format (ekp-showcase--keys-line)))
 
 ;;;###autoload
 (defun ekp-showcase ()
