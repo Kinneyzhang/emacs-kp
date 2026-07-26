@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: elisp-only (Emacs ${{ matrix.emacs-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 29.1 is the declared floor (Package-Requires); 30.1 is current stable
+        emacs-version: ['29.1', '30.1']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@master
+        with:
+          version: ${{ matrix.emacs-version }}
+      - name: Byte-compile (warnings are errors)
+        run: |
+          emacs -Q --batch -L . \
+            --eval '(setq byte-compile-error-on-warn t)' \
+            -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el
+      - name: Run ERT suite (C-module tests auto-skip)
+        run: tests/run-tests.sh emacs
+
+  test-c-module:
+    name: full suite + C parity (apt Emacs)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Emacs
+        run: sudo apt-get update && sudo apt-get install -y emacs-nox
+      - name: Ensure emacs-module.h is findable
+        run: |
+          if [ ! -e /usr/include/emacs-module.h ]; then
+            HDR=$(dpkg -L emacs-common emacs-bin-common 2>/dev/null | grep -m1 '/emacs-module\.h$' || true)
+            [ -n "$HDR" ] || HDR=$(sudo find /usr -name emacs-module.h 2>/dev/null | head -1)
+            test -n "$HDR" || { echo 'emacs-module.h not found'; exit 1; }
+            sudo install -m 644 "$HDR" /usr/local/include/
+          fi
+      - name: Build C module
+        run: make -C ekp_c
+      - name: Run ERT suite (with C module)
+        run: tests/run-tests.sh emacs
+      - name: Property fuzz (300 cases, C vs elisp parity)
+        run: emacs -Q --batch -L . -l tests/ekp-fuzz.el
