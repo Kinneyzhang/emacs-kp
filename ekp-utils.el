@@ -41,6 +41,10 @@ information is available (batch mode, tty frames)."
     (let ((family (face-attribute 'default :family)))
       (if (stringp family) family (format "%s" family)))))
 
+;; GUI-only C function; absent in non-window-system builds (emacs-nox).
+;; Call sites are guarded by `display-multi-font-p'.
+(declare-function font-info "font.c" (name &optional frame))
+
 (defun ekp-font-monospace-p (font-family)
   "Return non-nil if FONT-FAMILY appears to be monospace.
 Returns nil (unknown) when font information is unavailable."

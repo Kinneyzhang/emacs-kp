@@ -99,7 +99,9 @@ ekp_hyphenator_t *ekp_hyphen_create(const char *dict_path)
     char line[256];
     size_t count = 0;
 
-    fgets(line, sizeof(line), fp);  /* skip encoding line */
+    if (!fgets(line, sizeof(line), fp)) {
+        /* empty file: no encoding line to skip; count loop sees EOF */
+    }
 
     while (fgets(line, sizeof(line), fp)) {
         size_t len = strlen(line);
@@ -128,7 +130,9 @@ ekp_hyphenator_t *ekp_hyphen_create(const char *dict_path)
 
     /* Second pass: parse patterns */
     rewind(fp);
-    fgets(line, sizeof(line), fp);  /* skip encoding line */
+    if (!fgets(line, sizeof(line), fp)) {
+        /* empty file: no encoding line to skip; parse loop sees EOF */
+    }
 
     size_t idx = 0;
     while (fgets(line, sizeof(line), fp)) {
