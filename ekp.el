@@ -227,7 +227,10 @@ Returns (boxes-vector . hyphen-positions-vector)."
                           ekp--word-right-punct))
          (idx 0) new-boxes hyphen-idxs)
     (dolist (box (append boxes nil))
-      (if (string-match word-re box)
+      (if (and (string-match word-re box)
+               ;; Never hyphenate inside a no-break span (verbatim atoms)
+               (null (text-property-not-all 0 (length box)
+                                            'ekp-no-break nil box)))
           ;; Latin word: apply hyphenation
           (let* ((left (match-string 1 box))
                  (word (match-string 2 box))
@@ -315,6 +318,13 @@ mws between cjk and latin; nws means no whitespace.  Space boxes
          ;; an opener): CJK spacing.
          ((or (eq before 'cjk-close) (eq after 'cjk-open)) 'cws))
       'nws)))
+
+(defconst ekp--no-break-joiner-chars '(#x00A0 #x202F #x2007 #x2060 #xFEFF)
+  "Characters that forbid a break between their neighbors.
+NO-BREAK SPACE, NARROW NO-BREAK SPACE, FIGURE SPACE, WORD JOINER and
+the deprecated ZWNBSP.  The zero-width ones attach to the preceding
+box; the visible ones are boxes of their own whose adjacent gaps are
+unbreakable and glue-free (the character supplies its own spacing).")
 
 (defconst ekp--no-line-start-chars ".,;:!?)]}%’”»›…·"
   "Halfwidth/neutral punctuation that must not start a line.
@@ -505,20 +515,32 @@ Computes ALL data in one pass: text, params, and prefix arrays."
          (trail-spaces (make-vector (1+ n) 0))
          (breaks-allowed (make-bool-vector (1+ n) t))
          (forbidden nil))
-    ;; Kinsoku via break permissions: a line may not end with an
-    ;; opening-punct box, nor start with a closing-punct box — full-
-    ;; and halfwidth alike.  Punctuation also hugs its content: those
-    ;; unbreakable gaps carry no glue.
+    ;; Break permissions.  A gap is unbreakable when:
+    ;; - kinsoku: the line would end with an opener or start with a
+    ;;   closer (full- and halfwidth alike),
+    ;; - it lies strictly inside an `ekp-no-break' span, or
+    ;; - a no-break joiner character (NBSP & friends) touches it.
+    ;; Unbreakable gaps carry no glue: punctuation hugs its content,
+    ;; atoms stay rigid, NBSP supplies its own spacing.
     (let ((k 1))
       (while (< k n)
-        (when (or (ekp--box-no-line-end-p (aref boxes (1- k))
-                                          (aref boxes-types (1- k)))
-                  (ekp--box-no-line-start-p (aref boxes k)
-                                            (aref boxes-types k)))
-          (aset breaks-allowed k nil)
-          (push k forbidden)
-          (unless (eq (aref glues-types k) 'nws)
-            (aset glues-types k 'nws)))
+        (let* ((prev-box (aref boxes (1- k)))
+               (curr-box (aref boxes k))
+               (prev-last (aref prev-box (1- (length prev-box))))
+               (curr-first (aref curr-box 0)))
+          (when (or (ekp--box-no-line-end-p prev-box
+                                            (aref boxes-types (1- k)))
+                    (ekp--box-no-line-start-p curr-box
+                                              (aref boxes-types k))
+                    (and (get-text-property (1- (length prev-box))
+                                            'ekp-no-break prev-box)
+                         (get-text-property 0 'ekp-no-break curr-box))
+                    (memq prev-last ekp--no-break-joiner-chars)
+                    (memq curr-first ekp--no-break-joiner-chars))
+            (aset breaks-allowed k nil)
+            (push k forbidden)
+            (unless (eq (aref glues-types k) 'nws)
+              (aset glues-types k 'nws))))
         (setq k (1+ k))))
     ;; Single loop for all prefix computations
     (dotimes (i n)

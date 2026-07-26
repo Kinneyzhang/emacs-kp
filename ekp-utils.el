@@ -170,6 +170,10 @@ Rules:
        ;; CJK involved: preserve all spaces
        (cjk-involved
         (setq boxes (cons spaces boxes)))
+       ;; Inside a no-break span: spacing is literal, glue would
+       ;; stretch — preserve the run as a rigid space box.
+       ((text-property-not-all 0 (length spaces) 'ekp-no-break nil spaces)
+        (setq boxes (cons spaces boxes)))
        ;; Latin-Latin with multiple spaces: preserve all but last
        ((> (length spaces) 1)
         (setq boxes (cons (substring spaces 0 -1) boxes)))
@@ -185,11 +189,12 @@ Rules:
 
 (defun ekp--zero-width-attaching-p (char)
   "Return non-nil if zero-width CHAR must attach to the preceding text.
-Combining marks (Mn/Mc/Me), ZWJ/ZWNJ, CGJ and variation selectors
-attach to the previous character; other zero-width characters (such
-as zero-width space U+200B) are treated as invisible break points."
+Combining marks (Mn/Mc/Me), ZWJ/ZWNJ, CGJ, variation selectors and
+the word joiner attach to the previous character; other zero-width
+characters (such as zero-width space U+200B) are treated as
+invisible break points."
   (or (memq (get-char-code-property char 'general-category) '(Mn Mc Me))
-      (memq char '(#x200C #x200D #x034F))
+      (memq char '(#x200C #x200D #x034F #x2060 #xFEFF))
       (and (>= char #xFE00) (<= char #xFE0F))))
 
 (defun ekp--handle-latin-char (str state latin-word cjk-char boxes)

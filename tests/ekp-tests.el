@@ -137,6 +137,46 @@ Used to verify no content is lost by justification."
     (dolist (k '(1 5 7 10))
       (should (aref ok k)))))
 
+(ert-deftest ekp-test-no-break-span-atomic ()
+  "An ekp-no-break span never splits, stretches, or hyphenates."
+  (let* ((code (propertize "foo bar baz" 'ekp-no-break t))
+         (text (concat "prefix words before " code " and after more words")))
+    (dolist (w '(40 80 120 200))
+      (let ((out (ekp-pixel-justify text w)))
+        ;; contiguous, with literal single spaces — on one line
+        (should (string-match-p "foo bar baz" out))))))
+
+(ert-deftest ekp-test-no-break-overlong-atom ()
+  "An atom wider than the line becomes a single emergency line."
+  (let ((atom (propertize "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb"
+                          'ekp-no-break t)))
+    (let ((out (ekp-pixel-justify (concat "x " atom " y") 30)))
+      (should (string-match-p "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbb" out)))))
+
+(ert-deftest ekp-test-no-break-suppresses-hyphenation ()
+  "No soft hyphen appears inside a no-break span."
+  (let ((word "internationalization"))
+    ;; sanity: unmarked long word does hyphenate at narrow width
+    (should (string-match-p "-\n" (ekp-pixel-justify
+                                   (concat "pad " word " pad") 15)))
+    (should-not (string-match-p "-\n"
+                                (ekp-pixel-justify
+                                 (concat "pad "
+                                         (propertize word 'ekp-no-break t)
+                                         " pad")
+                                 15)))))
+
+(ert-deftest ekp-test-nbsp-and-word-joiner ()
+  "NBSP and WORD JOINER keep their neighbors on the same line."
+  (let ((nbsp (string #x00A0)) (wj (string #x2060)))
+    (dolist (w '(20 30 44 60 90))
+      (let ((out (ekp-pixel-justify
+                  (concat "甲乙丙丁" nbsp "戊己庚辛写更多字") w)))
+        (should (string-match-p (concat "丁" nbsp "戊") out)))
+      (let ((out (ekp-pixel-justify
+                  (concat "甲乙丙" wj "丁戊己庚辛写更多字") w)))
+        (should (string-match-p (concat "丙" wj "丁") out))))))
+
 (ert-deftest ekp-test-kinsoku-rendered-output ()
   "No rendered line starts with a closer or ends with an opener."
   (let ((text "他说:「今天天气很好。」然后就离开了这里,再也没有回来过。"))

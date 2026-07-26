@@ -190,6 +190,21 @@ tails.  Text the user typed into the justified region is preserved."
           (remove-text-properties (min beg end) end-m '(ekp-justified nil)))
       (set-marker end-m nil))))
 
+;;;###autoload
+(defun ekp-no-break-region (beg end)
+  "Mark the region as an unbreakable typesetting atom.
+Justification treats it as one rigid unit: no line break inside, no
+hyphenation, spacing stays literal (inline code, product names,
+numbers with units)."
+  (interactive "r")
+  (add-text-properties beg end '(ekp-no-break t)))
+
+;;;###autoload
+(defun ekp-allow-break-region (beg end)
+  "Remove `ekp-no-break' marking from the region."
+  (interactive "r")
+  (remove-text-properties beg end '(ekp-no-break nil)))
+
 ;;;; Auto-justify minor mode
 
 (defun ekp-region--para-bounds (marker-pair)
