@@ -46,6 +46,27 @@ by the display engine due to rounding."
   "Idle seconds before edited paragraphs are re-justified."
   :type 'number)
 
+(defcustom ekp-auto-justify-lazy-threshold 20000
+  "Buffer size (characters) beyond which re-flows go visible-first.
+Below it a window-width change re-justifies the whole buffer at
+once; above it the visible portion is done synchronously and the
+rest follows in idle background chunks."
+  :type 'natnum)
+
+(defcustom ekp-auto-justify-chunk-size 10
+  "Paragraphs re-justified per background tick in lazy re-flows."
+  :type 'natnum)
+
+(defconst ekp-region-org-skip-faces
+  '(org-block org-block-begin-line org-block-end-line org-code
+    org-verbatim org-table org-meta-line)
+  "Reasonable `ekp-region-skip-faces' preset for Org buffers.")
+
+(defconst ekp-region-markdown-skip-faces
+  '(markdown-code-face markdown-inline-code-face markdown-pre-face
+    markdown-table-face)
+  "Reasonable `ekp-region-skip-faces' preset for Markdown buffers.")
+
 (defcustom ekp-region-skip-faces nil
   "Faces whose paragraphs are never justified (kept verbatim).
 Point major-mode faces here — e.g. `org-block' and `org-code' for
@@ -71,6 +92,11 @@ they suffice.")
 (defvar-local ekp-region--edit-timer nil)
 (defvar-local ekp-region--dirty nil
   "Pending edited regions, as a list of (BEG-MARKER . END-MARKER).")
+
+(defvar-local ekp-region--pending nil
+  "Lazy re-flow state: (WIDTH . CHUNKS), CHUNKS = ((BEG-M . END-M)...).")
+
+(defvar-local ekp-region--chunk-timer nil)
 
 ;;;; Width
 
@@ -282,8 +308,10 @@ unbreakable span inside prose, use `ekp-no-break-region' instead."
 
 (defun ekp-region--para-bounds (marker-pair)
   "Hard-paragraph bounds containing MARKER-PAIR, as (BEG . END)."
-  (let ((b (marker-position (car marker-pair)))
-        (e (marker-position (cdr marker-pair))))
+  (let ((b (let ((x (car marker-pair)))
+             (if (markerp x) (marker-position x) x)))
+        (e (let ((x (cdr marker-pair)))
+             (if (markerp x) (marker-position x) x))))
     (save-excursion
       (goto-char (max (point-min) (min b (point-max))))
       (while (and (> (point) (point-min))
@@ -361,13 +389,99 @@ buffer current — so resolve both explicitly."
                                     #'ekp-region--reflow
                                     (current-buffer) w)))))))))
 
+(defun ekp-region--cancel-pending ()
+  "Drop any queued lazy re-flow chunks."
+  (when (timerp ekp-region--chunk-timer)
+    (cancel-timer ekp-region--chunk-timer))
+  (setq ekp-region--chunk-timer nil)
+  (dolist (c (cdr ekp-region--pending))
+    (set-marker (car c) nil)
+    (set-marker (cdr c) nil))
+  (setq ekp-region--pending nil))
+
+(defun ekp-region--make-chunks (beg end)
+  "Split [BEG, END) into marker-pair chunks of whole hard paragraphs."
+  (let ((chunks nil))
+    (save-excursion
+      (goto-char beg)
+      (while (< (point) end)
+        (let ((cbeg (point)) (paras 0))
+          (while (and (< (point) end)
+                      (< paras ekp-auto-justify-chunk-size))
+            (if (search-forward "\n" end 'move)
+                (unless (get-text-property (match-beginning 0)
+                                           'ekp-soft-break)
+                  (setq paras (1+ paras)))
+              nil))
+          (when (> (point) cbeg)
+            ;; BEG has insertion-type t: the previous chunk's re-insert
+            ;; happens exactly at this boundary, and the marker must
+            ;; end up after that text, not before it.
+            (push (cons (copy-marker cbeg t) (copy-marker (point) t))
+                  chunks)))))
+    (nreverse chunks)))
+
+(defun ekp-region--visible-span ()
+  "Visible portion of the current buffer, as (BEG . END)."
+  (let ((win (get-buffer-window (current-buffer))))
+    (if win
+        (cons (window-start win) (or (window-end win t) (point-max)))
+      (cons (point-min) (point-max)))))
+
+(defun ekp-region--process-chunk (buffer)
+  "Re-justify the next queued chunk of BUFFER, then reschedule."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq ekp-region--chunk-timer nil)
+      (cond
+       ((or (not ekp-auto-justify-mode) (null ekp-region--pending))
+        (ekp-region--cancel-pending))
+       ;; a newer re-flow superseded this queue
+       ((not (eql (car ekp-region--pending) ekp-region--auto-width))
+        (ekp-region--cancel-pending))
+       ;; be polite: yield to pending input, try again shortly
+       ((input-pending-p)
+        (setq ekp-region--chunk-timer
+              (run-with-timer 0.1 nil #'ekp-region--process-chunk buffer)))
+       (t
+        (let* ((width (car ekp-region--pending))
+               (chunk (pop (cdr ekp-region--pending))))
+          (when chunk
+            (ekp-justify-region (car chunk) (cdr chunk) width)
+            (set-marker (car chunk) nil)
+            (set-marker (cdr chunk) nil))
+          (if (cdr ekp-region--pending)
+              (setq ekp-region--chunk-timer
+                    (run-with-timer 0.02 nil
+                                    #'ekp-region--process-chunk buffer))
+            (setq ekp-region--pending nil))))))))
+
 (defun ekp-region--reflow (buffer width)
-  "Re-justify all of BUFFER to WIDTH."
+  "Re-justify BUFFER to WIDTH — whole buffer, or visible-first when large."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when ekp-auto-justify-mode
         (setq ekp-region--auto-width width)
-        (ekp-justify-region (point-min) (point-max) width)))))
+        (ekp-region--cancel-pending)
+        (if (< (- (point-max) (point-min))
+               ekp-auto-justify-lazy-threshold)
+            (ekp-justify-region (point-min) (point-max) width)
+          ;; visible part now, the rest in background chunks
+          (pcase-let* ((`(,vbeg . ,vend) (ekp-region--visible-span))
+                       (`(,pbeg . ,pend)
+                        (ekp-region--para-bounds (cons vbeg vend))))
+            (ekp-justify-region pbeg pend width)
+            (let ((chunks (nconc
+                           ;; start at PEND so the hard newline there
+                           ;; gets its ekp-justified property too
+                           (ekp-region--make-chunks pend (point-max))
+                           (ekp-region--make-chunks (point-min) pbeg))))
+              (when chunks
+                (setq ekp-region--pending (cons width chunks))
+                (setq ekp-region--chunk-timer
+                      (run-with-timer 0.02 nil
+                                      #'ekp-region--process-chunk
+                                      buffer))))))))))
 
 ;;;###autoload
 (define-minor-mode ekp-auto-justify-mode
@@ -380,7 +494,7 @@ the buffer text is restored exactly when the mode is turned off."
       (progn
         (setq ekp-region--auto-width
               (ekp-region--window-pixel (get-buffer-window)))
-        (ekp-justify-region (point-min) (point-max) ekp-region--auto-width)
+        (ekp-region--reflow (current-buffer) ekp-region--auto-width)
         (add-hook 'window-size-change-functions #'ekp-region--on-resize nil t)
         (add-hook 'after-change-functions #'ekp-region--after-change nil t))
     (remove-hook 'window-size-change-functions #'ekp-region--on-resize t)
@@ -389,6 +503,7 @@ the buffer text is restored exactly when the mode is turned off."
       (cancel-timer ekp-region--resize-timer))
     (when (timerp ekp-region--edit-timer)
       (cancel-timer ekp-region--edit-timer))
+    (ekp-region--cancel-pending)
     (setq ekp-region--resize-timer nil
           ekp-region--edit-timer nil
           ekp-region--dirty nil

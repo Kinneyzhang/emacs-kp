@@ -2,6 +2,8 @@
 
 ;; Copyright (C) 2024
 ;; Author: emacs-kp contributors
+;; Version: 1.0.0
+;; URL: https://github.com/Kinneyzhang/emacs-kp
 ;; Keywords: text, typesetting, CJK
 ;; Package-Requires: ((emacs "29.1"))
 

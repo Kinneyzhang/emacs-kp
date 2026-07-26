@@ -255,6 +255,36 @@ the displaying WINDOW, with an arbitrary buffer current."
         (remove-text-properties 0 (length fresh) '(ekp-justified nil) fresh)
         (should (equal-including-properties got fresh))))))
 
+
+(ert-deftest ekp-region-test-lazy-reflow-equals-oneshot ()
+  "Visible-first chunked re-flow converges to the one-shot result."
+  (let ((ekp-auto-justify-lazy-threshold 100)
+        (ekp-auto-justify-chunk-size 3)
+        (text (mapconcat #'identity
+                         (make-list 12 "段落内容 some words 足够长会换行的样子")
+                         "\n")))
+    (ekp-region-test--with-text text
+      (cl-letf (((symbol-function 'ekp-region--window-pixel)
+                 (lambda (&optional _) 60))
+                ((symbol-function 'ekp-region--visible-span)
+                 (lambda () (cons (point-min) (min (point-max) 80)))))
+        (ekp-auto-justify-mode 1)
+        (ekp-region--reflow (current-buffer) 50)
+        (should ekp-region--pending)
+        ;; drain the background queue synchronously
+        (let ((guard 0))
+          (while (and ekp-region--pending (< guard 100))
+            (when (timerp ekp-region--chunk-timer)
+              (cancel-timer ekp-region--chunk-timer)
+              (setq ekp-region--chunk-timer nil))
+            (ekp-region--process-chunk (current-buffer))
+            (setq guard (1+ guard))))
+        (should-not ekp-region--pending)
+        (let ((lazy (buffer-string)))
+          (ekp-auto-justify-mode -1)
+          (ekp-justify-region (point-min) (point-max) 50)
+          (should (equal-including-properties (buffer-string) lazy)))))))
+
 (provide 'ekp-region-tests)
 
 ;;; ekp-region-tests.el ends here

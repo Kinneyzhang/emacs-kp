@@ -3,7 +3,6 @@
 ;; Copyright (C) 2024
 ;; Author: emacs-kp contributors
 ;; Keywords: text, hyphenation, typesetting
-;; Package-Requires: ((emacs "27.1"))
 
 ;;; Commentary:
 

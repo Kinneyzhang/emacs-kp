@@ -50,7 +50,7 @@ cd ekp_c && make        # 需要 C11 编译器,产出 ekp.dylib/.so/.dll
 ```
 
 ```elisp
-(ekp-c-module-load)     ; 显示 "ekp-c module loaded (version 1.1, N threads)"
+(ekp-c-module-load)     ; 显示 "ekp-c module loaded (version 1.4, N threads)"
 ```
 
 加载后(`ekp-use-c-module` 默认为 `t`)所有排版调用自动走 C 引擎。
@@ -76,6 +76,21 @@ Elisp 与 C 两个引擎的输出**完全一致**;Elisp 是永远可用的后备
   未变段落直接命中段落缓存。关闭 mode 时 buffer 精确恢复原状。
 
 `ekp-region-margin-pixel`(默认 2)是从窗口宽度中扣除的取整安全边距。
+
+大 buffer(超过 `ekp-auto-justify-lazy-threshold` 字符,默认 2 万)
+自动改为可视优先重排:屏幕内的部分同步完成(约 15ms),其余在空闲
+时后台分块补齐。
+
+各 mode 的 verbatim 保护预设:
+
+```elisp
+(add-hook 'org-mode-hook
+          (lambda ()
+            (setq-local ekp-region-skip-faces ekp-region-org-skip-faces)))
+(add-hook 'markdown-mode-hook
+          (lambda ()
+            (setq-local ekp-region-skip-faces ekp-region-markdown-skip-faces)))
+```
 
 ### 保护代码块与 verbatim 文本
 
@@ -190,7 +205,7 @@ Silicon 测得;方法见 DEVELOPER_ZH.md:
 ## 测试
 
 ```bash
-tests/run-tests.sh /path/to/emacs     # 36 个 ERT 测试,全部支持 batch
+tests/run-tests.sh /path/to/emacs     # 67 个 ERT 测试,全部支持 batch
 ```
 
 ## 致谢

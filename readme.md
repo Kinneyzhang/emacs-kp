@@ -55,7 +55,7 @@ cd ekp_c && make        # requires C11 compiler, produces ekp.dylib/.so/.dll
 ```
 
 ```elisp
-(ekp-c-module-load)     ; prints "ekp-c module loaded (version 1.1, N threads)"
+(ekp-c-module-load)     ; prints "ekp-c module loaded (version 1.4, N threads)"
 ```
 
 Once loaded (and since `ekp-use-c-module` defaults to `t`), all
@@ -88,6 +88,21 @@ loading refuses with a message asking you to rebuild.
 
 `ekp-region-margin-pixel` (default 2) is subtracted from the window
 width as a rounding safety margin.
+
+Large buffers (over `ekp-auto-justify-lazy-threshold` characters,
+default 20 000) re-flow visible-first: the portion on screen updates
+synchronously (~15 ms) and the rest follows in idle background chunks.
+
+Mode presets for verbatim protection:
+
+```elisp
+(add-hook 'org-mode-hook
+          (lambda ()
+            (setq-local ekp-region-skip-faces ekp-region-org-skip-faces)))
+(add-hook 'markdown-mode-hook
+          (lambda ()
+            (setq-local ekp-region-skip-faces ekp-region-markdown-skip-faces)))
+```
 
 ### Protecting code and other verbatim text
 
@@ -221,7 +236,7 @@ off most for optimal-width search and long multi-paragraph texts.
 ## Testing
 
 ```bash
-tests/run-tests.sh /path/to/emacs     # 36 ERT tests, all batch-safe
+tests/run-tests.sh /path/to/emacs     # 67 ERT tests, all batch-safe
 ```
 
 ## Credits
