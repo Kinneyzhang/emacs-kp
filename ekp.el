@@ -249,7 +249,7 @@ when non-zero the C module is bypassed automatically."
   "Cache: equal-keyed table, content key → ekp-para struct.")
 
 (defvar ekp--last-para nil
-  "Fast path: (string-object lang para) of the most recent lookup.
+  "Fast path: (string-object lang width-context para), most recent lookup.
 One justification call resolves the same string object many times;
 this avoids recomputing the full cache key each time.  Invalidated
 by parameter changes, language changes, style-variable changes (see
@@ -671,16 +671,48 @@ before.")
 (defvar ekp--box-width-cache-limit 65536
   "Entry cap for `ekp--box-width-cache'; the cache is flushed beyond it.")
 
+(defun ekp--string-pixel-width (string)
+  "Pixel width of STRING as it will render in the current buffer.
+Like `string-pixel-width', but honors the current buffer's
+`face-remapping-alist' — which is where `text-scale-mode', themes
+and mode-specific font tweaks live.  Plain `string-pixel-width'
+measures in a bare hidden buffer, so in any buffer with remapped
+faces it reports the wrong font's metrics and every \"pixel-exact\"
+line comes out wrong on screen (Emacs 31 grew a BUFFER argument for
+exactly this; this is the 29/30-compatible equivalent)."
+  (if (null face-remapping-alist)
+      (string-pixel-width string)
+    (let ((remap face-remapping-alist))
+      (with-current-buffer (get-buffer-create " *ekp-pixel-width*" t)
+        (setq-local face-remapping-alist remap)
+        (delete-region (point-min) (point-max))
+        ;; Keep line-affecting context out, like string-pixel-width.
+        (setq-local line-prefix nil wrap-prefix nil)
+        (insert string)
+        (prog1 (car (buffer-text-pixel-size nil nil t))
+          (delete-region (point-min) (point-max)))))))
+
+(defun ekp--width-context ()
+  "The display context that box measurement depends on.
+nil in an unremapped buffer (the common case); otherwise the
+buffer's `face-remapping-alist', which changes glyph metrics and
+therefore must key every measurement and paragraph cache entry."
+  face-remapping-alist)
+
 (defun ekp--measured-width (str)
-  "`string-pixel-width' of STR, through the global width cache."
+  "Pixel width of STR in the current display context, cached."
   (let* ((ivs (ekp--key-intervals str))
-         (key (if ivs (cons str ivs) str)))
+         (ctx (ekp--width-context))
+         (key (cond ((and (null ivs) (null ctx)) str)
+                    ((null ctx) (cons str ivs))
+                    (t (list str ivs ctx)))))
     (or (gethash key ekp--box-width-cache)
         (progn
           (when (>= (hash-table-count ekp--box-width-cache)
                     ekp--box-width-cache-limit)
             (clrhash ekp--box-width-cache))
-          (puthash key (string-pixel-width str) ekp--box-width-cache)))))
+          (puthash key (ekp--string-pixel-width str)
+                   ekp--box-width-cache)))))
 
 (defun ekp--para-key (string)
   "Compute cache key for STRING.
@@ -694,6 +726,10 @@ are derived per string)."
     (list string
           (prin1-to-string (ekp--key-intervals string))
           latin-font cjk-font
+          ;; Buffers with remapped faces (text-scale, themes) render
+          ;; — and therefore measure — differently: never alias their
+          ;; paragraphs with an unremapped buffer's.
+          (ekp--width-context)
           ekp-latin-lang
           ekp-alignment
           ekp-ragged-stretch-pixel
@@ -970,8 +1006,9 @@ Computes ALL data in one pass: text, params, and prefix arrays."
 This is the main entry point for cached paragraph data."
   (if (and ekp--last-para
            (eq (car ekp--last-para) string)
-           (equal (nth 1 ekp--last-para) ekp-latin-lang))
-      (nth 2 ekp--last-para)
+           (equal (nth 1 ekp--last-para) ekp-latin-lang)
+           (equal (nth 2 ekp--last-para) (ekp--width-context)))
+      (nth 3 ekp--last-para)
     (unless ekp--para-cache
       (setq ekp--para-cache (make-hash-table :test 'equal :size 100)))
     (let* ((key (ekp--para-key string))
@@ -986,7 +1023,8 @@ This is the main entry point for cached paragraph data."
                        (let ((p (ekp--make-para string)))
                          (puthash key p ekp--para-cache)
                          p)))))
-      (setq ekp--last-para (list string ekp-latin-lang para))
+      (setq ekp--last-para
+            (list string ekp-latin-lang (ekp--width-context) para))
       para)))
 
 ;;;###autoload

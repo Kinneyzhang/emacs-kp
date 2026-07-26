@@ -166,13 +166,27 @@ Non-zero only while `ekp-protrusion' is enabled: protruding glyphs
 extend past the flush edge, so the layout width must leave room."
   (if ekp-protrusion
       (max 2 (ceiling (* (alist-get 'cjk-close ekp-protrusion-ratios 0.5)
-                         (string-pixel-width "。"))))
+                         (ekp--measured-width "。"))))
     0))
+
+(defun ekp-region--indicator-reserve (&optional window)
+  "Pixels the truncation/continuation indicator eats in WINDOW.
+With no right fringe (and on text terminals), Emacs draws the `$'
+or `\\' indicator in the text area's LAST COLUMN — a line that
+fills the body width exactly gets its final glyph displaced and
+every justified line appears truncated.  Reserve that column; with
+a right fringe the indicator lives in the fringe and costs nothing."
+  (let ((win (or window (selected-window))))
+    (if (and (display-graphic-p (window-frame win))
+             (> (or (cadr (window-fringes win)) 0) 0))
+        0
+      (frame-char-width (window-frame win)))))
 
 (defun ekp-region--window-pixel (&optional window)
   "Usable text width in pixels of WINDOW (default: selected window)."
   (max 1 (- (window-body-width window t)
             ekp-region-margin-pixel
+            (ekp-region--indicator-reserve window)
             (ekp-region-protrusion-reserve))))
 
 (defun ekp-region--effective-width (&optional buffer)
@@ -184,6 +198,43 @@ Falls back to the selected window when the buffer is not displayed."
     (if wins
         (apply #'min (mapcar #'ekp-region--window-pixel wins))
       (ekp-region--window-pixel))))
+
+;;;###autoload
+(defun ekp-diagnose ()
+  "Check that ekp's measurement matches this window's real rendering.
+Justifies a probe line to the window width, renders it invisibly in
+this buffer, and compares the rendered pixel width against the
+target.  A mismatch means glyph metrics differ between measurement
+and display (e.g. a face-remapping ekp does not see) and justified
+lines would come out over- or under-full."
+  (interactive)
+  (let* ((win (or (get-buffer-window (current-buffer)) (selected-window)))
+         (target (ekp-region--window-pixel win))
+         (probe (ekp-pixel-justify
+                 (concat "汉字排版像素精确性探针,中英混排 probe line with "
+                         "Latin words, 标点。悬挂?以及 hyphenation-ready "
+                         "vocabulary examples 结尾。")
+                 target))
+         (line (car (split-string probe "\n")))
+         (rendered
+          (with-silent-modifications
+            (let ((beg (point-max)))
+              (unwind-protect
+                  (progn
+                    (goto-char beg)
+                    (insert "\n" line)
+                    (car (window-text-pixel-size win (1+ beg) (point-max))))
+                (delete-region beg (point-max))))))
+         (delta (- rendered target)))
+    (message (concat "ekp-diagnose: target %dpx, rendered %dpx (Δ%+d) — %s"
+                     (if (buffer-local-value 'face-remapping-alist
+                                             (current-buffer))
+                         "  [buffer has face remappings]" ""))
+             target rendered delta
+             (if (<= (abs delta) ekp-region-margin-pixel)
+                 "OK, measurement matches rendering"
+               "MISMATCH: justified lines will not fit this window"))
+    delta))
 
 ;;;; Pure string transforms
 
@@ -703,6 +754,19 @@ Catches the buffer becoming displayed (possibly for the first time),
 window splits, and deletions of the narrowest window."
   (ekp-region--schedule-reflow))
 
+(defun ekp-region--on-text-scale ()
+  "Re-flow after a text-scale change.
+Scaling remaps the default face, so every glyph metric changed: the
+current layout is wrong at the same pixel width and must be re-done
+under the new measurement context."
+  (when (and ekp-auto-justify-mode ekp-region--auto-width)
+    (when (timerp ekp-region--resize-timer)
+      (cancel-timer ekp-region--resize-timer))
+    (setq ekp-region--resize-timer
+          (run-with-timer ekp-auto-justify-resize-delay nil
+                          #'ekp-region--reflow
+                          (current-buffer) ekp-region--auto-width))))
+
 (defun ekp-region--schedule-reflow ()
   "Debounce a re-flow of the current buffer to its effective width."
   (when ekp-auto-justify-mode
@@ -855,6 +919,7 @@ the buffer text is restored exactly when the mode is turned off."
         (add-hook 'window-configuration-change-hook
                   #'ekp-region--on-window-change nil t)
         (add-hook 'window-scroll-functions #'ekp-region--on-scroll nil t)
+        (add-hook 'text-scale-mode-hook #'ekp-region--on-text-scale nil t)
         (add-hook 'after-change-functions #'ekp-region--after-change nil t)
         (ekp-region--install-integrations)
         ;; Turning the major mode off/over kills local hooks silently;
@@ -864,6 +929,7 @@ the buffer text is restored exactly when the mode is turned off."
     (remove-hook 'window-configuration-change-hook
                  #'ekp-region--on-window-change t)
     (remove-hook 'window-scroll-functions #'ekp-region--on-scroll t)
+    (remove-hook 'text-scale-mode-hook #'ekp-region--on-text-scale t)
     (remove-hook 'after-change-functions #'ekp-region--after-change t)
     (remove-hook 'change-major-mode-hook #'ekp-region--teardown t)
     (ekp-region--teardown)

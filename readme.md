@@ -262,9 +262,13 @@ the point.)
 
 ## Known Limitations
 
-- Widths are computed from the string's own text properties. If the
-  destination buffer remaps faces (different `:height`, themes), widths
-  may differ; justify with the same properties you will display.
+- Measurement follows the current buffer's face remappings
+  (`text-scale-mode`, themes, `ekp-org-setup`-style tweaks) and
+  reserves the truncation-indicator column in windows without
+  fringes, so justified lines fit the real display.  If lines ever
+  look truncated or short in an exotic setup, run `M-x ekp-diagnose`
+  in that buffer — it reports whether measurement matches rendering
+  (and `M-x ekp-gui-verify` runs a full fit check).
 - One font is assumed per Latin/CJK script per paragraph when computing
   spacing defaults; mixed-font paragraphs work but spacing defaults come
   from the first font found.

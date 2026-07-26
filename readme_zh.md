@@ -224,8 +224,11 @@ Silicon 测得;方法见 DEVELOPER_ZH.md:
 
 ## 已知限制
 
-- 宽度按字符串自身的文本属性测量。若目标 buffer 重映射了 face(不同
-  `:height`、主题),宽度可能有偏差;请用与显示时相同的属性做排版。
+- 测量会跟随当前 buffer 的 face 重映射(`text-scale-mode`、主题等),
+  并在无 fringe 的窗口里为截断指示符预留一列,排版行贴合真实显示。
+  若在特殊配置下仍出现截断或偏短,在该 buffer 里执行
+  `M-x ekp-diagnose`——它会报告测量与渲染是否一致
+  (`M-x ekp-gui-verify` 可跑完整贴合检查)。
 - 计算默认间距时假定每段落的拉丁/CJK 各使用一种字体;混合字体段落可以
   工作,但默认间距取自找到的第一个字体。
 - `ekp-pixel-range-justify` 用三分搜索加局部扫描最小化平均 demerits;

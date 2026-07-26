@@ -114,6 +114,8 @@ family when STRING contains no Latin letter."
     ;; no latin letter in string, use default
     (face-attribute 'default :family)))
 
+(declare-function ekp--measured-width "ekp")
+
 (defun ekp-word-spacing-pixel (string)
   "Return the pixel width of an inter-word space for STRING.
 Use the blank glyph of STRING's Latin font; for a monospace font
@@ -121,11 +123,11 @@ that width is the space's own advance."
   ;; font is monospace, use the pixel of blank
   ;; as word spacing pixel
   (if-let ((font-family (ekp-monospace-p string)))
-      (string-pixel-width
+      (ekp--measured-width
        (propertize " " 'face `(:family ,font-family)))
     (let* ((letter (ekp-get-latin-letter string))
            (font-family (ekp-font-family letter)))
-      (string-pixel-width
+      (ekp--measured-width
        (propertize
         " " 'face `(:family ,font-family))))))
 

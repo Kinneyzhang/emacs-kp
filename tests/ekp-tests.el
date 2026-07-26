@@ -764,6 +764,42 @@ the (position × line-count) Elisp DP — they must agree."
              (ekp-clear-caches)
              (should (equal-including-properties via-c via-el)))))))))
 
+;;;; Display-context measurement (M5 wave)
+
+(ert-deftest ekp-test-width-context-keys-caches ()
+  "Buffers with face remappings must never share cached paragraphs.
+`text-scale-mode' and theme tweaks live in `face-remapping-alist';
+glyphs render at different sizes there, so paragraph data measured
+in one context is wrong in another."
+  (ekp-clear-caches)
+  (let ((s "上下文键控检查内容足够长断行"))
+    (should-not (equal (ekp--para-key s)
+                       (let ((face-remapping-alist
+                              '((default :height 1.5))))
+                         (ekp--para-key s))))
+    ;; the same-string fast path must not leak across contexts either
+    (ekp-clear-caches)
+    (let* ((p1 (ekp--get-para s))
+           (p2 (let ((face-remapping-alist '((default :height 1.5))))
+                 (ekp--get-para s))))
+      (should-not (eq p1 p2)))
+    (ekp-clear-caches)))
+
+(ert-deftest ekp-test-width-context-measurement-cached-separately ()
+  "The width cache keeps remapped and plain measurements apart."
+  (ekp-clear-caches)
+  (let* ((s "宽")
+         (plain (ekp--measured-width s))
+         (remapped (let ((face-remapping-alist '((default :height 2.0))))
+                     (ekp--measured-width s))))
+    ;; In batch both degrade to columns (equal values); the point is
+    ;; that neither call poisons the other's cache entry.
+    (should (= plain (ekp--measured-width s)))
+    (should (= remapped
+               (let ((face-remapping-alist '((default :height 2.0))))
+                 (ekp--measured-width s))))
+    (ekp-clear-caches)))
+
 (provide 'ekp-tests)
 
 ;;; ekp-tests.el ends here
