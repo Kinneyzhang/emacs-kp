@@ -198,48 +198,28 @@ Return (new-state new-latin-word new-cjk-char new-boxes)."
   (if (= state 1)
       ;; Already in latin mode: accumulate
       (list 1 (concat latin-word str) nil boxes)
-    ;; Was in CJK mode: flush CJK char, switch to latin
-    ;; If held cjk-char is opening punct, prepend it to the latin word
-    (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
-        (list 1 (concat cjk-char str) nil boxes)
-      (list 1 str nil (ekp--flush-cjk-char cjk-char boxes)))))
+    ;; Was in CJK mode: flush held CJK char, switch to latin
+    (list 1 str nil (ekp--flush-cjk-char cjk-char boxes))))
 
 (defun ekp--handle-cjk-char (str state latin-word cjk-char boxes)
   "Handle a CJK (width=2) character.
-Return (new-state new-latin-word new-cjk-char new-boxes)."
+Return (new-state new-latin-word new-cjk-char new-boxes).
+
+Every CJK character — punctuation included — becomes its own box.
+Kinsoku is enforced by the DP through per-gap break permissions
+(`ekp-para-breaks-allowed'), not by merging boxes."
   (if (= state 1)
-      ;; Was in latin mode: flush latin word, push CJK directly
-      (let ((new-boxes (ekp--flush-latin-word latin-word boxes)))
-        (if (ekp-cjk-opening-punct-p str)
-            ;; Opening punct: hold as cjk-char (will attach to next char)
-            (list 2 nil str new-boxes)
-          (list 2 nil nil (cons str new-boxes))))
-    ;; Already in CJK mode
-    (cond
-     ((ekp-cjk-opening-punct-p str)
-      ;; Opening punct: cannot end a line (kinsoku rule).
-      ;; If previous held char is also opening punct, concatenate them.
-      ;; Otherwise flush previous and hold this opening punct.
-      (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
-          (list 2 nil (concat cjk-char str) boxes)
-        (list 2 nil str (ekp--flush-cjk-char cjk-char boxes))))
-     ((ekp-cjk-fw-punct-p str)
-      ;; Closing/other punct: attaches to previous CJK char
-      (list 2 nil nil (cons (concat cjk-char str) boxes)))
-     (t
-      ;; Regular CJK char: prepend any held opening punct
-      (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
-          ;; Previous was opening punct: combine with current char and hold.
-          ;; Now last char is regular, so this won't be detected as opening.
-          (list 2 nil (concat cjk-char str) boxes)
-        ;; Normal case: flush previous, hold current
-        (list 2 nil str (ekp--flush-cjk-char cjk-char boxes)))))))
+      ;; Was in latin mode: flush latin word, hold current CJK char
+      (list 2 nil str (ekp--flush-latin-word latin-word boxes))
+    ;; Already in CJK mode: flush held char, hold current
+    (list 2 nil str (ekp--flush-cjk-char cjk-char boxes))))
 
 (defun ekp-split-to-boxes (string)
   "Split STRING into typographic boxes.
-Latin words become single boxes; CJK chars are individual boxes.
-Whitespace runs are preserved as separate boxes; CJK punctuation
-attaches to its neighboring char per kinsoku rules."
+Latin words become single boxes; CJK chars — punctuation included —
+are individual boxes.  Whitespace runs are preserved as separate
+boxes.  Kinsoku is enforced later via per-gap break permissions, not
+by merging boxes."
   (if (string-blank-p string)
       (vector string)
     (with-temp-buffer
@@ -268,12 +248,9 @@ attaches to its neighboring char per kinsoku rules."
                (t (setq latin-word str state 1))))
              ;; Whitespace or other zero-width: flush content, accumulate spaces
              ((or (string-blank-p str) (= 0 width))
-              ;; Don't flush opening punct - keep it held for attachment to next char
-              (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
-                  nil  ; keep cjk-char as-is
-                (setq boxes (ekp--flush-cjk-char cjk-char boxes))
-                (when cjk-char (setq prev-state 2))
-                (setq cjk-char nil))
+              (setq boxes (ekp--flush-cjk-char cjk-char boxes))
+              (when cjk-char (setq prev-state 2))
+              (setq cjk-char nil)
               (setq boxes (ekp--flush-latin-word latin-word boxes))
               (when latin-word (setq prev-state 1))
               (setq latin-word nil)
@@ -365,7 +342,7 @@ after CALLBACK returns."
 (defalias 'ekp-c-module-reload #'ekp--module-reload
   "Load MODULE from a temp copy to allow rebuilding.")
 
-(defconst ekp-c-module-required-version "1.1"
+(defconst ekp-c-module-required-version "1.2"
   "Minimum C module version compatible with this Elisp code.")
 
 (defun ekp-c-module-load ()

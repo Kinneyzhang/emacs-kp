@@ -138,6 +138,11 @@ typedef struct {
     size_t hyphen_count;
     int32_t hyphen_width;
 
+    /* Forbidden break positions (kinsoku, no-break spans): sorted gap
+     * indices where a line may NOT end.  Nullable. */
+    const int32_t *forbidden_positions;
+    size_t forbidden_count;
+
     /* Space-box run widths (nullable, n+1 elements each):
      * lead_spaces[i]  = width of space-box run starting at box i
      * trail_spaces[k] = width of space-box run ending at box k-1
@@ -184,6 +189,28 @@ static inline bool dp_is_hyphen(const dp_input_t *in, size_t pos)
     }
     
     return (size_t)in->hyphen_positions[lo] == pos;
+}
+
+/*
+ * Shared forbidden-break check for dp_input_t (binary search).
+ */
+static inline bool dp_is_forbidden(const dp_input_t *in, size_t pos)
+{
+    if (!in->forbidden_positions || in->forbidden_count == 0)
+        return false;
+
+    size_t lo = 0;
+    size_t hi = in->forbidden_count - 1;
+
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((size_t)in->forbidden_positions[mid] < pos)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+
+    return (size_t)in->forbidden_positions[lo] == pos;
 }
 
 /*
@@ -244,9 +271,21 @@ static void dp_process_position(
     int32_t lead_space = in->lead_spaces ? in->lead_spaces[i] : 0;
 
     /* Try extending to each position k > i */
+    bool saw_allowed = false;
     for (size_t k = i + 1; k <= n; k++) {
         bool is_last = (k == n);
+
+        /* Break forbidden here (kinsoku, no-break span): not a
+         * candidate; keep extending the line. */
+        if (!is_last && dp_is_forbidden(in, k))
+            continue;
+
         bool is_single_box = (k == i + 1);
+        /* No permitted break strictly inside [i, k): the run is atomic
+         * and eligible for emergency handling, like a single box. */
+        bool atomic_run = !saw_allowed;
+        saw_allowed = true;
+
         bool end_hyphen = dp_is_hyphen(in, k - 1);
         int32_t hyph_w = end_hyphen ? in->hyphen_width : 0;
 
@@ -266,7 +305,7 @@ static void dp_process_position(
 
         /* Too long? (last line is never shrunk below its ideal) */
         if (min_w > line_width || (is_last && ideal > line_width)) {
-            if (is_single_box && in->allow_emergency)
+            if (atomic_run && in->allow_emergency)
                 dp_relax_emergency(in, i, k, prev_dem, prev_hyph, prev_lines,
                                    line_width - ideal, end_hyphen,
                                    demerits, backptrs, rest_pixels,
@@ -279,9 +318,9 @@ static void dp_process_position(
                     (is_last && ideal <= line_width);
 
         if (!valid) {
-            /* Rigid underfull single box: emergency-record so the
+            /* Rigid underfull atomic run: emergency-record so the
              * position after it stays reachable (2nd pass only). */
-            if (is_single_box && in->allow_emergency)
+            if (atomic_run && in->allow_emergency)
                 dp_relax_emergency(in, i, k, prev_dem, prev_hyph, prev_lines,
                                    line_width - ideal, end_hyphen,
                                    demerits, backptrs, rest_pixels,
@@ -602,7 +641,9 @@ ekp_result_t *ekp_break_with_prefixes(
     int32_t hyphen_width,
     int32_t line_width,
     const int32_t *lead_spaces,
-    const int32_t *trail_spaces)
+    const int32_t *trail_spaces,
+    const int32_t *forbidden_positions,
+    size_t forbidden_count)
 {
     if (!ideal_prefix || !min_prefix || !max_prefix || n == 0 || line_width <= 0)
         return NULL;
@@ -651,6 +692,8 @@ ekp_result_t *ekp_break_with_prefixes(
         .hyphen_positions = hyphen_positions,
         .hyphen_count = hyphen_count,
         .hyphen_width = hyphen_width,
+        .forbidden_positions = forbidden_positions,
+        .forbidden_count = forbidden_count,
         .lead_spaces = lead_spaces,
         .trail_spaces = trail_spaces,
         .n = n,
@@ -771,7 +814,8 @@ static void batch_worker(void *arg)
         in->n,
         in->hyphen_positions, in->hyphen_count,
         in->hyphen_width, in->line_width,
-        in->lead_spaces, in->trail_spaces);
+        in->lead_spaces, in->trail_spaces,
+        in->forbidden_positions, in->forbidden_count);
 }
 
 /*
@@ -799,7 +843,8 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
                 in->n,
                 in->hyphen_positions, in->hyphen_count,
                 in->hyphen_width, in->line_width,
-                in->lead_spaces, in->trail_spaces);
+                in->lead_spaces, in->trail_spaces,
+                in->forbidden_positions, in->forbidden_count);
         }
         return results;
     }
@@ -816,7 +861,8 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
                 in->n,
                 in->hyphen_positions, in->hyphen_count,
                 in->hyphen_width, in->line_width,
-                in->lead_spaces, in->trail_spaces);
+                in->lead_spaces, in->trail_spaces,
+                in->forbidden_positions, in->forbidden_count);
         }
         return results;
     }

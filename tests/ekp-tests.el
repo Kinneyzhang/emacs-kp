@@ -114,16 +114,36 @@ Used to verify no content is lost by justification."
   (should (equal (append (ekp-split-to-boxes "中文排版") nil)
                  '("中" "文" "排" "版"))))
 
-(ert-deftest ekp-test-split-cjk-punct-attaches ()
-  "Closing CJK punctuation attaches to the preceding char (kinsoku)."
-  (let ((boxes (append (ekp-split-to-boxes "中文，排版。") nil)))
-    (should (member "文，" boxes))
-    (should (member "版。" boxes))))
+(ert-deftest ekp-test-split-cjk-punct-own-boxes ()
+  "CJK punctuation is its own box; kinsoku lives in break permissions."
+  (should (equal (append (ekp-split-to-boxes "中文，排版。") nil)
+                 '("中" "文" "，" "排" "版" "。")))
+  (should (equal (append (ekp-split-to-boxes "看《中文》吧") nil)
+                 '("看" "《" "中" "文" "》" "吧"))))
 
-(ert-deftest ekp-test-split-cjk-opening-punct-holds ()
-  "Opening CJK punctuation attaches to the following char (kinsoku)."
-  (let ((boxes (append (ekp-split-to-boxes "看《中文》吧") nil)))
-    (should (member "《中" boxes))))
+(ert-deftest ekp-test-breaks-allowed-kinsoku ()
+  "Break permissions forbid line-initial closers and line-final openers."
+  (let* ((para (ekp--get-para "看《中文》吧，好。」的"))
+         (boxes (append (ekp-para-boxes para) nil))
+         (ok (ekp-para-breaks-allowed para)))
+    ;; boxes: 看 《 中 文 》 吧 , 好 。 」 的
+    (should (equal boxes '("看" "《" "中" "文" "》" "吧" "，"
+                           "好" "。" "」" "的")))
+    ;; forbidden: after 《 (idx 2), before 》 (idx 4), before , (6),
+    ;; before 。 (8), before 」 (9)
+    (dolist (k '(2 4 6 8 9))
+      (should-not (aref ok k)))
+    ;; allowed elsewhere, e.g. 看|《, 》|吧, ,|好, 」|的
+    (dolist (k '(1 5 7 10))
+      (should (aref ok k)))))
+
+(ert-deftest ekp-test-kinsoku-rendered-output ()
+  "No rendered line starts with a closer or ends with an opener."
+  (let ((text "他说:「今天天气很好。」然后就离开了这里,再也没有回来过。"))
+    (dolist (w (number-sequence 30 200 7))
+      (dolist (line (split-string (ekp-pixel-justify text w) "\n"))
+        (should-not (string-match-p "\\`[。、,;:」』)》!?]" line))
+        (should-not (string-match-p "[「『(《]\\'" line))))))
 
 (ert-deftest ekp-test-split-fullwidth-alnum-not-punct ()
   "Fullwidth letters/digits are content, not punctuation."

@@ -116,6 +116,11 @@ when non-zero the C module is bypassed automatically.")
   ;; indentation is preserved); trail-spaces[k] = total width of
   ;; consecutive space boxes ending at box k-1.
   lead-spaces trail-spaces
+  ;; Per-gap break permission: breaks-allowed[k] non-nil iff a line may
+  ;; end after box k-1 (kinsoku, no-break spans).  n+1 bool-vector;
+  ;; index n (paragraph end) is always allowed.  forbidden-positions is
+  ;; the same information as a sparse int vector for the C bridge.
+  breaks-allowed forbidden-positions
   ;; Glue params snapshot at para creation time (plist)
   glue-params
   (dp-cache nil :type hash-table))
@@ -247,14 +252,19 @@ Returns (boxes-vector . hyphen-positions-vector)."
 
 (defun ekp--str-type (str)
   "Classify single-character string STR.
-Returns one of `space', `latin', `cjk', `cjk-punct'."
+Returns one of `space', `latin', `cjk', `cjk-open', `cjk-close'.
+`cjk-open' must not end a line; `cjk-close' must not start one
+\(kinsoku) — enforced via `ekp-para-breaks-allowed'."
   (cond
    ;; Whitespace or zero-width characters
    ((or (string-blank-p str) (= (string-width str) 0)) 'space)
    ;; a half-width cjk punct
    ((or (string= "“" str) (string= "”" str)) 'cjk)
    ((= (string-width str) 1) 'latin)
-   ((ekp-cjk-fw-punct-p str) 'cjk-punct)
+   ;; Opening punctuation (Ps/Pi), e.g. 「『(《
+   ((ekp-cjk-opening-punct-p str) 'cjk-open)
+   ;; Closing/other full-width punctuation, e.g. 。、」!?
+   ((ekp-cjk-fw-punct-p str) 'cjk-close)
    ;; double-width (or wider): CJK-like content, including emoji
    (t 'cjk)))
 
@@ -292,13 +302,51 @@ mws between cjk and latin; nws means no whitespace.  Space boxes
         (cond
          ;; Space boxes: no additional glue needed
          ((or (eq before 'space) (eq after 'space)) 'nws)
+         ;; Punctuation hugs its content: no glue after an opener,
+         ;; none before a closer (these gaps are also unbreakable).
+         ((eq before 'cjk-open) 'nws)
+         ((eq after 'cjk-close) 'nws)
          ((and (eq before 'latin) (eq after 'latin)) 'lws)
          ((and (eq before 'cjk) (eq after 'cjk)) 'cws)
          ((or (and (eq before 'cjk) (eq after 'latin))
               (and (eq before 'latin) (eq after 'cjk)))
           'mws)
-         ((or (eq before 'cjk-punct) (eq after 'cjk-punct)) 'cws))
+         ;; Remaining punctuation adjacency (after a closer, or before
+         ;; an opener): CJK spacing.
+         ((or (eq before 'cjk-close) (eq after 'cjk-open)) 'cws))
       'nws)))
+
+(defconst ekp--no-line-start-chars ".,;:!?)]}%’”»›…·"
+  "Halfwidth/neutral punctuation that must not start a line.
+Applies to boxes consisting solely of these characters (a lone comma
+after a CJK char), never to words that merely begin with one
+\(\".emacs\").  Fullwidth closers are covered by the `cjk-close'
+class instead.")
+
+(defconst ekp--no-line-end-chars "([{‘“«‹"
+  "Halfwidth/neutral punctuation that must not end a line.
+Same box-level rule as `ekp--no-line-start-chars'; fullwidth openers
+are covered by the `cjk-open' class.")
+
+(defun ekp--box-pure-set-p (box set)
+  "Non-nil when BOX is non-empty and every char is a member of SET."
+  (let ((len (length box)) (chars (append set nil)) (i 0) (all t))
+    (when (> len 0)
+      (while (and all (< i len))
+        (unless (memq (aref box i) chars)
+          (setq all nil))
+        (setq i (1+ i)))
+      all)))
+
+(defun ekp--box-no-line-start-p (box box-type)
+  "Non-nil if BOX must not appear at the start of a line."
+  (or (eq (car box-type) 'cjk-close)
+      (ekp--box-pure-set-p box ekp--no-line-start-chars)))
+
+(defun ekp--box-no-line-end-p (box box-type)
+  "Non-nil if BOX must not appear at the end of a line."
+  (or (eq (cdr box-type) 'cjk-open)
+      (ekp--box-pure-set-p box ekp--no-line-end-chars)))
 
 (defun ekp--compute-glue-types (boxes boxes-types hyphen-positions)
   "Compute glue types for BOXES. Positions after HYPHEN-POSITIONS are `nws'."
@@ -454,7 +502,24 @@ Computes ALL data in one pass: text, params, and prefix arrays."
          (mws-prefixs (make-vector (1+ n) 0))
          (cws-prefixs (make-vector (1+ n) 0))
          (lead-spaces (make-vector (1+ n) 0))
-         (trail-spaces (make-vector (1+ n) 0)))
+         (trail-spaces (make-vector (1+ n) 0))
+         (breaks-allowed (make-bool-vector (1+ n) t))
+         (forbidden nil))
+    ;; Kinsoku via break permissions: a line may not end with an
+    ;; opening-punct box, nor start with a closing-punct box — full-
+    ;; and halfwidth alike.  Punctuation also hugs its content: those
+    ;; unbreakable gaps carry no glue.
+    (let ((k 1))
+      (while (< k n)
+        (when (or (ekp--box-no-line-end-p (aref boxes (1- k))
+                                          (aref boxes-types (1- k)))
+                  (ekp--box-no-line-start-p (aref boxes k)
+                                            (aref boxes-types k)))
+          (aset breaks-allowed k nil)
+          (push k forbidden)
+          (unless (eq (aref glues-types k) 'nws)
+            (aset glues-types k 'nws)))
+        (setq k (1+ k))))
     ;; Single loop for all prefix computations
     (dotimes (i n)
       (let* ((box-w (aref boxes-widths i))
@@ -510,6 +575,8 @@ Computes ALL data in one pass: text, params, and prefix arrays."
      :cws-prefixs cws-prefixs
      :lead-spaces lead-spaces
      :trail-spaces trail-spaces
+     :breaks-allowed breaks-allowed
+     :forbidden-positions (vconcat (nreverse forbidden))
      :glue-params (list :lws-ideal ekp-lws-ideal-pixel
                         :lws-stretch ekp-lws-stretch-pixel
                         :lws-shrink ekp-lws-shrink-pixel
@@ -720,6 +787,7 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
          (cws-prefixs (ekp-para-cws-prefixs para))
          (lead-spaces (ekp-para-lead-spaces para))
          (trail-spaces (ekp-para-trail-spaces para))
+         (breaks-ok (ekp-para-breaks-allowed para))
          (params (ekp-para-glue-params para))
          (lws-stretch (plist-get params :lws-stretch))
          (mws-stretch (plist-get params :mws-stretch))
@@ -746,11 +814,20 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                (lead-glue-min (- lead-glue-ideal (aref glue-shrinks i)))
                (lead-glue-max (+ lead-glue-ideal (aref glue-stretches i)))
                (lead-space (aref lead-spaces i))
+               (saw-allowed nil)
                (k (1+ i)))
           (catch 'break
             (while (<= k n)
+              (if (not (or (= k n) (aref breaks-ok k)))
+                  ;; Break forbidden here (kinsoku, no-break span):
+                  ;; not a candidate; keep extending the line.
+                  (setq k (1+ k))
               (let* ((is-last (= k n))
                      (single-box (= k (1+ i)))
+                     ;; No permitted break strictly inside [i, k): the
+                     ;; run is atomic and eligible for emergency
+                     ;; handling, like a single box.
+                     (atomic-run (not saw-allowed))
                      (end-with-hyphenp (aref hyph-flags (1- k)))
                      (hyph-w (if end-with-hyphenp hyphen-pixel 0))
                      (raw-ideal (- (aref ideal-prefixs k) ip-i lead-glue-ideal))
@@ -764,16 +841,17 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                                  space-w)
                               hyph-w)))
                 (cond
-                 ;; Line already too long: emergency-record single box,
+                 ;; Line already too long: emergency-record atomic run,
                  ;; then stop extending.
                  ((or (> minw line-pixel)
                       (and is-last (> ideal line-pixel)))
-                  (when (and single-box allow-emergency)
+                  (when (and atomic-run allow-emergency)
                     (ekp--dp-relax-emergency
                      demerits backptrs rests gaps hyphen-counts
                      fitness-classes i k prev-dem
                      (- line-pixel ideal) end-with-hyphenp
-                     prev-hyphen-count))
+                     prev-hyphen-count
+                     (unless single-box (ekp--gaps-between para i k))))
                   (throw 'break nil))
                  ;; Valid break point
                  ((or (<= minw line-pixel maxw)
@@ -841,15 +919,17 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                         (aset gaps k line-gaps)
                         (aset fitness-classes k fitness)
                         (aset hyphen-counts k new-hyphen)))))
-                 ;; Invalid single box (rigid underfull): emergency
+                 ;; Invalid atomic run (rigid underfull): emergency
                  ;; record so the DP cannot dead-end (2nd pass only).
-                 ((and single-box allow-emergency)
+                 ((and atomic-run allow-emergency)
                   (ekp--dp-relax-emergency
                    demerits backptrs rests gaps hyphen-counts
                    fitness-classes i k prev-dem
                    (- line-pixel ideal) end-with-hyphenp
-                   prev-hyphen-count)))
-                (setq k (1+ k))))))))
+                   prev-hyphen-count
+                   (unless single-box (ekp--gaps-between para i k)))))
+                (setq saw-allowed t)
+                (setq k (1+ k)))))))))
     ;; Extract solution (nil when end unreachable in the strict pass)
     (when (aref demerits n)
       (let ((breaks (ekp--dp-trace-breaks backptrs n)))
@@ -861,9 +941,12 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
 
 (defun ekp--dp-relax-emergency (demerits backptrs rests gaps hyphen-counts
                                          fitness-classes i k prev-dem rest
-                                         end-with-hyphenp prev-hyphen-count)
-  "Record an emergency (over/underfull single-box) break at K from I.
+                                         end-with-hyphenp prev-hyphen-count
+                                         &optional line-gaps)
+  "Record an emergency (over/underfull atomic-run) break at K from I.
 REST is line-pixel minus the line's ideal width (may be negative).
+LINE-GAPS is the (lws mws cws) gap-count list for multi-box runs
+\(nil for single boxes, which render via the single-box path).
 Only replaces an existing entry when strictly better."
   (let ((total (+ prev-dem
                   (expt (+ ekp-line-penalty ekp--infinite-badness) 2)
@@ -873,7 +956,7 @@ Only replaces an existing entry when strictly better."
       (aset demerits k total)
       (aset backptrs k i)
       (aset rests k rest)
-      (aset gaps k nil)
+      (aset gaps k line-gaps)
       (aset fitness-classes k 3)
       (aset hyphen-counts k
             (if end-with-hyphenp (1+ prev-hyphen-count) 0)))))
@@ -922,6 +1005,7 @@ breaks when no valid layout exists."
          (glue-stretches (ekp-para-glue-stretches para))
          (lead-spaces (ekp-para-lead-spaces para))
          (trail-spaces (ekp-para-trail-spaces para))
+         (breaks-ok (ekp-para-breaks-allowed para))
          (params (ekp-para-glue-params para))
          (lws-stretch (plist-get params :lws-stretch))
          (mws-stretch (plist-get params :mws-stretch))
@@ -947,11 +1031,16 @@ breaks when no valid layout exists."
                (lead-glue-min (- lead-glue-ideal (aref glue-shrinks i)))
                (lead-glue-max (+ lead-glue-ideal (aref glue-stretches i)))
                (lead-space (aref lead-spaces i))
+               (saw-allowed nil)
                (k (1+ i)))
           (catch 'break
             (while (<= k n)
+              (if (not (or (= k n) (aref breaks-ok k)))
+                  ;; Break forbidden here: keep extending the line.
+                  (setq k (1+ k))
               (let* ((is-last (= k n))
                      (single-box (= k (1+ i)))
+                     (atomic-run (not saw-allowed))
                      (end-with-hyphenp
                       (ekp--hyphenate-p hyphen-positions (1- k)))
                      (hyph-w (if end-with-hyphenp hyphen-pixel 0))
@@ -970,12 +1059,15 @@ breaks when no valid layout exists."
                 (cond
                  ((or (> minw line-pixel)
                       (and is-last (> ideal line-pixel)))
-                  (when (and single-box allow-emergency)
+                  (when (and atomic-run allow-emergency)
                     (setq candidate
                           (list (+ (expt (+ ekp-line-penalty
                                             ekp--infinite-badness) 2)
                                    (* (float adjustment) adjustment))
-                                adjustment nil 3
+                                adjustment
+                                (unless single-box
+                                  (ekp--gaps-between para i k))
+                                3
                                 (if end-with-hyphenp
                                     (1+ prev-hyphen-count) 0)))
                     (ekp--dp-loose-relax states counts-at k (1+ lc) i
@@ -1031,17 +1123,21 @@ breaks when no valid layout exists."
                                   adjustment line-gaps fitness nh)))))
                   (ekp--dp-loose-relax states counts-at k (1+ lc) i
                                        prev-dem candidate))
-                 ((and single-box allow-emergency)
+                 ((and atomic-run allow-emergency)
                   (setq candidate
                         (list (+ (expt (+ ekp-line-penalty
                                           ekp--infinite-badness) 2)
                                  (* (float adjustment) adjustment))
-                              adjustment nil 3
+                              adjustment
+                              (unless single-box
+                                (ekp--gaps-between para i k))
+                              3
                               (if end-with-hyphenp
                                   (1+ prev-hyphen-count) 0)))
                   (ekp--dp-loose-relax states counts-at k (1+ lc) i
                                        prev-dem candidate)))
-                (setq k (1+ k))))))))
+                (setq saw-allowed t)
+                (setq k (1+ k)))))))))
     ;; Select final state: line count closest to (optimal + looseness).
     ;; nil when the end is unreachable (strict pass only).
     (when-let* ((end-counts (aref counts-at n)))
@@ -1150,7 +1246,7 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
     dp-result))
 
 (defun ekp--prepare-para-for-c (para line-pixel)
-  "Prepare PARA data as an 11-element vector for the C batch API."
+  "Prepare PARA data as a 12-element vector for the C batch API."
   (vector (ekp-para-ideal-prefixs para)
           (ekp-para-min-prefixs para)
           (ekp-para-max-prefixs para)
@@ -1161,7 +1257,8 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
           (ekp-para-hyphen-pixel para)
           line-pixel
           (ekp-para-lead-spaces para)
-          (ekp-para-trail-spaces para)))
+          (ekp-para-trail-spaces para)
+          (ekp-para-forbidden-positions para)))
 
 (defun ekp--dp-cache-via-c (para line-pixel)
   "Compute breaks using the C module with PARA's precomputed arrays.
@@ -1179,7 +1276,8 @@ runs the pure DP.  Falls back to Elisp when the C call fails."
                   (ekp-para-hyphen-pixel para)
                   line-pixel
                   (ekp-para-lead-spaces para)
-                  (ekp-para-trail-spaces para)))
+                  (ekp-para-trail-spaces para)
+                  (ekp-para-forbidden-positions para)))
          (c-breaks (car result))
          (c-cost (cdr result)))
     (if (null c-breaks)

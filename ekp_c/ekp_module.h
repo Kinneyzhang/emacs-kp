@@ -16,7 +16,7 @@
 
 /* Version */
 #define EKP_VERSION_MAJOR 1
-#define EKP_VERSION_MINOR 1
+#define EKP_VERSION_MINOR 2
 
 /* Limits */
 #define EKP_MAX_PATTERN_LEN 64
@@ -237,6 +237,9 @@ void ekp_result_destroy(ekp_result_t *r);
  *              starting at box i; entry 0 must be 0 (indentation kept)
  * trail_spaces: (n+1 elements, nullable) width of the space-box run
  *               ending at box k-1
+ * forbidden_positions: sorted array of gap indices where a line may
+ *               NOT end (kinsoku, no-break spans); nullable
+ * forbidden_count: length of forbidden_positions
  */
 ekp_result_t *ekp_break_with_prefixes(
     const int32_t *ideal_prefix,
@@ -251,7 +254,9 @@ ekp_result_t *ekp_break_with_prefixes(
     int32_t hyphen_width,
     int32_t line_width,
     const int32_t *lead_spaces,
-    const int32_t *trail_spaces);
+    const int32_t *trail_spaces,
+    const int32_t *forbidden_positions,
+    size_t forbidden_count);
 
 /*
  * Batch input for parallel processing
@@ -270,6 +275,8 @@ typedef struct {
     int32_t line_width;
     const int32_t *lead_spaces;   /* nullable, n+1 elements */
     const int32_t *trail_spaces;  /* nullable, n+1 elements */
+    const int32_t *forbidden_positions;  /* nullable, sorted gap indices */
+    size_t forbidden_count;
 } ekp_batch_input_t;
 
 /*
