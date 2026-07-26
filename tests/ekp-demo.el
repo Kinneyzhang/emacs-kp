@@ -80,6 +80,7 @@
       (delete-other-windows)
       (switch-to-buffer buf)
       (with-current-buffer buf
+        (buffer-disable-undo)
         (dolist (pixel pixel-lst)
           (erase-buffer)
           (insert (ekp-pixel-justify str pixel))

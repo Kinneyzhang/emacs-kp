@@ -241,6 +241,9 @@
   (ignore-errors (ekp-c-module-load))
   (let ((buf (get-buffer-create "*ekp-showcase*")))
     (with-current-buffer buf
+      ;; The width sweep re-justifies the whole buffer dozens of
+      ;; times; recording that in undo history is pure garbage.
+      (buffer-disable-undo)
       (let ((inhibit-read-only t))
         (erase-buffer)
         (ekp-showcase-mode)

@@ -441,6 +441,71 @@ they must not travel with a kill/yank."
     (should-error (call-interactively #'ekp-justify-region)
                   :type 'buffer-read-only)))
 
+;;;; Commands and mode integration
+
+(ert-deftest ekp-region-test-justify-buffer-roundtrip ()
+  "ekp-justify-buffer / ekp-unjustify-buffer cover the whole buffer."
+  (let ((text "第一段内容足够长断行\n\n第二段 also long enough to wrap"))
+    (ekp-region-test--with-text text
+      (ekp-justify-buffer 25)
+      (should (get-text-property (point-min) 'ekp-justified))
+      (ekp-unjustify-buffer)
+      (should (equal-including-properties (buffer-string) text)))))
+
+(ert-deftest ekp-region-test-justify-dwim-paragraph ()
+  "Without an active region, the commands act on the paragraph at point."
+  (ekp-region-test--with-text
+      "para one short\npara two 目标段落内容足够长会断行几次\npara three"
+    (goto-char (point-min))
+    (search-forward "目标")
+    (cl-letf (((symbol-function 'ekp-region--window-pixel)
+               (lambda (&optional _) 20)))
+      (call-interactively #'ekp-justify-region))
+    ;; Only paragraph two is justified.
+    (goto-char (point-min))
+    (should-not (get-text-property (point) 'ekp-justified))
+    (search-forward "目标")
+    (should (get-text-property (match-beginning 0) 'ekp-justified))
+    (goto-char (point-max))
+    (should-not (get-text-property (1- (point)) 'ekp-justified))
+    ;; And unjustify DWIM restores just as well.
+    (goto-char (point-min))
+    (search-forward "目标")
+    (call-interactively #'ekp-unjustify-region)
+    (should (equal (buffer-string)
+                   "para one short\npara two 目标段落内容足够长会断行几次\npara three"))))
+
+(ert-deftest ekp-region-test-refill-paragraph ()
+  "`ekp-refill-paragraph' re-justifies the paragraph at point."
+  (ekp-region-test--with-text "refill 检查内容足够长会断行几次的样子\nsecond para"
+    (goto-char (point-min))
+    (cl-letf (((symbol-function 'ekp-region--window-pixel)
+               (lambda (&optional _) 20)))
+      (ekp-refill-paragraph))
+    (should (get-text-property (point-min) 'ekp-justified))
+    (goto-char (point-max))
+    (should-not (get-text-property (1- (point)) 'ekp-justified))))
+
+(ert-deftest ekp-region-test-markdown-setup ()
+  "ekp-markdown-setup stops font-lock from managing `display'."
+  (with-temp-buffer
+    (setq-local font-lock-extra-managed-props '(display composition))
+    (ekp-markdown-setup)
+    (should (equal font-lock-extra-managed-props '(composition)))
+    (should (equal ekp-region-skip-faces ekp-region-markdown-skip-faces))))
+
+(ert-deftest ekp-region-test-org-auto-preset ()
+  "Enabling the mode in an Org buffer applies the Org skip preset."
+  (with-temp-buffer
+    (org-mode)
+    (insert "普通正文段落内容足够长断行几次的样子")
+    (cl-letf (((symbol-function 'ekp-region--window-pixel)
+               (lambda (&optional _) 100)))
+      (ekp-auto-justify-mode 1)
+      (unwind-protect
+          (should (equal ekp-region-skip-faces ekp-region-org-skip-faces))
+        (ekp-auto-justify-mode -1)))))
+
 (provide 'ekp-region-tests)
 
 ;;; ekp-region-tests.el ends here

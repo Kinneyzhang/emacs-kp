@@ -92,6 +92,27 @@ through untouched.  Checked against the `face' property of each
 paragraph, symbol or list."
   :type '(repeat face))
 
+;;;###autoload
+(defun ekp-org-setup ()
+  "Configure the current (Org) buffer for ekp justification.
+Protects source blocks, tables and meta lines from justification.
+Typical use: (add-hook \\='org-mode-hook #\\='ekp-org-setup)."
+  (setq-local ekp-region-skip-faces ekp-region-org-skip-faces))
+
+;;;###autoload
+(defun ekp-markdown-setup ()
+  "Configure the current (Markdown) buffer for ekp justification.
+Protects code faces from justification, and stops markdown-mode's
+font-lock from managing the `display' property — refontification
+would otherwise strip the pixel-glue display specs and wreck the
+layout.  The cost: markdown's own display-based decorations (URL
+hiding) are no longer cleaned up by refontification here.
+Typical use: (add-hook \\='markdown-mode-hook #\\='ekp-markdown-setup)."
+  (setq-local ekp-region-skip-faces ekp-region-markdown-skip-faces)
+  (when (boundp 'font-lock-extra-managed-props)
+    (setq-local font-lock-extra-managed-props
+                (remq 'display font-lock-extra-managed-props))))
+
 (defvar-local ekp-region-skip-predicate nil
   "When non-nil, a function called with a paragraph string.
 Return non-nil to keep that paragraph verbatim (no justification).
@@ -245,6 +266,12 @@ is one logical character."
 
 ;;;; Commands
 
+(defun ekp-region--dwim-bounds ()
+  "Region bounds when the region is active, else the paragraph at point."
+  (if (use-region-p)
+      (cons (region-beginning) (region-end))
+    (ekp-region--para-bounds (cons (point) (point)))))
+
 ;;;###autoload
 (defun ekp-justify-region (beg end &optional pixel)
   "Justify the text between BEG and END to PIXEL width.
@@ -255,10 +282,16 @@ idempotent and can re-flow to a new width."
   (interactive
    (progn
      (barf-if-buffer-read-only)
-     (list (region-beginning) (region-end)
-           (and current-prefix-arg
-                (prefix-numeric-value current-prefix-arg)))))
+     (pcase-let ((`(,beg . ,end) (ekp-region--dwim-bounds)))
+       (list beg end
+             (and current-prefix-arg
+                  (prefix-numeric-value current-prefix-arg))))))
   (setq pixel (or pixel (ekp-region--window-pixel)))
+  (when (and font-lock-mode
+             (or ekp-region-skip-faces ekp-region-skip-predicate))
+    ;; Face-based verbatim detection needs real faces: parts of the
+    ;; region jit-lock never displayed are not fontified yet.
+    (font-lock-ensure (min beg end) (max beg end)))
   (let ((beg (copy-marker (min beg end)))
         (end (copy-marker (max beg end) t))
         (ekp-region--inhibit t)
@@ -314,7 +347,11 @@ Idempotent; added by `ekp-justify-region' and `ekp-auto-justify-mode'."
 Removes synthesized glue and soft hyphens, replaces soft line breaks
 with the whitespace they swallowed, and re-exposes hidden paragraph
 tails.  Text the user typed into the justified region is preserved."
-  (interactive "*r")
+  (interactive
+   (progn
+     (barf-if-buffer-read-only)
+     (pcase-let ((`(,beg . ,end) (ekp-region--dwim-bounds)))
+       (list beg end))))
   (let ((end-m (copy-marker (max beg end) t))
         (ekp-region--inhibit t)
         (inhibit-read-only t))
@@ -451,6 +488,24 @@ Killing justified text and yanking it elsewhere must transport the
 words, not the pixel layout of the source window (DELETE as in
 `filter-buffer-substring-function')."
   (ekp-region--logical-string (buffer-substring--filter beg end delete)))
+
+;;;###autoload
+(defun ekp-justify-buffer (&optional pixel)
+  "Justify the whole accessible portion of the buffer to PIXEL width.
+PIXEL defaults to the window text width; interactively, a numeric
+prefix argument supplies it explicitly."
+  (interactive
+   (progn
+     (barf-if-buffer-read-only)
+     (list (and current-prefix-arg
+                (prefix-numeric-value current-prefix-arg)))))
+  (ekp-justify-region (point-min) (point-max) pixel))
+
+;;;###autoload
+(defun ekp-unjustify-buffer ()
+  "Restore the logical text of the whole accessible portion."
+  (interactive "*")
+  (ekp-unjustify-region (point-min) (point-max)))
 
 ;;;###autoload
 (defun ekp-no-break-region (beg end)
@@ -688,6 +743,21 @@ window splits, and deletions of the narrowest window."
                                       #'ekp-region--process-chunk
                                       buffer))))))))))
 
+(defun ekp-refill-paragraph ()
+  "Re-justify the hard paragraph at point (ekp's `fill-paragraph').
+Bound to \\[fill-paragraph] while `ekp-auto-justify-mode' is on:
+plain `fill-paragraph' would treat glue spaces and soft breaks as
+content and destroy the original whitespace."
+  (interactive "*")
+  (pcase-let ((`(,beg . ,end)
+               (ekp-region--para-bounds (cons (point) (point)))))
+    (ekp-justify-region beg end (or ekp-region--auto-width
+                                    (ekp-region--window-pixel)))))
+
+(defvar-keymap ekp-auto-justify-mode-map
+  :doc "Keymap for `ekp-auto-justify-mode'."
+  "<remap> <fill-paragraph>" #'ekp-refill-paragraph)
+
 ;;;###autoload
 (define-minor-mode ekp-auto-justify-mode
   "Keep the buffer pixel-justified to the window width.
@@ -695,8 +765,14 @@ Re-flows when the window width changes and re-justifies edited
 paragraphs incrementally.  Designed for reading and previewing;
 the buffer text is restored exactly when the mode is turned off."
   :lighter " EKP"
+  :keymap ekp-auto-justify-mode-map
   (if ekp-auto-justify-mode
       (progn
+        ;; Out-of-the-box protection for the common markup modes,
+        ;; unless the user configured their own.
+        (unless (or ekp-region-skip-faces ekp-region-skip-predicate)
+          (cond ((derived-mode-p 'org-mode) (ekp-org-setup))
+                ((derived-mode-p 'markdown-mode) (ekp-markdown-setup))))
         (setq ekp-region--auto-width (ekp-region--effective-width))
         (ekp-region--reflow (current-buffer) ekp-region--auto-width)
         (add-hook 'window-size-change-functions #'ekp-region--on-resize nil t)
