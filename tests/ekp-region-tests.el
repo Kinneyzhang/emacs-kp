@@ -166,6 +166,15 @@
       ;; re-enable so with-mode's cleanup disable is a no-op state-wise
       (ekp-auto-justify-mode 1))))
 
+(ert-deftest ekp-region-test-indent-roundtrip ()
+  "First-line indent spacers vanish exactly on unjustify."
+  (let ((ekp-first-line-indent 6)
+        (text "首行缩进往返检查内容足够长断行几次"))
+    (ekp-region-test--with-text text
+      (ekp-justify-region (point-min) (point-max) 30)
+      (ekp-unjustify-region (point-min) (point-max))
+      (should (equal-including-properties (buffer-string) text)))))
+
 (ert-deftest ekp-region-test-resize-hook-window-arg ()
   "The resize hook handles its WINDOW argument and foreign current buffer.
 Regression: buffer-local `window-size-change-functions' members get

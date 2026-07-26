@@ -198,6 +198,33 @@ Used to verify no content is lost by justification."
                  (ekp-pixel-justify text 60))))
         (should (string= a b))))))
 
+(ert-deftest ekp-test-first-line-indent ()
+  "First line carries an indent spacer; all lines fill the measure."
+  (let ((ekp-first-line-indent 6)
+        (text "缩进段落的内容足够长可以断成好几行来验证首行缩进的正确表现"))
+    (let ((lines (split-string (ekp-pixel-justify text 30) "\n")))
+      (should (> (length lines) 2))
+      (should (get-text-property 0 'ekp-glue (car lines)))
+      (should-not (get-text-property 0 'ekp-glue (cadr lines)))
+      (dolist (l (butlast lines))
+        (should (= (string-pixel-width l) 30))))))
+
+(ert-deftest ekp-test-parshape ()
+  "Per-line (INDENT . WIDTH) specs shape the paragraph."
+  (let ((ekp-parshape '((0 . 20) (6 . 24) (0 . 30)))
+        (text "参差形状段落内容也要足够长以便验证每一行宽度设置都生效呢"))
+    (let ((lines (split-string (ekp-pixel-justify text 30) "\n")))
+      (should (>= (length lines) 3))
+      (should (= (string-pixel-width (nth 0 lines)) 20))
+      (should (= (string-pixel-width (nth 1 lines)) 30))
+      (dolist (l (butlast (cddr lines)))
+        (should (= (string-pixel-width l) 30))))))
+
+(ert-deftest ekp-test-parshape-bypasses-c ()
+  "Per-line widths force the Elisp 2D path."
+  (let ((ekp-first-line-indent 6))
+    (should-not (ekp--c-available-p))))
+
 (ert-deftest ekp-test-protrusion-hangs-line-end-punct ()
   "Protrusion lets line-final fullwidth punctuation hang past the edge."
   (let ((ekp-protrusion t)

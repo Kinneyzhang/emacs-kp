@@ -120,6 +120,19 @@ compression.  `latin-close': chars from `ekp--no-line-start-chars'
 ending a word (period, comma, quotes).  `hyphen': the soft hyphen
 inserted at a break.")
 
+(defvar ekp-parshape nil
+  "Per-line layout, as a sequence of (INDENT . WIDTH) cons cells.
+Line i (0-based) uses element i; lines beyond the last element reuse
+it (like TeX \\parshape).  INDENT is the left offset in pixels,
+WIDTH the text width — the rendered line occupies INDENT + WIDTH.
+Line-number-dependent widths require the (position × line-count) DP,
+so this is Elisp-only: the C module is bypassed while set.")
+
+(defvar ekp-first-line-indent nil
+  "First-line indentation: pixels, or t for 2 em of the paragraph font.
+Sugar for the common CJK paragraph convention; ignored when
+`ekp-parshape' is set.  Elisp-only, like `ekp-parshape'.")
+
 (defvar ekp-looseness 0
   "Target line count offset: 0=optimal, +1=looser (more lines), -1=tighter.
 When non-zero, a full (position × line-count) dynamic program is run
@@ -483,6 +496,8 @@ are derived per string)."
           ekp-alignment
           ekp-ragged-stretch-pixel
           (and ekp-protrusion ekp-protrusion-ratios)
+          ekp-parshape
+          ekp-first-line-indent
           (if (and ekp--params-explicit (ekp--params-set-p))
               (list ekp-lws-ideal-pixel ekp-lws-stretch-pixel
                     ekp-lws-shrink-pixel ekp-mws-ideal-pixel
@@ -551,6 +566,39 @@ box's.  0 when `ekp-protrusion' was off at paragraph build time."
   "Resolve the per-line flexibility for non-justify alignment."
   (or ekp-ragged-stretch-pixel
       (max 1 (* 8 (or ekp-lws-ideal-pixel 1)))))
+
+(defun ekp--parshape-active-p ()
+  "Non-nil when per-line widths are in effect (parshape or indent)."
+  (or ekp-parshape ekp-first-line-indent))
+
+(defun ekp--first-indent-pixel (para)
+  "Resolve `ekp-first-line-indent' to pixels for PARA."
+  (cond
+   ((numberp ekp-first-line-indent) ekp-first-line-indent)
+   (ekp-first-line-indent
+    (* 2 (string-pixel-width
+          (propertize "字" 'face
+                      (list :family (ekp-para-cjk-font para))))))
+   (t 0)))
+
+(defun ekp--line-spec (para line-index measure)
+  "Layout of LINE-INDEX (0-based) as (INDENT . WIDTH).
+MEASURE is the paragraph measure passed to the justify call.
+`ekp-parshape' takes precedence; its last entry repeats.  Otherwise
+`ekp-first-line-indent' shifts line 0.  WIDTH never drops below 1."
+  (cond
+   (ekp-parshape
+    (let* ((shape (if (vectorp ekp-parshape)
+                      (append ekp-parshape nil)
+                    ekp-parshape))
+           (spec (or (nth line-index shape) (car (last shape)))))
+      (cons (max 0 (car spec)) (max 1 (cdr spec)))))
+   (ekp-first-line-indent
+    (if (= line-index 0)
+        (let ((indent (ekp--first-indent-pixel para)))
+          (cons indent (max 1 (- measure indent))))
+      (cons 0 measure)))
+   (t (cons 0 measure))))
 
 (defun ekp--make-para (string)
   "Create and fully initialize `ekp-para' struct for STRING.
@@ -880,8 +928,10 @@ stripped space-box runs, plus hyphen width when the line hyphenates."
 ;;   least as bad as the worst regular line.
 
 (defun ekp--dp-cache-elisp (para line-pixel)
-  "Pure Elisp DP implementation. Returns and caches the dp-result plist."
-  (if (/= ekp-looseness 0)
+  "Pure Elisp DP implementation. Returns and caches the dp-result plist.
+Looseness and per-line widths (parshape/first-line indent) need the
+\(position × line-count) DP."
+  (if (or (/= ekp-looseness 0) (ekp--parshape-active-p))
       (ekp--dp-cache-elisp-loose para line-pixel)
     (let ((dp-result (or (ekp--dp-run-1d para line-pixel nil)
                          (ekp--dp-run-1d para line-pixel t))))
@@ -1161,6 +1211,8 @@ breaks when no valid layout exists."
     (dotimes (i n)
       (dolist (lc (aref counts-at i))
         (let* ((st (gethash (cons i lc) states))
+               ;; per-line layout: line LC (0-based) may have its own width
+               (this-width (cdr (ekp--line-spec para lc line-pixel)))
                (prev-dem (aref st 0))
                (prev-fitness (aref st 2))
                (prev-hyphen-count (aref st 3))
@@ -1185,7 +1237,7 @@ breaks when no valid layout exists."
                       (ekp--hyphenate-p hyphen-positions (1- k)))
                      (hyph-w (if end-with-hyphenp hyphen-pixel 0))
                      ;; right-edge protrusion releases width at this k
-                     (lw (+ line-pixel
+                     (lw (+ this-width
                             (if end-with-hyphenp
                                 hyphen-protrude
                               (aref tail-protrudes k))))
@@ -1341,8 +1393,10 @@ CANDIDATE is (DEM-DELTA REST GAPS FITNESS HYPHEN-COUNT)."
   (and ekp-use-c-module
        (boundp 'ekp-c-module-loaded) ekp-c-module-loaded
        (fboundp 'ekp-c-break-with-arrays)
-       ;; looseness needs the (position × line-count) DP, Elisp only
-       (= ekp-looseness 0)))
+       ;; looseness and per-line widths need the (position × line-count)
+       ;; DP, Elisp only
+       (= ekp-looseness 0)
+       (not (ekp--parshape-active-p))))
 
 (defun ekp--c-sync-params ()
   "Push current K-P penalty settings to the C module."
@@ -1627,8 +1681,11 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                                        nil))
              (is-last (>= end boxes-num))
              (hyphen-p (ekp--hyphenate-p hyphen-positions (1- end)))
+             ;; per-line layout (parshape / first-line indent)
+             (line-spec (ekp--line-spec para i line-pixel))
+             (line-indent (car line-spec))
              ;; right-edge protrusion widens this line's effective target
-             (eff-pixel (+ line-pixel
+             (eff-pixel (+ (cdr line-spec)
                            (if hyphen-p
                                (ekp-para-hyphen-protrude para)
                              (aref (ekp-para-tail-protrudes para) end))))
@@ -1691,6 +1748,10 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                     (append (list filler)
                             (cdr (butlast glue-list))
                             (list 0))))))
+        ;; left indent renders as a leading spacer
+        (when (> line-indent 0)
+          (setq glue-list (cons (+ (car glue-list) line-indent)
+                                (cdr glue-list))))
         (aset line-glues i (vconcat glue-list))
         (setq start end)))
     line-glues))
