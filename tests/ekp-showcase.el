@@ -247,10 +247,19 @@
       (let ((inhibit-read-only t))
         (erase-buffer)
         (ekp-showcase-mode)
+        (insert (ekp-showcase--sample))
+        ;; Pin the demo font as an explicit face property, NOT via
+        ;; `face-remap-add-relative': `string-pixel-width' (how ekp
+        ;; measures) ignores the buffer's face remapping but honors an
+        ;; explicit `:family', so a remap makes measurement (session
+        ;; default font) disagree with rendering (the demo font).  On a
+        ;; wide follow-window that per-glyph error accumulates past the
+        ;; safety margin and every justified line overflows the right
+        ;; edge.  Appending keeps the inline atom/code faces on top.
         (when (and (display-graphic-p)
                    (find-font (font-spec :family "Cascadia Next SC")))
-          (face-remap-add-relative 'default :family "Cascadia Next SC"))
-        (insert (ekp-showcase--sample))
+          (add-face-text-property (point-min) (point-max)
+                                  '(:family "Cascadia Next SC") t))
         (goto-char (point-min))
         (ekp-showcase--refresh)))
     (pop-to-buffer buf)

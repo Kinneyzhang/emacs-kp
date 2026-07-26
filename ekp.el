@@ -273,8 +273,9 @@ When exceeded, the whole paragraph cache is flushed (cheap to rebuild)."
   :group 'ekp)
 
 (defvar ekp--params-explicit nil
-  "Non-nil after `ekp-param-set'; spacing params then persist until
-`ekp-param-reset'.  When nil, defaults are derived from each string.")
+  "Non-nil after `ekp-param-set' has been called.
+Spacing parameters then persist until `ekp-param-reset'; when nil,
+defaults are derived from each string.")
 
 ;;;; Initialization
 ;; ekp-root-dir is provided by ekp-utils.el
@@ -300,7 +301,10 @@ hyphenation; it must not break loading the package."
        ekp-cws-ideal-pixel ekp-cws-stretch-pixel ekp-cws-shrink-pixel))
 
 (defun ekp--param-apply (lws-i lws-+ lws-- mws-i mws-+ mws-- cws-i cws-+ cws--)
-  "Set the nine spacing variables and derived limits (internal)."
+  "Set the nine spacing variables and derived limits (internal).
+The nine pixel arguments are ideal/stretch/shrink per glue class:
+LWS-I LWS-+ LWS-- for Latin word space, MWS-I MWS-+ MWS-- for mixed
+Latin-CJK, and CWS-I CWS-+ CWS-- for CJK."
   (setq ekp-lws-ideal-pixel lws-i ekp-lws-stretch-pixel lws-+
         ekp-lws-shrink-pixel lws-- ekp-mws-ideal-pixel mws-i
         ekp-mws-stretch-pixel mws-+ ekp-mws-shrink-pixel mws--
@@ -315,9 +319,10 @@ hyphenation; it must not break loading the package."
   (setq ekp--last-para nil))
 
 (defun ekp-param-set (lws-i lws-+ lws-- mws-i mws-+ mws-- cws-i cws-+ cws--)
-  "Set all spacing parameters explicitly; they persist until `ekp-param-reset'.
-LWS = Latin word space, MWS = mixed, CWS = CJK.
-Each takes ideal, stretch (+), and shrink (-) values in pixels."
+  "Set all spacing parameters explicitly; persist until `ekp-param-reset'.
+The nine pixel values, in order, are LWS-I LWS-+ LWS-- MWS-I MWS-+
+MWS-- CWS-I CWS-+ CWS--: ideal, stretch (+) and shrink (-) for the
+Latin (LWS), mixed (MWS) and CJK (CWS) word spaces."
   (ekp--param-apply lws-i lws-+ lws-- mws-i mws-+ mws-- cws-i cws-+ cws--)
   (setq ekp--params-explicit t))
 
@@ -419,7 +424,7 @@ Returns one of `space', `latin', `cjk', `cjk-open', `cjk-close'.
         (aset ekp--str-type-table c (ekp--str-type-1 str)))))
 
 (defun ekp--str-type-1 (str)
-  "Uncached `ekp--str-type'."
+  "Uncached `ekp--str-type' computation for STR."
   (cond
    ;; Whitespace or zero-width characters
    ((or (string-blank-p str) (= (string-width str) 0)) 'space)
@@ -457,10 +462,11 @@ Skips zero-width characters; falls back to the edge char."
             (ekp--str-type (ekp--box-edge-char box t))))))
 
 (defun ekp--glue-type (prev-box-type curr-box-type)
-  "Glue type between boxes: `lws', `mws', `cws' or `nws'.
-Lws means whitespace between latin words; cws between cjk chars;
-mws between cjk and latin; nws means no whitespace.  Space boxes
-\(preserved whitespace) need no additional glue."
+  "Return the glue type between PREV-BOX-TYPE and CURR-BOX-TYPE.
+It is `lws', `mws', `cws' or `nws'.  Lws means whitespace between
+latin words; cws between cjk chars; mws between cjk and latin; nws
+means no whitespace.  Space boxes (preserved whitespace) need no
+additional glue."
   (let ((before (cdr prev-box-type))
         (after (car curr-box-type)))
     (if before
@@ -544,19 +550,22 @@ Japanese typesetting.  Stored as a string of characters."
       all)))
 
 (defun ekp--box-no-line-start-p (box box-type)
-  "Non-nil if BOX must not appear at the start of a line."
+  "Non-nil if BOX must not appear at the start of a line.
+BOX-TYPE is BOX's (start . end) type pair from `ekp--box-type'."
   (or (eq (car box-type) 'cjk-close)
       (and (> (length box) 0)
            (aref ekp--extra-nls-table (aref box 0)))
       (ekp--box-pure-set-p box ekp--no-line-start-char-list)))
 
 (defun ekp--box-no-line-end-p (box box-type)
-  "Non-nil if BOX must not appear at the end of a line."
+  "Non-nil if BOX must not appear at the end of a line.
+BOX-TYPE is BOX's (start . end) type pair from `ekp--box-type'."
   (or (eq (cdr box-type) 'cjk-open)
       (ekp--box-pure-set-p box ekp--no-line-end-char-list)))
 
 (defun ekp--compute-glue-types (boxes boxes-types hyphen-positions)
-  "Compute glue types for BOXES. Positions after HYPHEN-POSITIONS are `nws'."
+  "Compute the glue-type vector for BOXES using BOXES-TYPES.
+Positions right after HYPHEN-POSITIONS are forced to `nws'."
   (let* ((n (length boxes))
          (glues (make-vector n nil))
          prev-type)
@@ -570,18 +579,21 @@ Japanese typesetting.  Stored as a string of characters."
     glues))
 
 (defun ekp-glue-ideal-pixel (type)
+  "Return the ideal glue pixel width for glue TYPE."
   (cond ((or (null type) (eq 'nws type)) 0)
         ((eq 'lws type) ekp-lws-ideal-pixel)
         ((eq 'mws type) ekp-mws-ideal-pixel)
         ((eq 'cws type) ekp-cws-ideal-pixel)))
 
 (defun ekp-glue-min-pixel (type)
+  "Return the minimum glue pixel width for glue TYPE."
   (cond ((or (null type) (eq 'nws type)) 0)
         ((eq 'lws type) ekp-lws-min-pixel)
         ((eq 'mws type) ekp-mws-min-pixel)
         ((eq 'cws type) ekp-cws-min-pixel)))
 
 (defun ekp-glue-max-pixel (type)
+  "Return the maximum glue pixel width for glue TYPE."
   (cond ((or (null type) (eq 'nws type)) 0)
         ((eq 'lws type) ekp-lws-max-pixel)
         ((eq 'mws type) ekp-mws-max-pixel)
@@ -612,12 +624,12 @@ Japanese typesetting.  Stored as a string of characters."
           ((eq 'cws type) (plist-get params :cws-stretch)))))
 
 (defun ekp--para-glue-min (para type)
-  "Get minimum glue pixel (ideal - shrink) for TYPE."
+  "Return the minimum glue pixel (ideal - shrink) for TYPE in PARA."
   (- (ekp--para-glue-ideal para type)
      (ekp--para-glue-shrink para type)))
 
 (defun ekp--para-glue-max (para type)
-  "Get maximum glue pixel (ideal + stretch) for TYPE."
+  "Return the maximum glue pixel (ideal + stretch) for TYPE in PARA."
   (+ (ekp--para-glue-ideal para type)
      (ekp--para-glue-stretch para type)))
 
@@ -728,7 +740,8 @@ glyph shared across paragraphs is measured only once."
   (and box-type (eq (car box-type) 'space)))
 
 (defun ekp--tail-protrude-pixel (box box-type)
-  "Pixels the last visible char of BOX may protrude past the flush edge."
+  "Pixels the last visible char of BOX may protrude past the flush edge.
+BOX-TYPE is BOX's (start . end) type pair from `ekp--box-type'."
   (if (not ekp-protrusion)
       0
     (let* ((tail-type (cdr box-type))
@@ -745,7 +758,7 @@ glyph shared across paragraphs is measured only once."
         0))))
 
 (defun ekp--line-edge-release (para _start end)
-  "Pixels released at the right edge of the line [START, END).
+  "Pixels released at the right edge of PARA's line [START, END).
 The protrusion of the line's final glyph: the soft hyphen's when the
 line breaks at a hyphenation point, otherwise the last non-space
 box's.  0 when `ekp-protrusion' was off at paragraph build time."
@@ -770,7 +783,7 @@ Goes through the width cache: this runs for every rendered line."
    (t 0)))
 
 (defun ekp--line-spec (para line-index measure)
-  "Layout of LINE-INDEX (0-based) as (INDENT . WIDTH).
+  "Layout of PARA's LINE-INDEX (0-based) as (INDENT . WIDTH).
 MEASURE is the paragraph measure passed to the justify call.
 `ekp-parshape' takes precedence; its last entry repeats.  Otherwise
 `ekp-first-line-indent' shifts line 0.  WIDTH never drops below 1."
@@ -988,27 +1001,35 @@ Run after font or theme changes that affect glyph widths."
 ;;;; Paragraph Accessors
 
 (defun ekp--boxes (string)
+  "Return the boxes of STRING's paragraph."
   (ekp-para-boxes (ekp--get-para string)))
 
 (defun ekp--boxes-widths (string)
+  "Return the box pixel widths of STRING's paragraph."
   (ekp-para-boxes-widths (ekp--get-para string)))
 
 (defun ekp--glues-types (string)
+  "Return the glue types of STRING's paragraph."
   (ekp-para-glues-types (ekp--get-para string)))
 
 (defun ekp--ideal-prefixs (string)
+  "Return the ideal prefix sums of STRING's paragraph."
   (ekp-para-ideal-prefixs (ekp--get-para string)))
 
 (defun ekp--min-prefixs (string)
+  "Return the minimum prefix sums of STRING's paragraph."
   (ekp-para-min-prefixs (ekp--get-para string)))
 
 (defun ekp--max-prefixs (string)
+  "Return the maximum prefix sums of STRING's paragraph."
   (ekp-para-max-prefixs (ekp--get-para string)))
 
 (defun ekp--hyphen-pixel (string)
+  "Return the hyphen pixel width of STRING's paragraph."
   (ekp-para-hyphen-pixel (ekp--get-para string)))
 
 (defun ekp--hyphen-positions (string)
+  "Return the hyphen positions of STRING's paragraph."
   (ekp-para-hyphen-positions (ekp--get-para string)))
 
 ;;;; K-P Badness and Demerits
@@ -1028,8 +1049,9 @@ Returns 0 if no adjustment needed, 10000 (infinite) if impossible."
         (min ekp--infinite-badness (* 100 (expt (abs ratio) 3)))))))
 
 (defun ekp--compute-fitness-class (adjustment-pixel flexibility-pixel)
-  "Classify line tightness into fitness class (0-3).
-0=tight (shrunk), 1=decent, 2=loose, 3=very-loose."
+  "Classify line tightness from ADJUSTMENT-PIXEL and FLEXIBILITY-PIXEL.
+Return the fitness class 0-3: 0=tight (shrunk), 1=decent, 2=loose,
+3=very-loose."
   (if (<= flexibility-pixel 0)
       1  ; default to decent
     (let ((ratio (/ (float adjustment-pixel) flexibility-pixel)))
@@ -1044,6 +1066,8 @@ Returns 0 if no adjustment needed, 10000 (infinite) if impossible."
   "Compute K-P demerits for a line break.
 BADNESS is the line badness, PENALTY is break penalty (e.g., hyphen).
 PREV-FITNESS and CURR-FITNESS are fitness classes of adjacent lines.
+END-WITH-HYPHENP is non-nil when the line ends at a hyphen point, and
+PREV-HYPHEN-COUNT counts the consecutive hyphenated lines before it.
 Returns total demerits for this break."
   (let* (;; Base demerits: (linepenalty + badness)²
          (base (expt (+ ekp-line-penalty badness) 2))
@@ -1082,7 +1106,7 @@ Uses binary search for O(log n) lookup."
 ;;;; Shared Line Measurement (O(1) via prefix arrays)
 
 (defun ekp--gaps-between (para i k)
-  "Return (latin-gaps mix-gaps cjk-gaps) inside line I..K (exclusive glues).
+  "Return (latin-gaps mix-gaps cjk-gaps) for PARA inside line I..K.
 Counts glue indices I+1 .. K-1 using precomputed prefix counts."
   (let ((lp (ekp-para-lws-prefixs para))
         (mp (ekp-para-mws-prefixs para))
@@ -1093,8 +1117,9 @@ Counts glue indices I+1 .. K-1 using precomputed prefix counts."
           (- (aref cp k) (aref cp j)))))
 
 (defun ekp--line-ideal-pixel (para i k)
-  "Ideal width of line I..K: box+glue ideals, minus leading glue and
-stripped space-box runs, plus hyphen width when the line hyphenates."
+  "Return the ideal width of line I..K in PARA.
+It sums box and glue ideals, subtracts leading glue and stripped
+space-box runs, and adds the hyphen width when the line hyphenates."
   (let* ((ip (ekp-para-ideal-prefixs para))
          (raw (- (aref ip k) (aref ip i)
                  (aref (ekp-para-glue-ideals para) i)))
@@ -1127,9 +1152,10 @@ width, so results at different looseness values must not alias
   (if (zerop ekp-looseness) line-pixel (cons line-pixel ekp-looseness)))
 
 (defun ekp--dp-cache-elisp (para line-pixel)
-  "Pure Elisp DP implementation. Returns and caches the dp-result plist.
-Looseness and parshape need the (position × line-count) DP; a plain
-first-line indent is handled by the 1D pass (line 0 = start at box 0)."
+  "Return and cache the dp-result plist for PARA at LINE-PIXEL.
+This pure-Elisp DP path handles looseness and parshape via the
+position-by-line-count DP; a plain first-line indent uses the 1D
+pass, where line 0 starts at box 0."
   (if (or (/= ekp-looseness 0) ekp-parshape)
       (ekp--dp-cache-elisp-loose para line-pixel)
     (let ((dp-result (or (ekp--dp-run-1d para line-pixel nil)
@@ -1138,14 +1164,14 @@ first-line indent is handled by the 1D pass (line 0 = start at box 0)."
       dp-result)))
 
 (defun ekp--hyphen-flags (hyphen-positions n)
-  "Return a bool-vector of length N flagging hyphenatable box indices."
+  "Return a `bool-vector' of length N flagging the HYPHEN-POSITIONS indices."
   (let ((v (make-bool-vector (max n 1) nil)))
     (dotimes (j (length hyphen-positions))
       (aset v (aref hyphen-positions j) t))
     v))
 
 (defun ekp--dp-run-1d (para line-pixel allow-emergency)
-  "One strict (or emergency-permitting) K-P DP pass over PARA.
+  "One strict (or emergency-permitting) K-P DP pass over PARA at LINE-PIXEL.
 Returns the dp-result plist, or nil when the paragraph end is
 unreachable (only possible when ALLOW-EMERGENCY is nil)."
   (let* ((boxes (ekp-para-boxes para))
@@ -1334,7 +1360,11 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                                          end-with-hyphenp prev-hyphen-count
                                          &optional line-gaps)
   "Record an emergency (over/underfull atomic-run) break at K from I.
-REST is line-pixel minus the line's ideal width (may be negative).
+DEMERITS, BACKPTRS, RESTS, GAPS, HYPHEN-COUNTS and FITNESS-CLASSES are
+the DP state arrays, updated at K when this break beats the stored
+DEMERITS entry.  PREV-DEM is the demerits accumulated up to I; REST is
+line-pixel minus the line's ideal width (may be negative);
+END-WITH-HYPHENP and PREV-HYPHEN-COUNT track the hyphen run.
 LINE-GAPS is the (lws mws cws) gap-count list for multi-box runs
 \(nil for single boxes, which render via the single-box path).
 Only replaces an existing entry when strictly better."
@@ -1352,7 +1382,7 @@ Only replaces an existing entry when strictly better."
             (if end-with-hyphenp (1+ prev-hyphen-count) 0)))))
 
 (defun ekp--dp-trace-breaks (backptrs n)
-  "Trace optimal break points from BACKPTRS array."
+  "Trace optimal break points back from N using the BACKPTRS array."
   (let ((breaks (list n))
         (index n))
     (while (> index 0)
@@ -1373,16 +1403,18 @@ Only replaces an existing entry when strictly better."
 ;; whose line count is closest to the target.
 
 (defun ekp--dp-cache-elisp-loose (para line-pixel)
-  "Elisp DP tracking all line counts, for `ekp-looseness' support.
-Two passes like the 1D engine: strict first, then with emergency
-breaks when no valid layout exists."
+  "Run the DP over PARA at LINE-PIXEL, tracking all line counts.
+For `ekp-looseness' and parshape support.  Two passes like the 1D
+engine: strict first, then emergency breaks when no layout is valid."
   (let ((dp-result (or (ekp--dp-run-loose para line-pixel nil)
                        (ekp--dp-run-loose para line-pixel t))))
     (puthash (ekp--dp-key line-pixel) dp-result (ekp-para-dp-cache para))
     dp-result))
 
 (defun ekp--dp-run-loose (para line-pixel allow-emergency)
-  "One (position × line-count) DP pass.  Returns dp-result or nil."
+  "One (position × line-count) DP pass over PARA at LINE-PIXEL.
+Return the dp-result plist, or nil when the paragraph end is
+unreachable (only possible when ALLOW-EMERGENCY is nil)."
   (let* ((boxes (ekp-para-boxes para))
          (n (length boxes))
          (hyphen-pixel (ekp-para-hyphen-pixel para))
@@ -1574,7 +1606,10 @@ breaks when no valid layout exists."
 
 (defun ekp--dp-loose-relax (states counts-at k lines i prev-dem candidate)
   "Relax state (K . LINES) with CANDIDATE from position I.
-CANDIDATE is (DEM-DELTA REST GAPS FITNESS HYPHEN-COUNT)."
+STATES maps each (position . line-count) to its best vector; COUNTS-AT
+tracks the line counts reached at each position.  PREV-DEM is the
+demerits up to I.  CANDIDATE is (DEM-DELTA REST GAPS FITNESS
+HYPHEN-COUNT)."
   (let* ((key (cons k lines))
          (total (+ prev-dem (nth 0 candidate)))
          (existing (gethash key states)))
@@ -1628,7 +1663,7 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
      (t (ekp--dp-cache-elisp para line-pixel)))))
 
 (defun ekp--lines-data-from-breaks (para line-pixel breaks)
-  "Compute (RESTS . GAPS) lists for BREAKS, matching the DP's metrics.
+  "Compute (RESTS . GAPS) lists for BREAKS of PARA at LINE-PIXEL.
 Per-line widths (first-line indent) must mirror the DP exactly, or
 the reconstructed rests overfill the indented line."
   (let ((start 0) (idx 0) rests gapss)
@@ -1647,7 +1682,7 @@ the reconstructed rests overfill the indented line."
     (cons (nreverse rests) (nreverse gapss))))
 
 (defun ekp--store-c-result (para line-pixel breaks cost)
-  "Store a C-module result (BREAKS, COST) into PARA's dp-cache."
+  "Store C-module (BREAKS, COST) for LINE-PIXEL in PARA's dp-cache."
   (let* ((data (ekp--lines-data-from-breaks para line-pixel breaks))
          (dp-result (list :rests (car data)
                           :gaps (cdr data)
@@ -1658,7 +1693,7 @@ the reconstructed rests overfill the indented line."
     dp-result))
 
 (defun ekp--prepare-para-for-c (para line-pixel)
-  "Prepare PARA data as a 15-element vector for the C batch API."
+  "Prepare PARA at LINE-PIXEL as a 15-element vector for the C batch API."
   (vector (ekp-para-ideal-prefixs para)
           (ekp-para-min-prefixs para)
           (ekp-para-max-prefixs para)
@@ -1676,7 +1711,7 @@ the reconstructed rests overfill the indented line."
           (cdr (ekp--line-spec para 0 line-pixel))))
 
 (defun ekp--dp-cache-via-c (para line-pixel)
-  "Compute breaks using the C module with PARA's precomputed arrays.
+  "Compute breaks at LINE-PIXEL using the C module and PARA's arrays.
 The C module receives all font-dependent data from Elisp; it only
 runs the pure DP.  Falls back to Elisp when the C call fails."
   (ekp--c-sync-params)
@@ -1707,7 +1742,7 @@ runs the pure DP.  Falls back to Elisp when the C call fails."
       (ekp--store-c-result para line-pixel c-breaks c-cost))))
 
 (defun ekp--dp-cache-batch (strings line-pixel)
-  "Compute DP for multiple STRINGS in parallel using the C batch API.
+  "Compute DP at LINE-PIXEL for multiple STRINGS via the C batch API.
 Returns list of dp-results in the same order as STRINGS.
 Only computes strings that aren't already cached."
   (let* ((paras (mapcar #'ekp--get-para strings))
@@ -1755,11 +1790,11 @@ If KEY is non-nil, return the value of KEY in the plist."
       data)))
 
 (defun ekp-total-cost (string line-pixel)
-  "Return the total demerits of the K-P solution."
+  "Return the total demerits of the K-P solution for STRING at LINE-PIXEL."
   (ekp-dp-data string line-pixel :cost))
 
 (defun ekp-line-breaks (string line-pixel)
-  "Return the break points of the K-P solution."
+  "Return the break points of the K-P solution for STRING at LINE-PIXEL."
   (ekp-dp-data string line-pixel :breaks))
 
 ;;; Line Glue Distribution
@@ -1828,7 +1863,8 @@ Returns ((latin-adj . latin-extra) (mix-adj . mix-extra) (cjk-adj . cjk-extra)).
 
 (defun ekp--compute-glue-pixels (para glues-types gaps-distribution stretch-p)
   "Compute actual glue pixels from GLUES-TYPES and GAPS-DISTRIBUTION.
-Returns list of pixel values for each glue. Uses PARA's stored glue params."
+Return the pixel list for each glue using PARA's stored glue params.
+STRETCH-P selects stretch (t) or shrink (nil)."
   (let ((latin-adj (car (nth 0 gaps-distribution)))
         (latin-extra (cdr (nth 0 gaps-distribution)))
         (mix-adj (car (nth 1 gaps-distribution)))
@@ -1851,19 +1887,24 @@ Returns list of pixel values for each glue. Uses PARA's stored glue params."
      glues-types)))
 
 (defun ekp--line-glue-single-box (line-pixel box-width hyphen-p hyphen-pixel)
-  "Compute glues for a single-box line.
-The trailing filler is clamped at 0 for overfull boxes."
+  "Compute glues for a single-box line of width LINE-PIXEL.
+BOX-WIDTH is the box width; HYPHEN-P adds HYPHEN-PIXEL when the box
+hyphenates.  The trailing filler is clamped at 0 for overfull boxes."
   (let ((trailing (- line-pixel box-width (if hyphen-p hyphen-pixel 0))))
     (list 0 (max 0 trailing))))
 
 (defun ekp--line-glue-last-line (para glues-types ideal-pixel line-pixel)
-  "Compute glues for last line (ragged right). Uses PARA's stored glue params."
+  "Compute glues for the last line (ragged right) of PARA at LINE-PIXEL.
+GLUES-TYPES are the per-glue types and IDEAL-PIXEL the line's ideal
+width; PARA supplies the stored glue params."
   (append '(0)
           (mapcar (lambda (type) (ekp--para-glue-ideal para type)) glues-types)
           (list (max 0 (- line-pixel ideal-pixel)))))
 
 (defun ekp--line-glue-normal (para glues-types rest-pixel gaps-list)
-  "Compute glues for a normal (justified) line. Uses PARA's stored glue params."
+  "Compute glues for a normal (justified) line from PARA.
+GLUES-TYPES are the per-glue types; REST-PIXEL is the surplus (or
+deficit) spread across GAPS-LIST using PARA's stored glue params."
   (if (= rest-pixel 0)
       (append '(0) (mapcar (lambda (type) (ekp--para-glue-ideal para type))
                            glues-types)
@@ -2193,7 +2234,7 @@ The output is lossless with respect to STRING:
 (defun ekp--validate-width (line-pixel)
   "Signal a user error unless LINE-PIXEL is a positive integer."
   (unless (and (integerp line-pixel) (> line-pixel 0))
-    (user-error "ekp: line width must be a positive integer, got %S"
+    (user-error "Line width must be a positive integer, got %S"
                 line-pixel)))
 
 (defun ekp-pixel-justify (string line-pixel)
@@ -2243,8 +2284,8 @@ When the C module is available, paragraphs are computed in parallel."
       most-positive-fixnum)))
 
 (defun ekp--ternary-search-optimal-width (strings min-pixel max-pixel)
-  "Find optimal width in [MIN-PIXEL, MAX-PIXEL] using ternary search.
-Returns the pixel width with minimum average cost."
+  "Find the optimal width for STRINGS in [MIN-PIXEL, MAX-PIXEL].
+Use ternary search; return the pixel width with minimum average cost."
   (let ((lo min-pixel)
         (hi max-pixel))
     ;; Ternary search: O(log n) iterations
@@ -2276,7 +2317,7 @@ Returns (justified-text . optimal-pixel)."
   (ekp--validate-width min-pixel)
   (ekp--validate-width max-pixel)
   (when (> min-pixel max-pixel)
-    (user-error "ekp: min-pixel (%d) must be <= max-pixel (%d)"
+    (user-error "Min-pixel (%d) must be <= max-pixel (%d)"
                 min-pixel max-pixel))
   (let* ((strings (split-string string "\n"))
          ;; Pre-warm caches

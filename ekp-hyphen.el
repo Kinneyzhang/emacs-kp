@@ -23,7 +23,7 @@
 ;;; Commentary:
 
 ;; Implementation of Frank Liang's hyphenation algorithm.
-;; See: Liang, F.M. "Word Hy-phen-a-tion by Com-put-er" (1983)
+;; See: Liang, F.M.  "Word Hy-phen-a-tion by Com-put-er" (1983)
 ;;
 ;; Usage:
 ;;   (ekp-hyphen-load-languages "/path/to/dictionaries")
@@ -180,7 +180,7 @@ declarations default to 2/2."
       (nreverse result))))
 
 (defun ekp-hyphen--positions (h word)
-  "Get cached break positions for WORD."
+  "Return cached break positions for WORD using hyphenator H."
   (let* ((key (downcase word))
          (cache (ekp-hyphen-cache h)))
     (or (gethash key cache)
@@ -207,14 +207,14 @@ by default the dictionary's own LEFTHYPHENMIN/RIGHTHYPHENMIN apply
         h))))
 
 (defun ekp-hyphen-positions (h word)
-  "Return valid break positions in WORD, respecting margins."
+  "Return valid break positions in WORD for H, respecting margins."
   (let ((left (ekp-hyphen-left h))
         (right (- (length word) (ekp-hyphen-right h))))
     (cl-remove-if-not (lambda (p) (and (>= p left) (<= p right)))
                       (ekp-hyphen--positions h word))))
 
 (defun ekp-hyphen-inserted (h word &optional hyphen)
-  "Return WORD with HYPHEN inserted at break points."
+  "Return WORD with HYPHEN inserted at H's break points."
   (let ((hyphen (or hyphen "-")) (result word) (off 0))
     (dolist (pos (ekp-hyphen-positions h word))
       (setq result (concat (substring result 0 (+ pos off))
@@ -224,7 +224,7 @@ by default the dictionary's own LEFTHYPHENMIN/RIGHTHYPHENMIN apply
     result))
 
 (defun ekp-hyphen-boxes (h word)
-  "Split WORD into syllables at break points."
+  "Split WORD into syllables at H's break points."
   (split-string (ekp-hyphen-inserted h word " ") " "))
 
 (provide 'ekp-hyphen)

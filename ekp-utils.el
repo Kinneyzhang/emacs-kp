@@ -76,6 +76,7 @@ Returns nil (unknown) when font information is unavailable."
                  (= (aref info 7) (aref info 11))))))))
 
 (defun ekp-get-latin-letter (string)
+  "Return the first Latin letter (a-z or A-Z) in STRING, or nil if none."
   (with-temp-buffer
     (insert string)
     (goto-char (point-min))
@@ -88,6 +89,7 @@ Returns nil (unknown) when font information is unavailable."
       (buffer-substring (point) (1+ (point))))))
 
 (defun ekp-get-cjk-letter (string)
+  "Return the first wide CJK character in STRING, or nil if none."
   (with-temp-buffer
     (insert string)
     (goto-char (point-min))
@@ -101,7 +103,9 @@ Returns nil (unknown) when font information is unavailable."
       (buffer-substring (point) (1+ (point))))))
 
 (defun ekp-monospace-p (string)
-  "判断字符串中的拉丁字母的字体是否等宽，返回字体名称"
+  "Return the font family of STRING's Latin letters when monospace.
+Return nil when that font is not monospace, or the default face
+family when STRING contains no Latin letter."
   (if-let* ((letter (ekp-get-latin-letter string))
             (font-family (ekp-font-family letter)))
       ;; return monospace font family
@@ -111,6 +115,9 @@ Returns nil (unknown) when font information is unavailable."
     (face-attribute 'default :family)))
 
 (defun ekp-word-spacing-pixel (string)
+  "Return the pixel width of an inter-word space for STRING.
+Use the blank glyph of STRING's Latin font; for a monospace font
+that width is the space's own advance."
   ;; font is monospace, use the pixel of blank
   ;; as word spacing pixel
   (if-let ((font-family (ekp-monospace-p string)))
@@ -123,11 +130,15 @@ Returns nil (unknown) when font information is unavailable."
         " " 'face `(:family ,font-family))))))
 
 (defun ekp-latin-font (string)
+  "Return the font family used for STRING's Latin letters.
+Fall back to the default face family when STRING has no Latin letter."
   (if-let ((letter (ekp-get-latin-letter string)))
       (ekp-font-family letter)
     (face-attribute 'default :family)))
 
 (defun ekp-cjk-font (string)
+  "Return the font family used for STRING's CJK characters.
+Fall back to the family of a sample CJK glyph when STRING has none."
   (if-let ((letter (ekp-get-cjk-letter string)))
       (ekp-font-family letter)
     (ekp-font-family "牛")))
@@ -139,7 +150,7 @@ Returns nil (unknown) when font information is unavailable."
     (propertize " " 'display `(space :width (,pixel)))))
 
 (defun ekp-cjk-fw-punct-p (str)
-  "Return non-nil if STR starts with a CJK full-width punctuation char.
+  "Return non-nil if STR begins with a CJK full-width punctuation char.
 Full-width alphanumerics (ＡＢＣ, １２３) are NOT punctuation."
   (let ((char (seq-first str)))
     (and
@@ -161,11 +172,11 @@ When STR is held as cjk-char, this checks if it still needs attachment."
           '(Ps Pi))))
 
 (defun ekp--flush-latin-word (word boxes)
-  "Push latin WORD to BOXES if non-nil. Return updated boxes."
+  "Push latin WORD to BOXES if non-nil.  Return updated boxes."
   (if word (cons word boxes) boxes))
 
 (defun ekp--flush-cjk-char (char boxes)
-  "Push CJK CHAR to BOXES if non-nil. Return updated boxes."
+  "Push CJK CHAR to BOXES if non-nil.  Return updated boxes."
   (if char (cons char boxes) boxes))
 
 (defun ekp--flush-spaces (spaces boxes prev-state next-width)
@@ -214,8 +225,9 @@ invisible break points."
       (and (>= char #xFE00) (<= char #xFE0F))))
 
 (defun ekp--handle-latin-char (str state latin-word cjk-char boxes)
-  "Handle a latin (width=1) character.
-Return (new-state new-latin-word new-cjk-char new-boxes)."
+  "Handle a latin (width=1) character STR.
+STATE is the current mode; LATIN-WORD, CJK-CHAR and BOXES are the
+accumulators.  Return (new-state new-latin-word new-cjk-char new-boxes)."
   (if (= state 1)
       ;; Already in latin mode: accumulate
       (list 1 (concat latin-word str) nil boxes)
@@ -223,12 +235,13 @@ Return (new-state new-latin-word new-cjk-char new-boxes)."
     (list 1 str nil (ekp--flush-cjk-char cjk-char boxes))))
 
 (defun ekp--handle-cjk-char (str state latin-word cjk-char boxes)
-  "Handle a CJK (width=2) character.
-Return (new-state new-latin-word new-cjk-char new-boxes).
+  "Handle a CJK (width=2) character STR.
+STATE is the current mode; LATIN-WORD, CJK-CHAR and BOXES are the
+accumulators.  Return (new-state new-latin-word new-cjk-char new-boxes).
 
 Every CJK character — punctuation included — becomes its own box.
 Kinsoku is enforced by the DP through per-gap break permissions
-(`ekp-para-breaks-allowed'), not by merging boxes."
+\(`ekp-para-breaks-allowed'), not by merging boxes."
   (if (= state 1)
       ;; Was in latin mode: flush latin word, hold current CJK char
       (list 2 nil str (ekp--flush-latin-word latin-word boxes))
@@ -305,9 +318,10 @@ by merging boxes."
 (defun ekp-start-process-with-callback
     (process-name command-args callback
                   &optional output-buffer)
-  "Run COMMAND-ARGS asynchronously; call CALLBACK on success.
-CALLBACK receives (PROCESS BUFFER).  The output buffer is killed
-after CALLBACK returns."
+  "Run COMMAND-ARGS as process PROCESS-NAME; call CALLBACK on success.
+CALLBACK receives (PROCESS BUFFER).  OUTPUT-BUFFER names the output
+buffer (a generated name by default); it is killed after CALLBACK
+returns."
   (let* ((buffer-name (generate-new-buffer-name
                        (or output-buffer "*EKP Process Output*")))
          (process (apply #'start-process process-name

@@ -56,7 +56,7 @@ by the display engine due to rounding."
   :type 'natnum)
 
 (defcustom ekp-auto-justify-resize-delay 0.15
-  "Seconds to debounce window-resize re-flows in `ekp-auto-justify-mode'."
+  "Seconds to debounce window resize re-flows in `ekp-auto-justify-mode'."
   :type 'number)
 
 (defcustom ekp-auto-justify-edit-delay 0.3
@@ -65,7 +65,7 @@ by the display engine due to rounding."
 
 (defcustom ekp-auto-justify-lazy-threshold 20000
   "Buffer size (characters) beyond which re-flows go visible-first.
-Below it a window-width change re-justifies the whole buffer at
+Below it a window width change re-justifies the whole buffer at
 once; above it the visible portion is done synchronously and the
 rest follows in idle background chunks."
   :type 'natnum)
@@ -229,7 +229,7 @@ property, matching `ekp-region-skip-faces', or accepted by
 (defun ekp-region--justify-string (text pixel)
   "Return TEXT justified to PIXEL with exact-recovery markers.
 Hard newlines are preserved one-to-one.  Whitespace-only paragraphs
-(which the string API would empty out) survive as hidden text;
+\(which the string API would empty out) survive as hidden text;
 verbatim paragraphs (see `ekp-region--skip-para-p') pass through
 untouched."
   (let* ((paras (split-string text "\n"))
@@ -240,7 +240,7 @@ untouched."
                    (ekp-region--split-hard
                     (ekp-pixel-justify (string-join cores "\n") pixel)))))
     (unless (= (length out) (length cores))
-      (error "ekp-region: paragraph count mismatch (%d vs %d)"
+      (error "Paragraph count mismatch (%d vs %d)"
              (length out) (length cores)))
     (string-join
      (cl-loop for p in paras for s in skips
@@ -515,7 +515,7 @@ prefix argument supplies it explicitly."
 
 ;;;###autoload
 (defun ekp-no-break-region (beg end)
-  "Mark the region as an unbreakable typesetting atom.
+  "Mark the region from BEG to END as an unbreakable typesetting atom.
 Justification treats it as one rigid unit: no line break inside, no
 hyphenation, spacing stays literal (inline code, product names,
 numbers with units)."
@@ -524,13 +524,13 @@ numbers with units)."
 
 ;;;###autoload
 (defun ekp-allow-break-region (beg end)
-  "Remove `ekp-no-break' marking from the region."
+  "Remove `ekp-no-break' marking between BEG and END."
   (interactive "r")
   (remove-text-properties beg end '(ekp-no-break nil)))
 
 ;;;###autoload
 (defun ekp-verbatim-region (beg end)
-  "Protect the region's paragraphs from justification (code blocks).
+  "Protect the paragraphs from BEG to END against justification (code blocks).
 Whole paragraphs carrying the `ekp-verbatim' property pass through
 `ekp-justify-region' and `ekp-auto-justify-mode' untouched.  For an
 unbreakable span inside prose, use `ekp-no-break-region' instead."
@@ -539,7 +539,7 @@ unbreakable span inside prose, use `ekp-no-break-region' instead."
 
 ;;;###autoload
 (defun ekp-clear-verbatim-region (beg end)
-  "Remove `ekp-verbatim' protection from the region."
+  "Remove `ekp-verbatim' protection between BEG and END."
   (interactive "r")
   (remove-text-properties beg end '(ekp-verbatim nil)))
 
