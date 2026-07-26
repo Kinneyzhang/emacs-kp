@@ -1,137 +1,253 @@
 # Developer Documentation for Emacs-KP
 
-This document details the internal architecture, API, and algorithms of `emacs-kp`. It is intended for contributors and advanced users who want to understand how the package works or extend it.
+This document describes the internal architecture, algorithms and APIs of
+`emacs-kp`, as implemented.  It is intended for contributors and advanced
+users.
 
-## 1. Architecture Overview
+## 1. Pipeline Overview
 
-`emacs-kp` follows a layered architecture to separate text processing, layout computation, and rendering.
+A justification call flows through five stages:
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                      User API Layer (ekp.el)                    │
-│  ekp-pixel-justify  ekp-pixel-range-justify  ekp-clear-caches   │
-└─────────────────────────────────────────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Caching Layer (ekp-utils.el)                 │
-│  ekp--get-para (paragraph cache)  ekp-dp-cache (DP result cache)│
-└─────────────────────────────────────────────────────────────────┘
-                               │
-               ┌───────────────┴───────────────┐
-               ▼                               ▼
-┌─────────────────────────┐     ┌─────────────────────────┐
-│   Pure Elisp Path       │     │   C Module Path         │
-│   ekp--dp-cache-elisp   │     │   ekp--dp-cache-via-c   │
-│   (O(n²) DP in Elisp)   │     │   (calls C for DP)      │
-└─────────────────────────┘     └─────────────────────────┘
-                                               │
-                                               ▼
-                                 ┌─────────────────────────┐
-                                 │   C Dynamic Module      │
-                                 │   ekp_break_with_prefixes│
-                                 │   (8-thread parallel)   │
-                                 └─────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                    Rendering Layer                               │
-│  ekp--render-justified (apply breaks, insert glue pixels)       │
-└─────────────────────────────────────────────────────────────────┘
+ string
+   │
+   ▼
+ ① Tokenize          ekp-split-to-boxes           (ekp-utils.el)
+   │                 Latin words / CJK chars / space runs → boxes,
+   │                 kinsoku attachment of CJK punctuation
+   ▼
+ ② Hyphenate         ekp--split-with-hyphen        (ekp.el + ekp-hyphen.el)
+   │                 Latin word boxes → syllable boxes (Liang patterns)
+   ▼
+ ③ Measure & index   ekp--make-para                (ekp.el)
+   │                 pixel widths, glue types, prefix-sum arrays
+   │                 → cached `ekp-para` struct
+   ▼
+ ④ Break (DP)        ekp--dp-run-1d / C module     (ekp.el / ekp_c/)
+   │                 Knuth-Plass dynamic program → break positions
+   ▼
+ ⑤ Render            ekp-line-glues, ekp--pixel-justify
+                     distribute glue pixels, strip edge space boxes,
+                     attach hyphens → lines joined with "\n"
 ```
 
-## 2. Elisp Core (ekp.el)
+`ekp-pixel-justify` splits its input on `"\n"` and runs each non-blank
+segment through this pipeline as an independent paragraph (in parallel
+via the C batch API when available).
 
-### Data Structures
+## 2. Data Structures
 
-#### `ekp-para` Struct
+### `ekp-para` (the paragraph cache entry)
 
-The central data structure is `ekp-para`, which represents a preprocessed paragraph. It is cached to avoid re-tokenizing and re-measuring text.
+Everything the DP and renderer need, computed once per paragraph:
 
-```elisp
-(cl-defstruct ekp-para
-  string           ; Original text with properties
-  latin-font       ; Detected Latin font
-  cjk-font         ; Detected CJK font
-  boxes            ; Vector of box strings
-  boxes-widths     ; Vector of box pixel widths
-  boxes-types      ; Vector of (start-type . end-type)
-  glues-types      ; Vector of glue type symbols (lws, mws, cws, nws)
-  hyphen-pixel     ; Width of hyphen character
-  hyphen-positions ; Vector of hyphenable box indices
-  ideal-prefixs    ; Prefix sum: ideal widths (for O(1) width calc)
-  min-prefixs      ; Prefix sum: minimum widths
-  max-prefixs      ; Prefix sum: maximum widths
-  dp-cache)        ; Hash table: line-pixel → DP result
+| Field | Contents |
+|:------|:---------|
+| `string`, `latin-font`, `cjk-font` | source text and detected fonts |
+| `boxes` | vector of box strings |
+| `boxes-widths` | pixel width per box (measured with deduplication) |
+| `boxes-types` | `(START-TYPE . END-TYPE)` per box: `latin`/`cjk`/`cjk-punct`/`space` |
+| `glues-types` | glue class *before* each box: `lws`/`mws`/`cws`/`nws` |
+| `hyphen-pixel`, `hyphen-positions` | hyphen width; sorted vector of box indices after which a hyphen may be inserted |
+| `ideal/min/max-prefixs` | prefix sums of box+glue widths at ideal / max-shrunk / max-stretched (n+1 elements) |
+| `glue-ideals/shrinks/stretches` | leading-glue values per box index (n elements) — also passed verbatim to C |
+| `lws/mws/cws-prefixs` | prefix **counts** of each stretchable glue class → O(1) gap counting per candidate line |
+| `lead-spaces` | `lead-spaces[i]` = width of the space-box run starting at box i; index 0 forced to 0 (first-line indentation is kept) |
+| `trail-spaces` | `trail-spaces[k]` = width of the space-box run ending at box k−1 |
+| `glue-params` | plist snapshot of the nine spacing values at creation time |
+| `dp-cache` | hash: line-width → dp-result plist |
+
+The paragraph cache (`ekp--para-cache`) is keyed with `equal` on a
+structured key — string content, printed text-property intervals,
+detected fonts, the hyphenation language (`ekp-latin-lang`), and
+either the nine explicit spacing values or the symbol `auto`.
+Structured keys make hash collisions harmless (they were possible with
+the previous `sxhash`-integer scheme).  The cache is flushed when it
+exceeds `ekp-para-cache-limit`.  A one-entry fast path
+(`ekp--last-para`, checked by string `eq` + language) covers the many
+same-string lookups inside one justification call.
+
+### dp-result
+
+`(:rests R :gaps G :breaks B :cost C :line-count N)` where `breaks` are
+exclusive end indices per line, `rests[i]` = line-width − line-ideal
+(the pixels the glue must absorb), `gaps[i]` = `(lws-count mws-count
+cws-count)` for glue distribution (nil for single-box and last lines).
+
+## 3. Line Metrics
+
+For a candidate line spanning boxes `[i, k)`:
+
+```
+raw       = prefix[k] − prefix[i] − leading-glue(i)
+space-w   = min(raw, lead-spaces[i] + trail-spaces[k])
+width     = raw − space-w  (+ hyphen-pixel if box k−1 hyphenates)
 ```
 
-#### Glue Types
-- `lws`: Latin Word Space (between Latin words)
-- `mws`: Mixed Word Space (between Latin and CJK)
-- `cws`: CJK Word Space (between CJK chars)
-- `nws`: No Word Space (fixed)
+computed for ideal, min and max in O(1).  Space-box runs at the line
+edges are excluded because the renderer strips them; the DP and the
+renderer therefore agree exactly, and every justified line renders at
+precisely the target width (`ekp-test-justify-line-width-invariant`).
 
-### Core Functions
+## 4. The Knuth-Plass DP
 
-#### `(ekp-pixel-justify STRING LINE-PIXEL)`
-Justifies `STRING` to `LINE-PIXEL` width.
-1. Checks cache for existing `ekp-para`.
-2. If miss, creates `ekp-para` (tokenize, measure, hyphenate).
-3. Calls DP engine (Elisp or C) to get breaks.
-4. Renders result using display properties (specifically `space` display property for glues).
+`ekp--dp-run-1d` relaxes positions left to right.  For each reachable
+start `i` it scans end positions `k` until the line's minimum width
+exceeds the target.  A break at `k` is valid when
+`min ≤ target ≤ max`, or for the last line when `ideal ≤ target`.
 
-#### `(ekp-pixel-range-justify STRING MIN-PIXEL MAX-PIXEL)`
-Finds the "best" width within a range. Uses ternary search (O(log n)) to minimize demerits. Useful for finding the optimal width for a specific paragraph.
+**Demerits** (per line, matching `ekp_c/ekp_kp.c` exactly):
 
-#### `(ekp-param-set ...)`
-Sets the 9 spacing parameters (Ideal/Stretch/Shrink for LWS/MWS/CWS).
+```
+demerits = (line-penalty + badness)²
+         + penalty²                       ; hyphen-penalty at hyphen breaks
+         + adjacent-fitness-penalty       ; if |fitness − prev-fitness| > 1
+         + consecutive-hyphen-penalty × run²
+badness  = min(10000, 100·|adjustment/flexibility|³)
+```
 
-## 3. C Dynamic Module (ekp_c)
+Fitness classes (tight/decent/loose/very-loose) follow the TeX ratio
+thresholds.  Special cases: single-box lines use flexibility 1 and
+fitness decent; the last line pays `(line-penalty + short-badness)²`
+where `short-badness = last-line-short-penalty × (1 − fill)` when the
+fill ratio is below `ekp-last-line-min-ratio`.
 
-For large texts, the C module provides ~20x speedup by parallelizing the O(n²) Dynamic Programming phase.
+Deviations from the 1981 paper, by design: penalties are always added
+as `+p²` (no negative/flagged penalties), there is no `q`/looseness in
+the main pass (see §6), and adjacent-fitness is a flat constant.
 
-### Source Structure
-- `ekp_c/ekp.c`: Emacs module entry point.
-- `ekp_c/ekp_kp.c`: The Knuth-Plass algorithm implementation.
-- `ekp_c/ekp_thread_pool.c`: Worker thread pool.
-- `ekp_c/ekp_hyphen.c`: Liang's hyphenation algorithm.
+### Two-pass emergency strategy
 
-### C API (exposed to Elisp)
+Some inputs admit no valid layout: an unbreakable box wider than the
+line, or a rigid (all-`nws`) region that cannot stretch to the target.
+A strict pass runs first; if the paragraph end is unreachable, a second
+pass additionally allows **emergency breaks** — single-box lines with
+demerits `(line-penalty + 10000)² + rest²`, at least as bad as any
+regular line.  This guarantees, by induction over positions, that every
+input produces output (regression: narrow CJK used to return an empty
+string), while the common case pays nothing and keeps pure K-P
+optimality.  Both engines implement the identical strategy.
 
-#### `(ekp-c-init)`
-Initializes the module and thread pool.
+## 5. Rendering
 
-#### `(ekp-c-break-with-prefixes ...)`
-The low-level DP function. It takes flat arrays (pointers) from Elisp:
-- Prefix sums (ideal, min, max)
-- Glue parameters per box
-- Hyphen positions
-- Target line width
+`ekp-line-glues` turns each line's `rest` into per-glue pixel values:
 
-It returns a list of break indices and total cost.
+- rest > 0 → stretch, distributed latin → mixed → CJK; CJK gaps absorb
+  any leftover beyond nominal capacity (emergency spreading).
+- rest < 0 → shrink, same priority order, never below the per-class
+  shrink limit; glue widths are clamped at ≥ 0.
+- Last lines are ragged-right (ideal glues + trailing filler);
+  single-box lines get a trailing filler clamped at ≥ 0.
 
-### Memory Model
-- **Zero Copy**: Elisp passes pointers to vector data directly to C.
-- **Flat Arrays**: Data is structured as parallel arrays for cache efficiency.
-- **Thread Safety**: The module uses a fixed thread pool. The DP algorithm uses a wavefront pattern for parallelizing the inner loop.
+`ekp--pixel-justify` then strips leading space boxes (except on the
+first line — indentation) and trailing space boxes, and appends a
+hyphen — propertized like the word it breaks — where a line ends at a
+hyphenation point.  Stripped widths are *not* redistributed: the DP
+already excluded them (§3).
 
-## 4. Algorithm Details
+Glues become `(space :width (N))` display properties, so justification
+is pixel-exact in GUI Emacs and column-exact in batch/tty.
 
-### The Knuth-Plass Algorithm
-Based on the 1981 paper "Breaking Paragraphs into Lines".
+## 6. Looseness
 
-**Cost Function (Demerits):**
-`D = (LinePenalty + Badness)² + Penalty²`
+`ekp-looseness` ≠ 0 switches to `ekp--dp-run-loose`, a full
+(position × line-count) DP that keeps the best path *per line count*,
+then picks the final count closest to (optimal + looseness), breaking
+ties by demerits.  This is heavier than the 1D pass and is Elisp-only;
+`ekp--c-available-p` returns nil while looseness is active so both
+engines never disagree.
 
-**Badness:**
-`100 * |Adjustment / Flexibility|³`
+## 7. C Module Integration
 
-### CJK Extensions
-- **Boxes**: Each CJK character is a separate box.
-- **Glues**: Specific glue types for CJK-CJK and CJK-Latin transitions allow fine-tuning spacing (e.g., adding slight breathing room between English and Chinese).
+The C module (`ekp_c/`, version 1.1) runs only stage ④.  Elisp remains
+the source of truth for all font-dependent data.
 
-### Hyphenation
-Uses Frank Liang's algorithm (standard in TeX).
-- Patterns are loaded from `dictionaries/*.dic`.
-- `ekp-hyphen.el` handles this in pure Elisp.
-- C module has its own implementation (`ekp_hyphen.c`) for speed if needed, though currently Elisp handles tokenization.
+- `ekp-c-break-with-arrays` (11 args): the para's prefix arrays, glue
+  arrays, hyphen data, line width and the two space-run arrays.
+  Returns `(breaks . cost)`.
+- `ekp-c-break-batch`: a vector of 11-element vectors, processed in
+  parallel by a pthread pool — one task per paragraph (that is the
+  correct granularity; the DP itself is sequential by nature).
+- `ekp-c-set-penalties` (4–6 args): called by `ekp--c-sync-params`
+  before *every* C entry, so `ekp-line-penalty` & friends always take
+  effect (regression: they were never synced before).
+- `ekp-c-module-load` refuses modules older than
+  `ekp-c-module-required-version` and falls back to Elisp, preventing
+  arity mismatches after upgrades.
+
+Any C failure (NULL result) silently falls back to the Elisp engine.
+The two engines are verified to produce byte-identical output by
+`ekp-test-c-parity-simple` / `ekp-test-c-parity-files`.
+
+`ekp-c-break-lines` (C-side tokenization via `ekp_paragraph.c` and
+`ekp_hyphen.c`) is an experimental, self-contained path that ekp.el
+does not use; see `ekp_c/README.md`.
+
+## 8. Hyphenation (ekp-hyphen.el)
+
+Liang's pattern algorithm, Pyphen-compatible:
+
+- `dictionaries/hyph_*.dic` are compiled to a pattern hash on first
+  use and cached per path.  Files may be UTF-8 or ISO-8859 (Emacs
+  auto-detects; verified by `ekp-test-hyphen-de-iso8859-dict`).
+- `ekp-hyphen-create LANG` resolves exact codes, then progressively
+  shorter prefixes (`"de_CH" → "de"`).
+- Margins default to 2 characters on each side of a break.
+
+Word boxes are matched against
+`^[left-punct]* (latin-word) [right-punct]*$` so that punctuation-
+wrapped words (`(word)`, `word!`, `»word«`) still hyphenate; the
+punctuation stays glued to the first/last syllable box.
+
+## 9. Testing & Benchmarks
+
+```bash
+tests/run-tests.sh [emacs]        # 36 ERT tests, batch-safe
+emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' -l tests/ekp-bench.el
+emacs -Q --batch -L . --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
+      -l tests/ekp-bench.el
+```
+
+Key invariants under test: rendered line width == target (pixel-exact
+justification), no content loss at any width, brute-force cross-checks
+of the O(1) prefix machinery, Elisp/C parity on the bundled texts, and
+parameter persistence/sync regressions.
+
+Benchmark results (batch Emacs 30.2, Apple Silicon M-series,
+`tests/text-zh.txt` ≈ 3.6 KB Chinese + samples; min of 3 cold-cache
+runs) — before is the pre-rewrite implementation, interpreted:
+
+| Case                     | Before (Elisp) | After (Elisp, interpreted) | After (Elisp, compiled) | After (C) |
+|:-------------------------|---------------:|---------------------------:|------------------------:|----------:|
+| justify zh w=200         |        7547 ms |                    1780 ms |                   96 ms |     57 ms |
+| justify zh w=400         |        2928 ms |                     815 ms |                   71 ms |     57 ms |
+| justify mixed w=300      |        5540 ms |                    1275 ms |                   53 ms |     23 ms |
+| range-justify zh 340–380 |       29696 ms |                    8937 ms |                  294 ms |     75 ms |
+| range-justify mix 280–320|       68534 ms |                   14552 ms |                  480 ms |     34 ms |
+| DP only, zh w=400        |        2382 ms |                     591 ms |                   15 ms |    1.3 ms |
+
+("After (C)" columns measured with byte-compiled Elisp around the C
+calls.  For reference, the pre-rewrite C module measured 197 ms /
+430 ms / 25 ms on justify-zh-200 / range-zh / DP-only — the rewrite
+also sped up the C path 3–19× via prebuilt per-para glue arrays, an
+`eq' fast path in the para cache, and O(1) rest/gap reconstruction.)
+
+The dominant wins: O(1) line metrics via prefix arrays (the old inner
+loop allocated O(n) subsequences per candidate, O(n³) total), the
+two-pass emergency strategy (keeps the DP sparse), box-measurement
+deduplication, and per-para glue arrays reused across C calls.
+
+## 10. File Map
+
+```
+ekp.el            Core: para struct, caching, DP (1D + looseness),
+                  glue distribution, rendering, public API
+ekp-utils.el      Tokenizer (boxes, kinsoku), font detection with
+                  batch/tty fallbacks, C module loading
+ekp-hyphen.el     Liang hyphenation + dictionary registry
+ekp_c/            C dynamic module (see ekp_c/README.md)
+dictionaries/     Hunspell hyphenation patterns (from Pyphen)
+tests/            ekp-tests.el (ERT), ekp-bench.el, ekp-demo.el,
+                  sample texts, run-tests.sh
+archive/          Historical prototypes; not loaded, kept for reference
+```

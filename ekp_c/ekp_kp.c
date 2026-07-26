@@ -25,17 +25,22 @@ ekp_state_t *ekp_global = NULL;
 #define FITNESS_LOOSE  2
 #define FITNESS_VERY_LOOSE 3
 
+/* Infinite badness: capped at 10000 like TeX (and the Elisp engine).
+ * NOT EKP_INFINITY: a badness-10000 line is terrible but still usable,
+ * matching ekp--compute-badness in ekp.el exactly. */
+#define EKP_BADNESS_INF 10000.0
+
 /* Badness computation */
 static inline double compute_badness(int32_t adjustment, int32_t flexibility)
 {
     if (adjustment == 0)
         return 0.0;
     if (flexibility <= 0)
-        return EKP_INFINITY;
+        return EKP_BADNESS_INF;
 
     double ratio = (double)adjustment / flexibility;
     double badness = 100.0 * fabs(ratio * ratio * ratio);
-    return badness > 10000.0 ? EKP_INFINITY : badness;
+    return badness > EKP_BADNESS_INF ? EKP_BADNESS_INF : badness;
 }
 
 /* Fitness classification */
@@ -58,7 +63,8 @@ static inline uint8_t compute_fitness(int32_t adjustment, int32_t flexibility)
 static inline double compute_demerits(double badness, int32_t penalty,
                                        uint8_t prev_fitness, uint8_t curr_fitness,
                                        bool end_hyphen, int prev_hyphen_count,
-                                       int line_penalty, int fitness_penalty)
+                                       int line_penalty, int fitness_penalty,
+                                       int consec_hyphen_penalty)
 {
     /* Base: (line_penalty + badness)² */
     double base = (line_penalty + badness);
@@ -75,7 +81,7 @@ static inline double compute_demerits(double badness, int32_t penalty,
     /* Consecutive hyphen penalty (quadratic growth) */
     if (end_hyphen) {
         int count = prev_hyphen_count + 1;
-        base += 100.0 * count * count;
+        base += (double)consec_hyphen_penalty * count * count;
     }
 
     return base;
@@ -121,26 +127,40 @@ typedef struct {
     const int32_t *ideal_prefix;
     const int32_t *min_prefix;
     const int32_t *max_prefix;
-    
+
     /* Glue arrays (nullable) */
     const int32_t *glue_ideals;
     const int32_t *glue_shrinks;
     const int32_t *glue_stretches;
-    
+
     /* Hyphen info */
     const int32_t *hyphen_positions;
     size_t hyphen_count;
     int32_t hyphen_width;
-    
+
+    /* Space-box run widths (nullable, n+1 elements each):
+     * lead_spaces[i]  = width of space-box run starting at box i
+     * trail_spaces[k] = width of space-box run ending at box k-1
+     * These runs are stripped by the renderer, so line metrics
+     * exclude them (matching ekp.el). */
+    const int32_t *lead_spaces;
+    const int32_t *trail_spaces;
+
     /* Dimensions */
     size_t n;  /* box count */
     int32_t line_width;
-    
+
     /* K-P parameters */
     int line_penalty;
     int hyphen_penalty;
     int fitness_penalty;
     double last_line_ratio;
+    int consec_hyphen_penalty;
+    double last_line_short_penalty;
+
+    /* Two-pass strategy: strict K-P first; emergency single-box
+     * breaks only in the second pass (when no valid layout exists). */
+    bool allow_emergency;
 } dp_input_t;
 
 /*
@@ -171,6 +191,33 @@ static inline bool dp_is_hyphen(const dp_input_t *in, size_t pos)
  * Processes position i, trying all end positions k.
  * Updates output arrays when better solutions found.
  */
+/*
+ * Emergency break: record a single-box over/underfull line so that the
+ * DP can never dead-end (every reachable i can always record i+1).
+ * Demerits are at least as bad as the worst regular line, so these are
+ * only chosen when nothing better exists.  Mirrors
+ * ekp--dp-relax-emergency in ekp.el.
+ */
+static inline void dp_relax_emergency(
+    const dp_input_t *in, size_t i, size_t k,
+    double prev_dem, int prev_hyph, int prev_lines,
+    int32_t rest, bool end_hyphen,
+    double *demerits, int32_t *backptrs, int32_t *rest_pixels,
+    uint8_t *fitness, int32_t *hyphen_counts, int32_t *line_counts)
+{
+    double base = in->line_penalty + EKP_BADNESS_INF;
+    double dem = prev_dem + base * base + (double)rest * rest;
+
+    if (dem < demerits[k]) {
+        demerits[k] = dem;
+        backptrs[k] = i;
+        rest_pixels[k] = rest;
+        fitness[k] = FITNESS_VERY_LOOSE;
+        hyphen_counts[k] = end_hyphen ? prev_hyph + 1 : 0;
+        line_counts[k] = prev_lines + 1;
+    }
+}
+
 static void dp_process_position(
     const dp_input_t *in,
     size_t i,
@@ -189,86 +236,86 @@ static void dp_process_position(
 {
     size_t n = in->n;
     int32_t line_width = in->line_width;
-    
+
     /* Get leading glue for line starting at i */
     int32_t lead_ideal = (in->glue_ideals && i < n) ? in->glue_ideals[i] : 0;
     int32_t lead_shrink = (in->glue_shrinks && i < n) ? in->glue_shrinks[i] : 0;
     int32_t lead_stretch = (in->glue_stretches && i < n) ? in->glue_stretches[i] : 0;
-    
+    int32_t lead_space = in->lead_spaces ? in->lead_spaces[i] : 0;
+
     /* Try extending to each position k > i */
     for (size_t k = i + 1; k <= n; k++) {
         bool is_last = (k == n);
+        bool is_single_box = (k == i + 1);
         bool end_hyphen = dp_is_hyphen(in, k - 1);
-        
-        /* Line metrics from i to k (excluding leading glue) */
-        int32_t ideal = in->ideal_prefix[k] - in->ideal_prefix[i] - lead_ideal;
+        int32_t hyph_w = end_hyphen ? in->hyphen_width : 0;
+
+        /* Line metrics from i to k, excluding leading glue and the
+         * space-box runs the renderer strips (leading + trailing). */
+        int32_t raw_ideal = in->ideal_prefix[k] - in->ideal_prefix[i] - lead_ideal;
+        int32_t space_w = lead_space +
+            (in->trail_spaces ? in->trail_spaces[k] : 0);
+        if (space_w > raw_ideal)
+            space_w = raw_ideal;
+
+        int32_t ideal = raw_ideal - space_w + hyph_w;
         int32_t min_w = in->min_prefix[k] - in->min_prefix[i] -
-                       (lead_ideal - lead_shrink);
+                       (lead_ideal - lead_shrink) - space_w + hyph_w;
         int32_t max_w = in->max_prefix[k] - in->max_prefix[i] -
-                       (lead_ideal + lead_stretch);
-        
-        /* Add hyphen width if needed */
-        if (end_hyphen) {
-            ideal += in->hyphen_width;
-            min_w += in->hyphen_width;
-            max_w += in->hyphen_width;
-        }
-        
-        /* Too long? Also handle is_last && ideal > line_width. */
+                       (lead_ideal + lead_stretch) - space_w + hyph_w;
+
+        /* Too long? (last line is never shrunk below its ideal) */
         if (min_w > line_width || (is_last && ideal > line_width)) {
-            /* Force break if nothing else found */
-            if (k > i + 1 && demerits[k - 1] >= EKP_INFINITY) {
-                int32_t prev_ideal = in->ideal_prefix[k - 1] - in->ideal_prefix[i] - lead_ideal;
-                int32_t rest = line_width - prev_ideal;
-                demerits[k - 1] = prev_dem + 10000.0 + (double)rest * rest;
-                backptrs[k - 1] = i;
-                rest_pixels[k - 1] = rest;
-                fitness[k - 1] = FITNESS_VERY_LOOSE;
-                hyphen_counts[k - 1] = 0;
-                line_counts[k - 1] = prev_lines + 1;
-            }
+            if (is_single_box && in->allow_emergency)
+                dp_relax_emergency(in, i, k, prev_dem, prev_hyph, prev_lines,
+                                   line_width - ideal, end_hyphen,
+                                   demerits, backptrs, rest_pixels,
+                                   fitness, hyphen_counts, line_counts);
             break;  /* No point trying longer lines */
         }
-        
+
         /* Valid break? */
         bool valid = (min_w <= line_width && max_w >= line_width) ||
                     (is_last && ideal <= line_width);
-        
-        if (!valid)
+
+        if (!valid) {
+            /* Rigid underfull single box: emergency-record so the
+             * position after it stays reachable (2nd pass only). */
+            if (is_single_box && in->allow_emergency)
+                dp_relax_emergency(in, i, k, prev_dem, prev_hyph, prev_lines,
+                                   line_width - ideal, end_hyphen,
+                                   demerits, backptrs, rest_pixels,
+                                   fitness, hyphen_counts, line_counts);
             continue;
-        
+        }
+
         /* Compute demerits */
         int32_t adjustment = line_width - ideal;
         int32_t flexibility = (adjustment > 0) ?
             (max_w - ideal) : (ideal - min_w);
-        
-        /* Single-box line: use minimum flexibility of 1 */
-        bool is_single_box = (k == i + 1);
-        if (is_single_box && flexibility <= 0)
-            flexibility = 1;
-        
+
         double badness;
         uint8_t fit;
         double dem;
-        
-        /* Single-box line: use fixed flexibility=1, fitness=decent
-         * This must come BEFORE is_last check to match Elisp behavior
-         * where single-box lines use consistent calculation */
+
+        /* Single-box line: use fixed flexibility=1, fitness=decent.
+         * This must come BEFORE is_last check to match Elisp behavior. */
         if (is_single_box) {
             badness = compute_badness(adjustment, 1);
             fit = FITNESS_DECENT;
-            
+
             int penalty = end_hyphen ? in->hyphen_penalty : 0;
             dem = prev_dem + compute_demerits(badness, penalty,
                                               prev_fit, fit,
                                               end_hyphen, prev_hyph,
                                               in->line_penalty,
-                                              in->fitness_penalty);
+                                              in->fitness_penalty,
+                                              in->consec_hyphen_penalty);
         } else if (is_last) {
             /* Last line: minimal penalty if reasonably filled */
             double fill_ratio = (double)ideal / line_width;
             if (fill_ratio < in->last_line_ratio) {
-                badness = 50.0 * (1.0 - fill_ratio);
+                badness = in->last_line_short_penalty * (1.0 - fill_ratio);
             } else {
                 badness = 0.0;
             }
@@ -278,15 +325,16 @@ static void dp_process_position(
         } else {
             badness = compute_badness(adjustment, flexibility);
             fit = compute_fitness(adjustment, flexibility);
-            
+
             int penalty = end_hyphen ? in->hyphen_penalty : 0;
             dem = prev_dem + compute_demerits(badness, penalty,
                                               prev_fit, fit,
                                               end_hyphen, prev_hyph,
                                               in->line_penalty,
-                                              in->fitness_penalty);
+                                              in->fitness_penalty,
+                                              in->consec_hyphen_penalty);
         }
-        
+
         /* Update if better */
         if (dem < demerits[k]) {
             demerits[k] = dem;
@@ -336,12 +384,19 @@ static void process_dp_range(void *arg)
         .hyphen_positions = p->hyphen_positions,
         .hyphen_count = p->hyphen_count,
         .hyphen_width = p->hyphen_width,
+        .lead_spaces = NULL,
+        .trail_spaces = NULL,
         .n = n,
         .line_width = work->line_width,
         .line_penalty = work->line_penalty,
         .hyphen_penalty = work->hyphen_penalty,
         .fitness_penalty = work->fitness_penalty,
-        .last_line_ratio = work->last_line_ratio
+        .last_line_ratio = work->last_line_ratio,
+        .consec_hyphen_penalty =
+            ekp_global ? ekp_global->consec_hyphen_penalty : 100,
+        .last_line_short_penalty =
+            ekp_global ? ekp_global->last_line_short_penalty : 50.0,
+        .allow_emergency = true
     };
     
     /* Process each position in range */
@@ -545,7 +600,9 @@ ekp_result_t *ekp_break_with_prefixes(
     const int32_t *hyphen_positions,
     size_t hyphen_count,
     int32_t hyphen_width,
-    int32_t line_width)
+    int32_t line_width,
+    const int32_t *lead_spaces,
+    const int32_t *trail_spaces)
 {
     if (!ideal_prefix || !min_prefix || !max_prefix || n == 0 || line_width <= 0)
         return NULL;
@@ -580,6 +637,8 @@ ekp_result_t *ekp_break_with_prefixes(
     int hp = ekp_global ? ekp_global->hyphen_penalty : 50;
     int fp = ekp_global ? ekp_global->fitness_penalty : 100;
     double last_ratio = ekp_global ? ekp_global->last_line_ratio : 0.5;
+    int chp = ekp_global ? ekp_global->consec_hyphen_penalty : 100;
+    double llsp = ekp_global ? ekp_global->last_line_short_penalty : 50.0;
 
     /* Create unified input structure */
     dp_input_t in = {
@@ -592,33 +651,58 @@ ekp_result_t *ekp_break_with_prefixes(
         .hyphen_positions = hyphen_positions,
         .hyphen_count = hyphen_count,
         .hyphen_width = hyphen_width,
+        .lead_spaces = lead_spaces,
+        .trail_spaces = trail_spaces,
         .n = n,
         .line_width = line_width,
         .line_penalty = lp,
         .hyphen_penalty = hp,
         .fitness_penalty = fp,
-        .last_line_ratio = last_ratio
+        .last_line_ratio = last_ratio,
+        .consec_hyphen_penalty = chp,
+        .last_line_short_penalty = llsp,
+        .allow_emergency = false
     };
 
-    /* DP: for each valid start, try all ends */
-    for (size_t i = 0; i < n; i++) {
-        if (demerits[i] >= EKP_INFINITY)
-            continue;
-        
-        dp_process_position(&in, i,
-                           demerits[i],
-                           fitness[i],
-                           hyph_counts[i],
-                           line_counts[i],
-                           demerits,
-                           backptrs,
-                           rest_pixels,
-                           fitness,
-                           hyph_counts,
-                           line_counts);
+    /* Two passes: strict Knuth-Plass first; if the paragraph end is
+     * unreachable, rerun permitting emergency single-box breaks.
+     * Mirrors ekp--dp-cache-elisp. */
+    for (int pass = 0; pass < 2; pass++) {
+        in.allow_emergency = (pass == 1);
+
+        for (size_t i = 0; i <= n; i++) {
+            demerits[i] = EKP_INFINITY;
+            backptrs[i] = -1;
+            rest_pixels[i] = 0;
+            fitness[i] = FITNESS_DECENT;
+            hyph_counts[i] = 0;
+            line_counts[i] = 0;
+        }
+        demerits[0] = 0.0;
+
+        /* DP: for each valid start, try all ends */
+        for (size_t i = 0; i < n; i++) {
+            if (demerits[i] >= EKP_INFINITY)
+                continue;
+
+            dp_process_position(&in, i,
+                               demerits[i],
+                               fitness[i],
+                               hyph_counts[i],
+                               line_counts[i],
+                               demerits,
+                               backptrs,
+                               rest_pixels,
+                               fitness,
+                               hyph_counts,
+                               line_counts);
+        }
+
+        if (demerits[n] < EKP_INFINITY)
+            break;
     }
 
-    /* If no valid path found to end, return NULL to fallback to Elisp */
+    /* Unreachable even with emergency breaks: cannot happen, but be safe */
     if (demerits[n] >= EKP_INFINITY) {
         free(demerits); free(backptrs); free(rest_pixels);
         free(fitness); free(hyph_counts); free(line_counts);
@@ -686,7 +770,8 @@ static void batch_worker(void *arg)
         in->glue_ideals, in->glue_shrinks, in->glue_stretches,
         in->n,
         in->hyphen_positions, in->hyphen_count,
-        in->hyphen_width, in->line_width);
+        in->hyphen_width, in->line_width,
+        in->lead_spaces, in->trail_spaces);
 }
 
 /*
@@ -713,7 +798,8 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
                 in->glue_ideals, in->glue_shrinks, in->glue_stretches,
                 in->n,
                 in->hyphen_positions, in->hyphen_count,
-                in->hyphen_width, in->line_width);
+                in->hyphen_width, in->line_width,
+                in->lead_spaces, in->trail_spaces);
         }
         return results;
     }
@@ -729,7 +815,8 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
                 in->glue_ideals, in->glue_shrinks, in->glue_stretches,
                 in->n,
                 in->hyphen_positions, in->hyphen_count,
-                in->hyphen_width, in->line_width);
+                in->hyphen_width, in->line_width,
+                in->lead_spaces, in->trail_spaces);
         }
         return results;
     }
@@ -781,6 +868,8 @@ int ekp_init(void)
     ekp_global->hyphen_penalty = 50;
     ekp_global->fitness_penalty = 100;
     ekp_global->last_line_ratio = 0.5;
+    ekp_global->consec_hyphen_penalty = 100;
+    ekp_global->last_line_short_penalty = 50.0;
 
     /* Create thread pool */
     ekp_global->pool = ekp_pool_create(EKP_THREAD_POOL_SIZE);

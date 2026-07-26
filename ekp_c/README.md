@@ -1,6 +1,11 @@
 # EKP C Dynamic Module
 
-High-performance C implementation of the Knuth-Plass line breaking algorithm with multi-threaded parallel computation.
+C implementation of the Knuth-Plass DP for emacs-kp (module version 1.1).
+
+The division of labor: **Elisp owns all font-dependent data**
+(tokenization, pixel measurement, glue values, prefix sums); the C
+module runs only the O(n²) dynamic program.  This keeps the two engines
+byte-identical in output while making the hot loop native.
 
 ## Architecture
 
@@ -8,112 +13,94 @@ High-performance C implementation of the Knuth-Plass line breaking algorithm wit
 ekp_c/
 ├── ekp_module.h      # Core data structures and API declarations
 ├── ekp.c             # Emacs module entry point (emacs_module_init)
-├── ekp_kp.c          # Knuth-Plass DP algorithm + global state
-├── ekp_hyphen.c      # Liang hyphenation with thread-safe caching
-├── ekp_paragraph.c   # Text tokenization and box/glue construction
-├── ekp_thread_pool.c # Work-stealing thread pool
-└── Makefile          # Build system
+├── ekp_kp.c          # Knuth-Plass DP + two-pass emergency strategy
+├── ekp_thread_pool.c # Thread pool (parallelism across paragraphs)
+├── ekp_hyphen.c      # Liang hyphenation (experimental path only)
+├── ekp_paragraph.c   # C-side tokenization (experimental path only)
+└── Makefile
 ```
+
+Parallelism model: the DP for one paragraph is sequential (each
+position depends on all earlier ones), so the thread pool parallelizes
+across **paragraphs** via `ekp-c-break-batch` — the correct granularity,
+with zero synchronization in the inner loop.
 
 ## Building
 
 ```bash
 cd ekp_c
-make
+make            # → ekp.dylib (macOS) / ekp.so (Linux) / ekp.dll (Windows)
 ```
 
-Requirements:
-- C11 compiler (clang, gcc)
-- Emacs with dynamic module support (27.1+)
-- pthread library
-
-### Build Options
+Requirements: C11 compiler, Emacs 27.1+ headers, pthreads.
 
 ```bash
 make DEBUG=1    # Debug build with sanitizers
-make clean      # Remove build artifacts
-make info       # Show build configuration
-make test       # Run basic tests in Emacs
+make clean
+make info
 ```
 
-## Performance Optimizations
-
-### 1. Multi-threaded Processing
-- 8-thread pool for parallel DP candidate evaluation
-- Wavefront parallelization for large paragraphs (>100 boxes)
-- Lock-free work queue with condition variables
-
-### 2. O(1) Range Queries
-- Prefix sum arrays for ideal/min/max line widths
-- Eliminates repeated summation in inner DP loop
-
-### 3. Fast Hyphenation
-- FNV-1a hash for O(1) pattern lookup
-- Thread-safe LRU cache (4096 entries)
-- Read-write locks for concurrent access
-
-### 4. Memory Layout
-- Flat, cache-friendly data structures
-- Parallel arrays for boxes, glues, widths
-- Minimal allocations in hot paths
-
-## API
-
-### Initialization
+## API (as used by ekp.el)
 
 ```elisp
-(ekp-c-init)           ; Initialize module with thread pool
-(ekp-c-cleanup)        ; Release all resources
-(ekp-c-version)        ; => "1.0"
-(ekp-c-thread-count)   ; => 8
+(ekp-c-init)             ; init global state + thread pool
+(ekp-c-version)          ; => "1.1" — checked by ekp-c-module-load
+(ekp-c-thread-count)     ; => 8
+(ekp-c-cleanup)
+
+;; Synced automatically by ekp.el before every call:
+(ekp-c-set-penalties LINE HYPHEN FITNESS LAST-RATIO
+                     &optional CONSEC-HYPHEN LAST-SHORT)
+
+;; Single paragraph (11 args):
+(ekp-c-break-with-arrays IDEAL-PREFIX MIN-PREFIX MAX-PREFIX
+                         GLUE-IDEALS GLUE-SHRINKS GLUE-STRETCHES
+                         HYPHEN-POS HYPHEN-WIDTH LINE-WIDTH
+                         LEAD-SPACES TRAIL-SPACES)
+;; => (BREAKS . TOTAL-COST)
+
+;; Many paragraphs in parallel: vector of 11-element vectors
+(ekp-c-break-batch PARAGRAPHS)   ; => vector of (BREAKS . COST)
 ```
 
-### Hyphenation
+`LEAD-SPACES` / `TRAIL-SPACES` are the space-box run widths that the
+Elisp renderer strips from line edges; the DP excludes them from line
+metrics so both layers agree exactly (new in 1.1).
+
+The DP uses the same two-pass strategy as the Elisp engine: a strict
+Knuth-Plass pass, then — only when the paragraph end is unreachable —
+a second pass permitting emergency single-box breaks, so overlong
+unbreakable tokens can never make the result empty.  Badness saturates
+at 10000 exactly like the Elisp side.
+
+### Experimental: self-contained C path
+
+`ekp-c-break-lines` tokenizes and hyphenates in C
+(`ekp_paragraph.c`, `ekp_hyphen.c`) with a measurement callback into
+Emacs.  ekp.el does **not** use this path; its tokenizer is a
+simplified approximation of `ekp-split-to-boxes`.  Kept for
+experimentation.
 
 ```elisp
-(ekp-c-load-hyphenator "/path/to/hyph_en_US.dic")  ; => 0 (index)
-(ekp-c-hyphenate 0 "hyphenation")                  ; => (2 5 7)
+(ekp-c-load-hyphenator "/path/to/hyph_en_US.dic")   ; => index
+(ekp-c-hyphenate 0 "hyphenation")                   ; => (2 5)
+(ekp-c-break-lines "text..." 0 600 #'string-pixel-width)
 ```
 
-### Line Breaking
+## Performance
 
-```elisp
-(ekp-c-break-lines
-  "Your paragraph text here"
-  0                                    ; hyphenator index
-  600                                  ; line width in pixels
-  #'string-pixel-width)                ; measurement function
+Measured with `tests/ekp-bench.el` (batch Emacs 30.2, Apple Silicon,
+byte-compiled Elisp around the C calls, min of 3 cold-cache runs):
 
-;; Returns: ((breaks...) . total-cost)
-```
+| Case                        | Elisp engine (compiled) | C engine |
+|:----------------------------|------------------------:|---------:|
+| justify text-zh.txt w=200   |                   96 ms |    57 ms |
+| justify mixed text w=300    |                   53 ms |    23 ms |
+| range-justify zh 340–380    |                  294 ms |    75 ms |
+| range-justify mix 280–320   |                  480 ms |    34 ms |
+| DP only, text-zh w=400      |                   15 ms |   1.3 ms |
 
-### Parameters
-
-```elisp
-;; Spacing: (lws-i lws+ lws- mws-i mws+ mws- cws-i cws+ cws-)
-(ekp-c-set-spacing 7 3 2 5 2 1 0 2 0)
-
-;; Penalties: (line-penalty hyphen-penalty fitness-penalty last-line-ratio)
-(ekp-c-set-penalties 10 50 100 0.5)
-```
-
-## Design Notes
-
-Following Linus's philosophy:
-
-1. **Data structures are the code** - Get box/glue layout right, algorithm follows naturally
-2. **Simple thread model** - Fixed pool, no dynamic thread creation in hot path
-3. **Minimal abstraction** - Direct array access, no virtual dispatch
-4. **Fail fast** - Return NULL/nil on errors, let Emacs handle it
-
-## Benchmark
-
-Typical speedup vs pure Elisp implementation:
-
-| Paragraph Size | Elisp | C Module | Speedup |
-|----------------|-------|----------|---------|
-| 100 chars      | 5ms   | 0.3ms    | 16x     |
-| 500 chars      | 45ms  | 2ms      | 22x     |
-| 2000 chars     | 350ms | 12ms     | 29x     |
-
-*Note: Actual performance depends on CPU, Emacs version, and text characteristics.*
+The pure-DP speedup is ~12× (1.3 ms vs 15 ms); end-to-end gains are
+smaller because tokenization, measurement and rendering stay in Elisp.
+The C engine matters most for `range-justify` (many widths per text)
+and multi-paragraph batches.

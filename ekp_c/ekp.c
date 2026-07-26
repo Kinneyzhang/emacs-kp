@@ -148,6 +148,10 @@ static emacs_value Fekp_c_set_penalties(emacs_env *env, ptrdiff_t nargs,
     ekp_global->hyphen_penalty = env->extract_integer(env, args[1]);
     ekp_global->fitness_penalty = env->extract_integer(env, args[2]);
     ekp_global->last_line_ratio = env->extract_float(env, args[3]);
+    if (nargs > 4)
+        ekp_global->consec_hyphen_penalty = env->extract_integer(env, args[4]);
+    if (nargs > 5)
+        ekp_global->last_line_short_penalty = env->extract_float(env, args[5]);
 
     return env->intern(env, "t");
 }
@@ -319,7 +323,7 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
 {
     (void)data;
 
-    if (!ekp_global || nargs < 9)
+    if (!ekp_global || nargs < 11)
         return env->intern(env, "nil");
 
     /* Get prefix array sizes (n+1 elements) */
@@ -336,11 +340,15 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
     int32_t *glue_ideals = malloc(n * sizeof(int32_t));
     int32_t *glue_shrinks = malloc(n * sizeof(int32_t));
     int32_t *glue_stretches = malloc(n * sizeof(int32_t));
+    int32_t *lead_spaces = malloc(prefix_len * sizeof(int32_t));
+    int32_t *trail_spaces = malloc(prefix_len * sizeof(int32_t));
 
     if (!ideal_prefix || !min_prefix || !max_prefix ||
-        !glue_ideals || !glue_shrinks || !glue_stretches) {
+        !glue_ideals || !glue_shrinks || !glue_stretches ||
+        !lead_spaces || !trail_spaces) {
         free(ideal_prefix); free(min_prefix); free(max_prefix);
         free(glue_ideals); free(glue_shrinks); free(glue_stretches);
+        free(lead_spaces); free(trail_spaces);
         return env->intern(env, "nil");
     }
 
@@ -349,6 +357,8 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
         ideal_prefix[i] = env->extract_integer(env, env->vec_get(env, args[0], i));
         min_prefix[i] = env->extract_integer(env, env->vec_get(env, args[1], i));
         max_prefix[i] = env->extract_integer(env, env->vec_get(env, args[2], i));
+        lead_spaces[i] = env->extract_integer(env, env->vec_get(env, args[9], i));
+        trail_spaces[i] = env->extract_integer(env, env->vec_get(env, args[10], i));
     }
 
     /* Extract glue arrays */
@@ -379,10 +389,12 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
         glue_ideals, glue_shrinks, glue_stretches,
         n,
         hyph_pos, hyph_count > 0 ? (size_t)hyph_count : 0,
-        hyph_width, line_width);
+        hyph_width, line_width,
+        lead_spaces, trail_spaces);
 
     free(ideal_prefix); free(min_prefix); free(max_prefix);
     free(glue_ideals); free(glue_shrinks); free(glue_stretches);
+    free(lead_spaces); free(trail_spaces);
     free(hyph_pos);
 
     if (!result)
@@ -415,7 +427,8 @@ static bool extract_paragraph_data(
     int32_t **ideal_prefix, int32_t **min_prefix, int32_t **max_prefix,
     int32_t **glue_ideals, int32_t **glue_shrinks, int32_t **glue_stretches,
     int32_t **hyph_pos, size_t *n, ptrdiff_t *hyph_count,
-    int32_t *hyph_width, int32_t *line_width)
+    int32_t *hyph_width, int32_t *line_width,
+    int32_t **lead_spaces, int32_t **trail_spaces)
 {
     ptrdiff_t prefix_len = env->vec_size(env, args[0]);
     if (prefix_len <= 1)
@@ -429,11 +442,15 @@ static bool extract_paragraph_data(
     *glue_ideals = malloc(*n * sizeof(int32_t));
     *glue_shrinks = malloc(*n * sizeof(int32_t));
     *glue_stretches = malloc(*n * sizeof(int32_t));
+    *lead_spaces = malloc(prefix_len * sizeof(int32_t));
+    *trail_spaces = malloc(prefix_len * sizeof(int32_t));
 
     if (!*ideal_prefix || !*min_prefix || !*max_prefix ||
-        !*glue_ideals || !*glue_shrinks || !*glue_stretches) {
+        !*glue_ideals || !*glue_shrinks || !*glue_stretches ||
+        !*lead_spaces || !*trail_spaces) {
         free(*ideal_prefix); free(*min_prefix); free(*max_prefix);
         free(*glue_ideals); free(*glue_shrinks); free(*glue_stretches);
+        free(*lead_spaces); free(*trail_spaces);
         return false;
     }
 
@@ -441,6 +458,8 @@ static bool extract_paragraph_data(
         (*ideal_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[0], i));
         (*min_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[1], i));
         (*max_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[2], i));
+        (*lead_spaces)[i] = env->extract_integer(env, env->vec_get(env, args[9], i));
+        (*trail_spaces)[i] = env->extract_integer(env, env->vec_get(env, args[10], i));
     }
 
     for (size_t i = 0; i < *n; i++) {
@@ -498,11 +517,15 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
     int32_t **all_glue_sh = calloc(para_count, sizeof(int32_t *));
     int32_t **all_glue_st = calloc(para_count, sizeof(int32_t *));
     int32_t **all_hyph = calloc(para_count, sizeof(int32_t *));
+    int32_t **all_lead = calloc(para_count, sizeof(int32_t *));
+    int32_t **all_trail = calloc(para_count, sizeof(int32_t *));
 
     if (!inputs || !all_ideal || !all_min || !all_max ||
-        !all_glue_i || !all_glue_sh || !all_glue_st || !all_hyph) {
+        !all_glue_i || !all_glue_sh || !all_glue_st || !all_hyph ||
+        !all_lead || !all_trail) {
         free(inputs); free(all_ideal); free(all_min); free(all_max);
         free(all_glue_i); free(all_glue_sh); free(all_glue_st); free(all_hyph);
+        free(all_lead); free(all_trail);
         return env->intern(env, "nil");
     }
 
@@ -510,9 +533,9 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
     for (ptrdiff_t p = 0; p < para_count; p++) {
         emacs_value para_vec = env->vec_get(env, args[0], p);
 
-        /* Extract 9 arguments from this paragraph's vector */
-        emacs_value para_args[9];
-        for (int i = 0; i < 9; i++) {
+        /* Extract 11 arguments from this paragraph's vector */
+        emacs_value para_args[11];
+        for (int i = 0; i < 11; i++) {
             para_args[i] = env->vec_get(env, para_vec, i);
         }
 
@@ -524,15 +547,17 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
                                      &all_ideal[p], &all_min[p], &all_max[p],
                                      &all_glue_i[p], &all_glue_sh[p], &all_glue_st[p],
                                      &all_hyph[p], &n, &hyph_count,
-                                     &hyph_width, &line_width)) {
+                                     &hyph_width, &line_width,
+                                     &all_lead[p], &all_trail[p])) {
             /* Cleanup on failure */
             for (ptrdiff_t j = 0; j < p; j++) {
                 free(all_ideal[j]); free(all_min[j]); free(all_max[j]);
                 free(all_glue_i[j]); free(all_glue_sh[j]); free(all_glue_st[j]);
-                free(all_hyph[j]);
+                free(all_hyph[j]); free(all_lead[j]); free(all_trail[j]);
             }
             free(inputs); free(all_ideal); free(all_min); free(all_max);
             free(all_glue_i); free(all_glue_sh); free(all_glue_st); free(all_hyph);
+            free(all_lead); free(all_trail);
             return env->intern(env, "nil");
         }
 
@@ -547,6 +572,8 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
         inputs[p].hyphen_count = hyph_count > 0 ? (size_t)hyph_count : 0;
         inputs[p].hyphen_width = hyph_width;
         inputs[p].line_width = line_width;
+        inputs[p].lead_spaces = all_lead[p];
+        inputs[p].trail_spaces = all_trail[p];
     }
 
     /* Process all paragraphs in parallel */
@@ -556,10 +583,11 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
     for (ptrdiff_t p = 0; p < para_count; p++) {
         free(all_ideal[p]); free(all_min[p]); free(all_max[p]);
         free(all_glue_i[p]); free(all_glue_sh[p]); free(all_glue_st[p]);
-        free(all_hyph[p]);
+        free(all_hyph[p]); free(all_lead[p]); free(all_trail[p]);
     }
     free(inputs); free(all_ideal); free(all_min); free(all_max);
     free(all_glue_i); free(all_glue_sh); free(all_glue_st); free(all_hyph);
+    free(all_lead); free(all_trail);
 
     if (!results)
         return env->intern(env, "nil");
@@ -646,13 +674,16 @@ Arguments are: LWS-IDEAL LWS-STRETCH LWS-SHRINK\n\
 LWS = Latin Word Space, MWS = Mixed, CWS = CJK.\n\n\
 (fn LWS-I LWS-+ LWS-- MWS-I MWS-+ MWS-- CWS-I CWS-+ CWS--)");
 
-    defun(env, "ekp-c-set-penalties", 4, 4, Fekp_c_set_penalties,
+    defun(env, "ekp-c-set-penalties", 4, 6, Fekp_c_set_penalties,
           "Set Knuth-Plass algorithm penalties.\n\n\
 LINE-PENALTY: base penalty per line break (default 10)\n\
 HYPHEN-PENALTY: penalty for hyphenated breaks (default 50)\n\
 FITNESS-PENALTY: penalty for adjacent line tightness mismatch (default 100)\n\
-LAST-LINE-RATIO: minimum fill ratio for last line (default 0.5)\n\n\
-(fn LINE-PENALTY HYPHEN-PENALTY FITNESS-PENALTY LAST-LINE-RATIO)");
+LAST-LINE-RATIO: minimum fill ratio for last line (default 0.5)\n\
+CONSEC-HYPHEN-PENALTY: multiplier for consecutive hyphen runs (default 100)\n\
+LAST-LINE-SHORT-PENALTY: multiplier for short last lines (default 50.0)\n\n\
+(fn LINE-PENALTY HYPHEN-PENALTY FITNESS-PENALTY LAST-LINE-RATIO \
+&optional CONSEC-HYPHEN-PENALTY LAST-LINE-SHORT-PENALTY)");
 
     defun(env, "ekp-c-hyphenate", 2, 2, Fekp_c_hyphenate,
           "Get hyphenation positions for WORD using HYPHENATOR-INDEX.\n\
@@ -666,7 +697,7 @@ MEASURE-FUNC: function that takes a string and returns pixel width\n\n\
 Returns (BREAKS . TOTAL-COST) where BREAKS is list of break positions.\n\n\
 (fn STRING HYPHENATOR-INDEX LINE-WIDTH MEASURE-FUNC)");
 
-    defun(env, "ekp-c-break-with-arrays", 9, 9, Fekp_c_break_with_arrays,
+    defun(env, "ekp-c-break-with-arrays", 11, 11, Fekp_c_break_with_arrays,
           "Break lines using Elisp's pre-computed prefix arrays (preferred API).\n\n\
 IDEAL-PREFIX: vector of ideal width prefix sums (n+1 elements)\n\
 MIN-PREFIX: vector of min width prefix sums (n+1 elements)\n\
@@ -676,10 +707,13 @@ GLUE-SHRINKS: vector of glue shrink amounts (n elements)\n\
 GLUE-STRETCHES: vector of glue stretch amounts (n elements)\n\
 HYPHEN-POS: vector of hyphenable box indices (sorted)\n\
 HYPHEN-WIDTH: pixel width of hyphen character\n\
-LINE-WIDTH: target line width in pixels\n\n\
+LINE-WIDTH: target line width in pixels\n\
+LEAD-SPACES: vector (n+1) of space-box run widths starting at box i\n\
+TRAIL-SPACES: vector (n+1) of space-box run widths ending at box k-1\n\n\
 Returns (BREAKS . TOTAL-COST) where BREAKS is list of box indices.\n\
 This API ensures C uses Elisp's font-dependent measurements.\n\n\
-(fn IDEAL-PREFIX MIN-PREFIX MAX-PREFIX GLUE-IDEALS GLUE-SHRINKS GLUE-STRETCHES HYPHEN-POS HYPHEN-WIDTH LINE-WIDTH)");
+(fn IDEAL-PREFIX MIN-PREFIX MAX-PREFIX GLUE-IDEALS GLUE-SHRINKS GLUE-STRETCHES \
+HYPHEN-POS HYPHEN-WIDTH LINE-WIDTH LEAD-SPACES TRAIL-SPACES)");
 
     defun(env, "ekp-c-version", 0, 0, Fekp_c_version,
           "Return EKP C module version string.");
@@ -689,9 +723,10 @@ This API ensures C uses Elisp's font-dependent measurements.\n\n\
 
     defun(env, "ekp-c-break-batch", 1, 1, Fekp_c_break_batch,
           "Break multiple paragraphs in parallel.\n\n\
-PARAGRAPHS: vector of paragraph data, each element is a vector of 9 items:\n\
+PARAGRAPHS: vector of paragraph data, each element is a vector of 11 items:\n\
   [ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks\n\
-   glue-stretches hyphen-positions hyphen-width line-width]\n\n\
+   glue-stretches hyphen-positions hyphen-width line-width\n\
+   lead-spaces trail-spaces]\n\n\
 Returns vector of (BREAKS . COST) for each paragraph.\n\
 This is the high-performance API for multi-paragraph processing.\n\n\
 (fn PARAGRAPHS)");

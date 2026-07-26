@@ -16,7 +16,7 @@
 
 /* Version */
 #define EKP_VERSION_MAJOR 1
-#define EKP_VERSION_MINOR 0
+#define EKP_VERSION_MINOR 1
 
 /* Limits */
 #define EKP_MAX_PATTERN_LEN 64
@@ -191,6 +191,8 @@ typedef struct {
     int hyphen_penalty;
     int fitness_penalty;
     double last_line_ratio;
+    int consec_hyphen_penalty;      /* multiplier for consecutive hyphens */
+    double last_line_short_penalty; /* multiplier for short last lines */
 } ekp_state_t;
 
 /* Global state instance */
@@ -231,6 +233,10 @@ void ekp_result_destroy(ekp_result_t *r);
  * hyphen_count: length of hyphen_positions
  * hyphen_width: pixel width of hyphen character
  * line_width: target line width in pixels
+ * lead_spaces: (n+1 elements, nullable) width of the space-box run
+ *              starting at box i; entry 0 must be 0 (indentation kept)
+ * trail_spaces: (n+1 elements, nullable) width of the space-box run
+ *               ending at box k-1
  */
 ekp_result_t *ekp_break_with_prefixes(
     const int32_t *ideal_prefix,
@@ -243,7 +249,9 @@ ekp_result_t *ekp_break_with_prefixes(
     const int32_t *hyphen_positions,
     size_t hyphen_count,
     int32_t hyphen_width,
-    int32_t line_width);
+    int32_t line_width,
+    const int32_t *lead_spaces,
+    const int32_t *trail_spaces);
 
 /*
  * Batch input for parallel processing
@@ -260,6 +268,8 @@ typedef struct {
     size_t hyphen_count;
     int32_t hyphen_width;
     int32_t line_width;
+    const int32_t *lead_spaces;   /* nullable, n+1 elements */
+    const int32_t *trail_spaces;  /* nullable, n+1 elements */
 } ekp_batch_input_t;
 
 /*

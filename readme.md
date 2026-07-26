@@ -2,119 +2,166 @@
 
 [中文文档](./readme_zh.md) | [Developer Guide](./DEVELOPER.md)
 
-Emacs-kp implements the Knuth-Plass optimal line breaking algorithm with full support for CJK (Chinese, Japanese, Korean) and Latin mixed text typesetting.
-
-## Demo
-
+Emacs-kp implements the Knuth-Plass optimal line breaking algorithm with
+full support for CJK (Chinese, Japanese, Korean) and Latin mixed text
+typesetting, entirely inside Emacs.
 
 ## Features
 
-- **Optimal Line Breaking**: Uses Knuth-Plass algorithm for globally optimal paragraph layout.
-- **CJK Support**: Full support for Chinese, Japanese, Korean with mixed Latin text.
-- **Hyphenation**: Frank Liang's algorithm with language-specific dictionaries.
-- **Text Properties Preserved**: Font faces, colors, and other Emacs text properties are maintained.
-- **C Module Acceleration**: Optional multi-threaded C module for 16-29x speedup.
-- **Automatic Font Handling**: Spacing parameters computed from actual font metrics.
+- **Optimal line breaking** — the Knuth-Plass dynamic program finds the
+  globally optimal set of breaks for a paragraph, not greedy first-fit.
+- **CJK support** — every CJK character is a breakable box; kinsoku rules
+  keep punctuation attached (`，。` never start a line, `「《` never end
+  one); dedicated inter-CJK and CJK↔Latin spacing.
+- **Hyphenation** — Frank Liang's algorithm (the TeX algorithm) with 70+
+  Hunspell pattern dictionaries bundled.
+- **Pixel-accurate justification** — every justified line renders at
+  exactly the requested pixel width, using `display (space :width ...)`
+  properties; works with variable-width fonts.
+- **Text properties preserved** — faces, colors and other properties
+  survive justification; inserted hyphens inherit the face of the word
+  they break.
+- **Robust on hard input** — unbreakable overlong tokens (URLs, long
+  words at narrow widths) degrade to emergency breaks instead of losing
+  text; every input produces output.
+- **Optional C module** — a dynamic module runs the DP in C with a
+  thread pool that processes paragraphs in parallel (see benchmarks).
 
----
+## Requirements
 
-## User Guide
+- Emacs **29.1+** (uses `string-pixel-width` and `object-intervals`)
+- Optional, for the C module: a C11 compiler and pthreads
 
-### Quick Start
-
-1. **Install Dependencies**:
-   Ensure you have a C compiler if you plan to use the C module (recommended for performance).
-
-2. **Configuration**:
+## Quick Start
 
 ```elisp
 (add-to-list 'load-path "/path/to/emacs-kp")
 (require 'ekp)
 
-;; Basic usage: justify text to 600 pixels width
-(ekp-pixel-justify "Your paragraph text here..." 600)
+;; Justify a paragraph to 600 pixels
+(insert (ekp-pixel-justify "Your paragraph text here..." 600))
 
-;; Find optimal width in a range (returns (text . optimal-width))
+;; Find the best width in a range; returns (justified-text . width)
 (ekp-pixel-range-justify "Your text" 400 800)
 ```
 
-### Configuration
+Multiline strings are treated as one paragraph per line; blank lines are
+preserved.
 
-#### Language Settings
+### C module (recommended for long texts)
 
-**`ekp-latin-lang`** (default: `"en_US"`)
-
-Primary Latin language for hyphenation. Supported languages are in `dictionaries/` directory:
-- `en_US`, `en_GB` - English
-- `de_DE` - German
-- `fr` - French
-- `es` - Spanish
-- And many more...
-
-```elisp
-(setq ekp-latin-lang "de_DE")
+```bash
+cd ekp_c && make        # requires C11 compiler, produces ekp.dylib/.so/.dll
 ```
 
-#### Spacing Parameters
+```elisp
+(ekp-c-module-load)     ; prints "ekp-c module loaded (version 1.1, N threads)"
+```
 
-Use `ekp-param-set` to configure spacing (in pixels). If not set, defaults are computed automatically from font metrics.
+Once loaded (and since `ekp-use-c-module` defaults to `t`), all
+justification calls automatically use the C engine.  The Elisp and C
+engines produce **identical output**; Elisp is the always-available
+fallback.  If the module on disk is older than the Elisp code expects,
+loading refuses with a message asking you to rebuild.
+
+## Configuration
+
+### Hyphenation language
+
+```elisp
+(setq ekp-latin-lang "de_DE")   ; default "en_US"
+```
+
+Any `dictionaries/hyph_<lang>.dic` works; short codes like `"de"`
+resolve to the first matching dictionary.
+
+### Spacing parameters
+
+Three glue classes control spacing (all values in pixels):
+
+| Group   | Between                    |
+|:--------|:---------------------------|
+| `lws-*` | two Latin words            |
+| `mws-*` | a Latin word and a CJK char|
+| `cws-*` | two CJK characters         |
+
+Each class has an ideal width, a maximum stretch and a maximum shrink:
 
 ```elisp
 (ekp-param-set lws-ideal lws-stretch lws-shrink
                mws-ideal mws-stretch mws-shrink
                cws-ideal cws-stretch cws-shrink)
+;; e.g. (ekp-param-set 7 3 2  5 2 1  0 2 0)
 ```
 
-| Parameter Group | Description |
-|:----------------|:------------|
-| `lws-*` | Latin Word Space: between Latin words |
-| `mws-*` | Mixed Word Space: between Latin and CJK |
-| `cws-*` | CJK Word Space: between CJK characters |
+- If you never call `ekp-param-set`, defaults are derived automatically
+  from the font of each string.
+- Explicit parameters **persist** until you call `ekp-param-reset`,
+  which returns to automatic per-string defaults.
 
-#### K-P Algorithm Parameters
+### Algorithm parameters
 
-| Variable | Default | Description |
-|:---------|:--------|:------------|
-| `ekp-line-penalty` | 10 | Base cost per line break |
-| `ekp-hyphen-penalty` | 50 | Extra cost for hyphenated breaks |
-| `ekp-adjacent-fitness-penalty` | 100 | Cost for inconsistent line tightness |
-| `ekp-last-line-min-ratio` | 0.5 | Minimum fill ratio for last line |
-| `ekp-looseness` | 0 | Target line count offset (±n lines) |
+| Variable                        | Default | Meaning |
+|:--------------------------------|:--------|:--------|
+| `ekp-line-penalty`              | 10      | Base cost per line; higher prefers fewer lines |
+| `ekp-hyphen-penalty`            | 50      | Cost of a hyphenated break (added as penalty²) |
+| `ekp-adjacent-fitness-penalty`  | 100     | Cost when adjacent lines differ in tightness by >1 class |
+| `ekp-consecutive-hyphen-penalty`| 100     | Multiplier for runs of hyphenated lines (× count²) |
+| `ekp-last-line-min-ratio`       | 0.5     | Minimum fill ratio for the last line |
+| `ekp-last-line-short-penalty`   | 50      | Cost multiplier for a too-short last line |
+| `ekp-looseness`                 | 0       | Target line count offset: +1 = one line more than optimal, −1 = one fewer |
 
-### C Dynamic Module (Recommended)
+All parameters take effect with both engines: the Elisp side syncs them
+to the C module before every call.  `ekp-looseness` is handled by a
+dedicated Elisp path (the C module is bypassed automatically while it
+is non-zero).
 
-For large texts, the optional C module provides significant performance improvement through multi-threaded parallel computation.
+### Caching
 
-#### Building
+Tokenization, measurement, and DP results are cached per paragraph.
+
+- `ekp-para-cache-limit` (default 256): max cached paragraphs; the
+  cache is flushed when the limit is reached.
+- `M-x ekp-clear-caches` clears everything (use after changing fonts or
+  themes that affect glyph widths).
+
+## Performance
+
+Measured on the bundled sample texts (`tests/ekp-bench.el`), batch
+Emacs 30.2, Apple Silicon; see DEVELOPER.md for methodology:
+
+| Case (text-zh.txt ≈ 3.6 KB)  | Elisp (byte-compiled) | C module |
+|:-----------------------------|----------------------:|---------:|
+| justify, width 200px         |                 96 ms |    57 ms |
+| optimal-width search 340–380 |                294 ms |    75 ms |
+| DP only, width 400px         |                 15 ms |   1.3 ms |
+
+**Byte-compile the package** — the Elisp engine is ~10× faster
+compiled.  Both engines produce identical output; the C module pays
+off most for optimal-width search and long multi-paragraph texts.
+
+## Known Limitations
+
+- Widths are computed from the string's own text properties. If the
+  destination buffer remaps faces (different `:height`, themes), widths
+  may differ; justify with the same properties you will display.
+- One font is assumed per Latin/CJK script per paragraph when computing
+  spacing defaults; mixed-font paragraphs work but spacing defaults come
+  from the first font found.
+- `ekp-pixel-range-justify` minimizes average demerits with a ternary
+  search plus a local scan; cost is not perfectly unimodal in width, so
+  the result is a very good, but not guaranteed global, optimum.
+- In batch/tty Emacs, pixel widths degrade to character columns (the
+  full pipeline still works; useful for testing).
+
+## Testing
 
 ```bash
-cd ekp_c
-make
+tests/run-tests.sh /path/to/emacs     # 36 ERT tests, all batch-safe
 ```
-*Requirements: C11 compiler, Emacs 27.1+*
-
-#### Loading
-
-```elisp
-(require 'ekp-utils)
-
-;; Load and initialize C module
-(ekp-c-module-load)
-
-;; Optional: Load hyphenation dictionary for C module
-(ekp-c-load-dictionary "en_US")
-```
-
-Once loaded, `ekp-use-c-module` defaults to `t`, and all justification functions will automatically use the C module.
-
----
-
-## Algorithm & Architecture
-
-For a detailed explanation of the internal architecture, algorithms, and API reference, please refer to the **[Developer Guide](./DEVELOPER.md)**.
 
 ## Credits
 
-- **Core Algorithm**: ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf) by Donald E. Knuth and Michael F. Plass (1981)
-- **Hyphenation**: Adapted from [Pyphen](https://github.com/Kozea/Pyphen), using Liang's algorithm
+- **Core algorithm**: ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf) by Donald E. Knuth and Michael F. Plass (1981)
+- **Hyphenation**: Frank Liang's algorithm, adapted from [Pyphen](https://github.com/Kozea/Pyphen)
 - **Dictionaries**: [Hunspell hyphenation patterns](https://github.com/Kozea/Pyphen)

@@ -40,7 +40,7 @@ LEFT/RIGHT: minimum chars before first / after last break."
   "Registry: language code -> dictionary file path.")
 
 (defvar ekp-hyphen--langs-short (make-hash-table :test 'equal)
-  "Fallback: short code (e.g., 'en') -> first matching dict path.")
+  "Fallback: short code (e.g., \"en\") -> first matching dict path.")
 
 ;;; Dictionary Loading
 
@@ -69,9 +69,9 @@ LEFT/RIGHT: minimum chars before first / after last break."
 ;;; Pattern Compilation
 
 (defun ekp-hyphen--parse-pattern (pat)
-  "Parse PAT like 'hy3ph' into (letters offset . values).
+  "Parse PAT like \"hy3ph\" into (letters offset . values).
 Values array has length = letters + 1 (position after last letter).
-E.g., 'a1bc2' -> letters='abc', values=(0 1 0 2)."
+E.g., \"a1bc2\" -> letters=\"abc\", values=(0 1 0 2)."
   (let ((pos 0) (len (length pat)) letters values)
     (while (< pos len)
       ;; Read optional digit (priority before next letter or at end)

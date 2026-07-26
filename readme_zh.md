@@ -2,119 +2,148 @@
 
 [English Documentation](./readme.md) | [开发者指南](./DEVELOPER_ZH.md)
 
-Emacs-kp 实现了 Knuth-Plass 最优断行算法，并扩展支持 CJK（中日韩）与拉丁文混合排版。
-
-## 演示
-
+Emacs-kp 在 Emacs 内部完整实现了 Knuth-Plass 最优断行算法,支持中日韩
+(CJK)与拉丁文混合排版。
 
 ## 特性
 
-- **全局最优断行**：使用 Knuth-Plass 算法寻找段落的全局最优布局。
-- **CJK 支持**：完美支持中日韩与拉丁文的混合排版。
-- **连字符断词**：使用 Frank Liang 算法和特定语言词典。
-- **属性保留**：排版后保留字体、颜色等所有 Emacs 文本属性。
-- **C 模块加速**：可选的多线程 C 模块提供 16-29 倍性能提升。
-- **自动字体处理**：根据实际字体度量自动计算间距参数。
+- **全局最优断行** — Knuth-Plass 动态规划求段落全局最优断点,而非贪心
+  首次适应。
+- **CJK 支持** — 每个 CJK 字符都是可断行的盒子;避头尾规则保证标点正确
+  附着(`,。` 不出现在行首,`「《` 不出现在行尾);汉字间距、中西文间距
+  独立可调。
+- **连字符断词** — Frank Liang 算法(TeX 同款),内置 70+ 种语言的
+  Hunspell 词典。
+- **像素级两端对齐** — 每一行渲染宽度精确等于目标像素宽度(通过
+  `display (space :width ...)` 属性实现),支持变宽字体。
+- **文本属性保留** — face、颜色等属性完整保留;断词插入的连字符继承所
+  在单词的样式。
+- **困难输入不丢内容** — 超长不可断 token(URL、窄栏长词)退化为紧急
+  断行而不是吞掉文本;任何输入都有输出。
+- **可选 C 模块** — 动态模块用 C 执行 DP,线程池并行处理多个段落(见
+  性能数据)。
 
----
+## 环境要求
 
-## 用户指南
+- Emacs **29.1+**(依赖 `string-pixel-width` 与 `object-intervals`)
+- 可选(C 模块):C11 编译器和 pthreads
 
-### 快速开始
-
-1. **安装依赖**：
-   建议安装 C 编译器以构建高性能模块。
-
-2. **配置与使用**：
+## 快速开始
 
 ```elisp
 (add-to-list 'load-path "/path/to/emacs-kp")
 (require 'ekp)
 
-;; 基本用法：将文本按 600 像素宽度对齐
-(ekp-pixel-justify "这是一段测试文本..." 600)
+;; 按 600 像素宽度两端对齐
+(insert (ekp-pixel-justify "这是一段测试文本..." 600))
 
-;; 范围对齐：寻找 400-800 像素范围内的最优宽度
+;; 在范围内寻找最优宽度,返回 (对齐文本 . 最优宽度)
 (ekp-pixel-range-justify "测试文本" 400 800)
 ```
 
-### 配置详情
+多行字符串按行分段处理,空行保留。
 
-#### 语言设置
+### C 模块(长文本推荐)
 
-**`ekp-latin-lang`** (默认: `"en_US"`)
-
-用于断词的主要拉丁语言。支持的语言位于 `dictionaries/` 目录：
-- `en_US`, `en_GB` - 英语
-- `de_DE` - 德语
-- `fr` - 法语
-- `es` - 西班牙语
-- 等等...
-
-```elisp
-(setq ekp-latin-lang "de_DE")
+```bash
+cd ekp_c && make        # 需要 C11 编译器,产出 ekp.dylib/.so/.dll
 ```
 
-#### 间距参数
+```elisp
+(ekp-c-module-load)     ; 显示 "ekp-c module loaded (version 1.1, N threads)"
+```
 
-使用 `ekp-param-set` 配置间距（像素）。若不设置，将根据字体自动计算。
+加载后(`ekp-use-c-module` 默认为 `t`)所有排版调用自动走 C 引擎。
+Elisp 与 C 两个引擎的输出**完全一致**;Elisp 是永远可用的后备。若磁盘
+上的模块版本旧于 Elisp 代码的要求,加载会拒绝并提示重新编译。
+
+## 配置
+
+### 断词语言
+
+```elisp
+(setq ekp-latin-lang "de_DE")   ; 默认 "en_US"
+```
+
+`dictionaries/hyph_<lang>.dic` 中的任意语言均可;`"de"` 这类短代码会解
+析到第一个匹配的词典。
+
+### 间距参数
+
+三类 glue 控制间距(单位均为像素):
+
+| 参数组 | 位置 |
+|:-------|:-----|
+| `lws-*` | 拉丁词之间 |
+| `mws-*` | 拉丁词与 CJK 字符之间 |
+| `cws-*` | CJK 字符之间 |
+
+每类包含理想宽度、最大拉伸、最大收缩:
 
 ```elisp
 (ekp-param-set lws-ideal lws-stretch lws-shrink
                mws-ideal mws-stretch mws-shrink
                cws-ideal cws-stretch cws-shrink)
+;; 例如 (ekp-param-set 7 3 2  5 2 1  0 2 0)
 ```
 
-| 参数组 | 说明 |
-|:-------|:-----|
-| `lws-*` | 拉丁词间距 (Latin Word Space) |
-| `mws-*` | 中西文间距 (Mixed Word Space) |
-| `cws-*` | CJK 字符间距 (CJK Word Space) |
+- 从不调用 `ekp-param-set` 时,参数按每个字符串的字体自动计算。
+- 显式设置的参数**持久生效**,直到调用 `ekp-param-reset` 恢复自动模式。
 
-#### K-P 算法参数
+### 算法参数
 
-| 变量 | 默认值 | 说明 |
+| 变量 | 默认值 | 含义 |
 |:-----|:-------|:-----|
-| `ekp-line-penalty` | 10 | 每行断行的基础惩罚 |
-| `ekp-hyphen-penalty` | 50 | 连字符断词的惩罚 |
-| `ekp-adjacent-fitness-penalty` | 100 | 相邻行松紧度不一致的惩罚 |
-| `ekp-last-line-min-ratio` | 0.5 | 末行最小填充比例 |
-| `ekp-looseness` | 0 | 目标行数偏移（±n 行） |
+| `ekp-line-penalty`               | 10  | 每行基础代价;越大越倾向少行 |
+| `ekp-hyphen-penalty`             | 50  | 连字符断词代价(以 penalty² 计入) |
+| `ekp-adjacent-fitness-penalty`   | 100 | 相邻行松紧等级相差 >1 的代价 |
+| `ekp-consecutive-hyphen-penalty` | 100 | 连续断词行的代价系数(× 次数²) |
+| `ekp-last-line-min-ratio`        | 0.5 | 末行最小填充比例 |
+| `ekp-last-line-short-penalty`    | 50  | 末行过短的代价系数 |
+| `ekp-looseness`                  | 0   | 目标行数偏移:+1 比最优多一行,−1 少一行 |
 
-### C 动态模块 (推荐)
+所有参数对两个引擎都生效:每次调用 C 之前 Elisp 会同步这些参数。
+`ekp-looseness` 由专门的 Elisp 路径处理(非零时自动绕过 C 模块)。
 
-对于长文本，建议使用 C 模块以获得显著的性能提升。
+### 缓存
 
-#### 构建
+分词、测宽和 DP 结果按段落缓存。
+
+- `ekp-para-cache-limit`(默认 256):缓存段落数上限,超过后整体清空。
+- `M-x ekp-clear-caches` 清空所有缓存(更换字体或影响字宽的主题后使用)。
+
+## 性能
+
+基于内置示例文本(`tests/ekp-bench.el`)、batch Emacs 30.2、Apple
+Silicon 测得;方法见 DEVELOPER_ZH.md:
+
+| 场景(text-zh.txt ≈ 3.6KB) | Elisp(字节编译) | C 模块 |
+|:----------------------------|------------------:|-------:|
+| 两端对齐,宽 200px          |             96 ms |  57 ms |
+| 最优宽度搜索 340–380        |            294 ms |  75 ms |
+| 仅 DP,宽 400px             |             15 ms | 1.3 ms |
+
+**请字节编译本包**——编译后 Elisp 引擎快约 10 倍。两引擎输出完全一
+致;C 模块在最优宽度搜索和长多段文本上收益最大。
+
+## 已知限制
+
+- 宽度按字符串自身的文本属性测量。若目标 buffer 重映射了 face(不同
+  `:height`、主题),宽度可能有偏差;请用与显示时相同的属性做排版。
+- 计算默认间距时假定每段落的拉丁/CJK 各使用一种字体;混合字体段落可以
+  工作,但默认间距取自找到的第一个字体。
+- `ekp-pixel-range-justify` 用三分搜索加局部扫描最小化平均 demerits;
+  代价关于宽度并非严格单峰,结果是很好的局部最优,不保证全局最优。
+- batch/tty 模式下像素宽度退化为字符列数(整条管线仍可工作,便于测试)。
+
+## 测试
 
 ```bash
-cd ekp_c
-make
+tests/run-tests.sh /path/to/emacs     # 36 个 ERT 测试,全部支持 batch
 ```
-*要求：C11 编译器，Emacs 27.1+*
-
-#### 加载
-
-```elisp
-(require 'ekp-utils)
-
-;; 加载并初始化 C 模块
-(ekp-c-module-load)
-
-;; 可选：为 C 模块加载断词字典
-(ekp-c-load-dictionary "en_US")
-```
-
-加载后，`ekp-use-c-module` 默认为 `t`，所有排版函数将自动使用 C 模块进行加速。
-
----
-
-## 算法与架构
-
-关于内部架构、算法细节和 API 参考的详细说明，请参阅 **[开发者指南](./DEVELOPER_ZH.md)**。
 
 ## 致谢
 
 - **核心算法**: ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf) by Donald E. Knuth and Michael F. Plass (1981)
-- **断词算法**: 改编自 [Pyphen](https://github.com/Kozea/Pyphen)，使用 Liang 算法
+- **断词算法**: Frank Liang 算法,改编自 [Pyphen](https://github.com/Kozea/Pyphen)
 - **词典**: [Hunspell 断词模式](https://github.com/Kozea/Pyphen)

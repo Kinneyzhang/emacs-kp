@@ -32,18 +32,28 @@
         )))
 
 (defun ekp-font-family (string &optional position)
-  (format "%s" (font-get (font-at (or position 0) nil string) :family)))
+  "Return font family name used to display STRING at POSITION.
+Falls back to the default face family when no window-system font
+information is available (batch mode, tty frames)."
+  (if-let* ((font (and (display-multi-font-p)
+                       (ignore-errors (font-at (or position 0) nil string)))))
+      (format "%s" (font-get font :family))
+    (let ((family (face-attribute 'default :family)))
+      (if (stringp family) family (format "%s" family)))))
 
 (defun ekp-font-monospace-p (font-family)
-  (let* ((font (find-font (font-spec :family font-family)))
-         (font-name (font-xlfd-name font))
-         (type (nth 10 (split-string font-name "-" t))))
-    ;; 'c' used in terminal
-    (or (or (string= "m" type) (string= "c" type))
-        (let ((info (font-info font-name)))
-          (and info (> (length info) 4) 
-               ;; 等宽字体的核心标志: 最大宽度等于平均宽度
-               (= (aref info 7) (aref info 11)))))))
+  "Return non-nil if FONT-FAMILY appears to be monospace.
+Returns nil (unknown) when font information is unavailable."
+  (when-let* ((font (and (display-multi-font-p)
+                         (find-font (font-spec :family font-family))))
+              (font-name (font-xlfd-name font)))
+    (let ((type (nth 10 (split-string font-name "-" t))))
+      ;; 'c' used in terminal
+      (or (or (string= "m" type) (string= "c" type))
+          (let ((info (font-info font-name)))
+            (and info (> (length info) 4)
+                 ;; 等宽字体的核心标志: 最大宽度等于平均宽度
+                 (= (aref info 7) (aref info 11))))))))
 
 (defun ekp-get-latin-letter (string)
   (with-temp-buffer
@@ -109,11 +119,18 @@
     (propertize " " 'display `(space :width (,pixel)))))
 
 (defun ekp-cjk-fw-punct-p (str)
-  "Return if CHAR is CJK full-width punctuation."
+  "Return non-nil if STR starts with a CJK full-width punctuation char.
+Full-width alphanumerics (ＡＢＣ, １２３) are NOT punctuation."
   (let ((char (seq-first str)))
-    (or (equal (char-syntax char) ?.)
-        (and (>= char #x3000) (<= char #x303F))
-        (and (>= char #xFF00) (<= char #xFF60)))))
+    (and
+     ;; Exclude fullwidth Latin letters and digits (FF10-FF19,
+     ;; FF21-FF3A, FF41-FF5A): they are content, not punctuation.
+     (not (or (and (>= char #xFF10) (<= char #xFF19))
+              (and (>= char #xFF21) (<= char #xFF3A))
+              (and (>= char #xFF41) (<= char #xFF5A))))
+     (or (equal (char-syntax char) ?.)
+         (and (>= char #x3000) (<= char #x303F))
+         (and (>= char #xFF00) (<= char #xFF60))))))
 
 (defun ekp-cjk-opening-punct-p (str)
   "Return non-nil if STR ends with a CJK opening punctuation.
@@ -162,6 +179,15 @@ Rules:
       (cons spaces boxes)
     boxes))
 
+(defun ekp--zero-width-attaching-p (char)
+  "Return non-nil if zero-width CHAR must attach to the preceding text.
+Combining marks (Mn/Mc/Me), ZWJ/ZWNJ, CGJ and variation selectors
+attach to the previous character; other zero-width characters (such
+as zero-width space U+200B) are treated as invisible break points."
+  (or (memq (get-char-code-property char 'general-category) '(Mn Mc Me))
+      (memq char '(#x200C #x200D #x034F))
+      (and (>= char #xFE00) (<= char #xFE0F))))
+
 (defun ekp--handle-latin-char (str state latin-word cjk-char boxes)
   "Handle a latin (width=1) character.
 Return (new-state new-latin-word new-cjk-char new-boxes)."
@@ -208,7 +234,8 @@ Return (new-state new-latin-word new-cjk-char new-boxes)."
 (defun ekp-split-to-boxes (string)
   "Split STRING into typographic boxes.
 Latin words become single boxes; CJK chars are individual boxes.
-Whitespace runs are preserved as separate boxes; CJK punctuation attaches to preceding char."
+Whitespace runs are preserved as separate boxes; CJK punctuation
+attaches to its neighboring char per kinsoku rules."
   (if (string-blank-p string)
       (vector string)
     (with-temp-buffer
@@ -222,9 +249,20 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
             boxes)       ; result list (built in reverse)
         (while (not (eobp))
           (let* ((str (buffer-substring (point) (1+ (point))))
+                 (char (string-to-char str))
                  (width (string-width str)))
             (cond
-             ;; Whitespace or zero-width: flush content, accumulate spaces
+             ;; Zero-width combining/joining chars: attach to preceding text
+             ((and (= 0 width) (not (string-blank-p str))
+                   (ekp--zero-width-attaching-p char))
+              (cond
+               (latin-word (setq latin-word (concat latin-word str)))
+               (cjk-char (setq cjk-char (concat cjk-char str)))
+               (spaces (setq spaces (concat spaces str)))
+               (boxes (setcar boxes (concat (car boxes) str)))
+               ;; String starts with a combining char: start an accumulator
+               (t (setq latin-word str state 1))))
+             ;; Whitespace or other zero-width: flush content, accumulate spaces
              ((or (string-blank-p str) (= 0 width))
               ;; Don't flush opening punct - keep it held for attachment to next char
               (if (and cjk-char (ekp-cjk-opening-punct-p cjk-char))
@@ -265,22 +303,24 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
 (defun ekp-start-process-with-callback
     (process-name command-args callback
                   &optional output-buffer)
-  "执行命令（带参数）并在完成后调用回调"
+  "Run COMMAND-ARGS asynchronously; call CALLBACK on success.
+CALLBACK receives (PROCESS BUFFER).  The output buffer is killed
+after CALLBACK returns."
   (let* ((buffer-name (generate-new-buffer-name
                        (or output-buffer "*EKP Process Output*")))
          (process (apply #'start-process process-name
                          buffer-name command-args)))
     (set-process-sentinel
      process
-     `(lambda (proc event)
-        (if (string-match-p "finished" event)
-            (when (memq (process-status proc) '(exit signal))
-              (unwind-protect
-                  (funcall ',callback proc (process-buffer proc))
-                (when (buffer-live-p (process-buffer proc))
-                  (kill-buffer (process-buffer proc)))))
-          (message "%s, please check %s" (string-trim event)
-                   ,buffer-name))))
+     (lambda (proc event)
+       (if (string-match-p "finished" event)
+           (when (memq (process-status proc) '(exit signal))
+             (unwind-protect
+                 (funcall callback proc (process-buffer proc))
+               (when (buffer-live-p (process-buffer proc))
+                 (kill-buffer (process-buffer proc)))))
+         (message "%s, please check %s" (string-trim event)
+                  buffer-name))))
     process))
 
 (defun ekp--module-reload (module)
@@ -290,49 +330,14 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
     (copy-file module tmpfile t)
     (module-load tmpfile)))
 
-;;; Rust Module Support (currently unused — ekp_rust/ directory does not exist)
-
-(defalias 'ekp-rust-module-reload #'ekp--module-reload)
-
-(defun ekp-module-dir ()
-  (when-let ((root-dir (ekp-root-dir)))
-    (expand-file-name "ekp_rust" root-dir)))
-
-(defun ekp-module-file ()
-  (when-let* ((module-dir (ekp-module-dir))
-              (filename (cond ((eq system-type 'darwin) "libekp.dylib")
-                              ((eq system-type 'windows-nt) "ekp.dll")
-                              (t "libekp.so"))))
-    (expand-file-name (concat "target/release/" filename) module-dir)))
-
-(defun ekp-module-load ()
-  "Load rust module of ekp."
-  (if (executable-find "cargo")
-      (let ((file (ekp-module-file)))
-        (if file
-            (ekp--module-reload file)
-          (ekp-module-build)))
-    (error "Please install cargo and add it to executable path!")))
-
-(defun ekp-module-build ()
-  "Reload ekp rust module."
-  (interactive)
-  (if (executable-find "cargo")
-      (ekp-start-process-with-callback
-       "ekp-build"
-       (cond
-        ((eq system-type 'windows-nt)
-         `("cmd.exe" "/c" ,(format "cd %s && cargo build -r"
-                                   (ekp-module-dir))))
-        (t `(,shell-file-name "-c" ,(format "cd %s && cargo build -r"
-                                 (ekp-module-dir)))))
-       (lambda (proc buffer)
-         (ekp--module-reload (ekp-module-file))
-         (message "ekp rust module reload success!")))
-    (error "Please install cargo and add it to executable path!")))
-
 ;;; C Module Support
 ;; Parallel C implementation using pthreads
+
+;; Defined by the dynamic module (ekp_c/ekp.dylib | .so | .dll)
+(declare-function ekp-c-init "ext:ekp")
+(declare-function ekp-c-version "ext:ekp")
+(declare-function ekp-c-thread-count "ext:ekp")
+(declare-function ekp-c-load-hyphenator "ext:ekp")
 
 (defvar ekp-c-module-loaded nil
   "Non-nil if C module is loaded.")
@@ -356,8 +361,13 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
 (defalias 'ekp-c-module-reload #'ekp--module-reload
   "Load MODULE from a temp copy to allow rebuilding.")
 
+(defconst ekp-c-module-required-version "1.1"
+  "Minimum C module version compatible with this Elisp code.")
+
 (defun ekp-c-module-load ()
-  "Load EKP C module if available."
+  "Load EKP C module if available.
+Refuses to enable a module older than
+`ekp-c-module-required-version' (rebuild with make)."
   (interactive)
   (let ((file (ekp-c-module-file)))
     (if (and file (file-exists-p file))
@@ -365,9 +375,15 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
           (ekp-c-module-reload file)
           (when (fboundp 'ekp-c-init)
             (ekp-c-init)
-            (setq ekp-c-module-loaded t)
-            (message "ekp-c module loaded (version %s, %d threads)"
-                     (ekp-c-version) (ekp-c-thread-count))))
+            (if (version< (ekp-c-version) ekp-c-module-required-version)
+                (progn
+                  (setq ekp-c-module-loaded nil)
+                  (message "ekp-c module version %s is too old (need %s+). \
+Run 'make' in ekp_c/ to rebuild; falling back to Elisp."
+                           (ekp-c-version) ekp-c-module-required-version))
+              (setq ekp-c-module-loaded t)
+              (message "ekp-c module loaded (version %s, %d threads)"
+                       (ekp-c-version) (ekp-c-thread-count)))))
       (message "C module not found. Run 'make' in ekp_c/ directory."))))
 
 (defun ekp-c-load-dictionary (lang)
@@ -396,7 +412,7 @@ Whitespace runs are preserved as separate boxes; CJK punctuation attaches to pre
           ((eq system-type 'windows-nt)
            `("cmd.exe" "/c" ,(format "cd %s && make" module-dir)))
           (t `(,shell-file-name "-c" ,(format "cd %s && make" module-dir))))
-         (lambda (proc buffer)
+         (lambda (_proc _buffer)
            (ekp-c-module-load)
            (message "ekp C module build success!")))
       (error "Makefile not found in ekp_c/ directory"))))
