@@ -298,4 +298,4 @@ tests/run-tests.sh /path/to/emacs     # 67 ERT tests, all batch-safe
 
 - **Core algorithm**: ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf) by Donald E. Knuth and Michael F. Plass (1981)
 - **Hyphenation**: Frank Liang's algorithm, adapted from [Pyphen](https://github.com/Kozea/Pyphen)
-- **Dictionaries**: [Hunspell hyphenation patterns](https://github.com/Kozea/Pyphen)
+- **Dictionaries**: hyphenation patterns from the [LibreOffice dictionaries](https://github.com/LibreOffice/dictionaries) (GPL/LGPL/MPL; see each `dictionaries/README_hyph_*.txt`)

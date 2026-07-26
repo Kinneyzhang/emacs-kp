@@ -163,12 +163,15 @@ batch/tty 下按字符列精确。
   `ekp-line-glues`、C 结果重建三处同步放宽每个候选的有效目标宽
   (`lw = width + release`)——三处必须保持一致。
 - **每行宽度**(`ekp-parshape` / `ekp-first-line-indent`):由
-  `ekp--line-spec`(行号 → 缩进 . 宽度)解析;需要(位置×行数)DP,
-  与 looseness 一样旁路 C。缩进渲染为行首 `ekp-glue` 垫片。
+  `ekp--line-spec`(行号 → 缩进 . 宽度)解析。纯首行缩进只改第 0 行,
+  而"以盒 0 开头的行"恰好对应 DP 起点 i = 0,故 1D 遍(以及 C 引擎,
+  经 `FIRST-LINE-WIDTH` 参数)无需额外状态即可处理;只有完整的
+  `ekp-parshape` 和 `ekp-looseness` 才需要(位置×行数)DP 并旁路 C。
+  缩进渲染为行首 `ekp-glue` 垫片。
 
-C 模块 1.4:`ekp-c-break-with-arrays` 14 参(…、
-forbidden-positions、tail-protrudes、hyphen-protrude);batch 向量
-14 元;`ekp-c-set-penalties` 4–7 参。
+C 模块 1.5:`ekp-c-break-with-arrays` 15 参(…、forbidden-positions、
+tail-protrudes、hyphen-protrude、first-line-width);batch 向量 15 元;
+`ekp-c-set-penalties` 4–7 参。
 
 特性完成后的性能(字节编译 + C,Apple Silicon,batch):justify zh
 w=200 ≈ 54 ms、range zh ≈ 117 ms——justify 与特性前持平,range 因盒
@@ -187,24 +190,27 @@ w=200 ≈ 54 ms、range zh ≈ 117 ms——justify 与特性前持平,range 因�
 
 ## 7. C 模块集成
 
-C 模块(`ekp_c/`,版本 1.1)只执行阶段 ④。所有字体相关数据以 Elisp
+C 模块(`ekp_c/`,版本 1.5)只执行阶段 ④。所有字体相关数据以 Elisp
 为唯一事实来源。
 
-- `ekp-c-break-with-arrays`(11 参数):para 的前缀数组、glue 数组、
-  断词数据、行宽和两个空格串数组。返回 `(breaks . cost)`。
-- `ekp-c-break-batch`:11 元素向量的向量,由 pthread 线程池并行处理
-  ——每段一个任务(这是正确的并行粒度;DP 本身天然串行)。
-- `ekp-c-set-penalties`(4–6 参数):`ekp--c-sync-params` 在**每次**
+- `ekp-c-break-with-arrays`(15 参数):para 的前缀数组、glue 数组、
+  断词数据、行宽、两个空格串数组、禁则/悬挂数组和首行宽度。返回
+  `(breaks . cost)`。
+- `ekp-c-break-batch`:15 元素向量的向量,由 pthread 线程池并行处理
+  ——每段一个任务(这是正确的并行粒度;DP 本身天然串行)。线程池在
+  首次多段落 batch 时惰性创建,按机器核心数定大小;队列满时提交方
+  阻塞等待而非丢弃任务。
+- `ekp-c-set-penalties`(4–7 参数):`ekp--c-sync-params` 在**每次**
   进入 C 之前调用,保证 `ekp-line-penalty` 等变量始终生效(回归:此
   前从未同步)。
 - `ekp-c-module-load` 拒绝低于 `ekp-c-module-required-version` 的模块
   并回落到 Elisp,避免升级后的参数数量不匹配。
 
-C 端任何失败(返回 NULL)都会静默回落到 Elisp 引擎。两引擎输出逐字
-节一致,由 `ekp-test-c-parity-simple` / `ekp-test-c-parity-files` 验证。
-
-`ekp-c-break-lines`(经 `ekp_paragraph.c`、`ekp_hyphen.c` 的 C 端自行
-分词路径)是实验性的独立路径,ekp.el 不使用;见 `ekp_c/README.md`。
+C 端任何失败——NULL 结果、分配失败或非法参数——都回落到 Elisp 引擎
+(Elisp 桥接层也用 `condition-case` 兜住);模块不会在部分失败时静默
+产出不同的排版。两引擎输出逐字节一致,由
+`ekp-test-c-parity-simple` / `ekp-test-c-parity-files` 及 300 例性质
+fuzz 验证。
 
 ## 8. 断词(ekp-hyphen.el)
 
@@ -261,8 +267,11 @@ ekp.el            核心:para 结构、缓存、DP(1D + looseness)、
 ekp-utils.el      分词器(盒子、避头尾)、带 batch/tty 回退的字体
                   检测、C 模块加载
 ekp-hyphen.el     Liang 断词 + 词典注册
+ekp-region.el     buffer/region 命令、ekp-auto-justify-mode,以及
+                  编辑器集成(保存、isearch、kill-ring、undo)
 ekp_c/            C 动态模块(见 ekp_c/README.md)
-dictionaries/     Hunspell 断词模式(来自 Pyphen)
-tests/            ekp-tests.el(ERT)、ekp-bench.el、ekp-demo.el、
-                  示例文本、run-tests.sh
+dictionaries/     Hunspell 断词模式(来自 LibreOffice)
+tests/            ekp-tests.el、ekp-region-tests.el(ERT)、
+                  ekp-fuzz.el(一致性 fuzz)、ekp-bench.el、
+                  ekp-demo.el、ekp-showcase.el、示例文本、run-tests.sh
 ```

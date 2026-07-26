@@ -28,10 +28,21 @@ Emacs-kp 在 Emacs 内部完整实现了 Knuth-Plass 最优断行算法,支持�
 - Emacs **29.1+**(依赖 `string-pixel-width` 与 `object-intervals`)
 - 可选(C 模块):C11 编译器和 pthreads
 
-## 快速开始
+## 安装
+
+克隆仓库并加入 `load-path`(`dictionaries/` 目录须与 `.el` 文件同级):
 
 ```elisp
 (add-to-list 'load-path "/path/to/emacs-kp")
+(require 'ekp)
+(require 'ekp-region)   ; buffer/region 命令
+```
+
+强烈建议字节编译——编译后 Elisp 引擎约快 10 倍。
+
+## 快速开始
+
+```elisp
 (require 'ekp)
 
 ;; 按 600 像素宽度两端对齐
@@ -66,31 +77,43 @@ Elisp 与 C 两个引擎的输出**完全一致**;Elisp 是永远可用的后备
 ```
 
 - `M-x ekp-justify-region` — 把选区排版到窗口文本宽度(数字前缀参数
-  可指定像素宽)。
-- `M-x ekp-unjustify-region` — **精确**还原原文,包括被折叠的连续空
-  格。排版是无损的:每个合成空隙、软换行、软连字符都携带它所替换的
-  原文,还原是纯结构变换,即使排版后又编辑过也能正确还原。
+  可指定像素宽)。没有激活选区时,排版光标所在段落。
+- `M-x ekp-justify-buffer` — 排版整个 buffer。
+- `M-x ekp-unjustify-region` / `ekp-unjustify-buffer` — **精确**还原
+  原文,包括被折叠的连续空格。排版是无损的:每个合成空隙、软换行、
+  软连字符都携带它所替换的原文,还原是纯结构变换,即使排版后又编辑
+  过也能正确还原。
 - `M-x ekp-auto-justify-mode` — 让整个 buffer 保持按窗口宽度排版。
   窗口宽度变化时自动重排(防抖延迟 `ekp-auto-justify-resize-delay`);
   编辑后只重排被改动的段落(空闲延迟 `ekp-auto-justify-edit-delay`),
   未变段落直接命中段落缓存。关闭 mode 时 buffer 精确恢复原状。
 
+buffer 被当作活的文档,而不只是画布:
+
+- **保存**时写入的是**逻辑文本**——软换行、glue 空格、断词连字符属于
+  排版而非内容,不会落盘;屏幕上的 buffer 仍保持排版态。
+- **搜索**(isearch)看到的是逻辑文本,中文短语与被断词的英文单词
+  都能跨排版找到。
+- **复制**放进 kill ring 的是逻辑文本,粘贴出去的是文字而非像素间距。
+- 仅仅开启 mode 不会把 buffer 标记为已修改(不产生锁文件或 auto-save),
+  重排定时器也不再与 `undo` 打架。
+
 `ekp-region-margin-pixel`(默认 2)是从窗口宽度中扣除的取整安全边距。
 
 大 buffer(超过 `ekp-auto-justify-lazy-threshold` 字符,默认 2 万)
-自动改为可视优先重排:屏幕内的部分同步完成(约 15ms),其余在空闲
-时后台分块补齐。
+自动改为可视优先重排:屏幕内的部分同步完成,其余在空闲时后台分块
+补齐,每个时间片有时间预算(`ekp-auto-justify-tick-budget`),并优先
+处理你滚动到的区域。
 
-各 mode 的 verbatim 保护预设:
+各 mode 的 verbatim 保护预设——各一行:
 
 ```elisp
-(add-hook 'org-mode-hook
-          (lambda ()
-            (setq-local ekp-region-skip-faces ekp-region-org-skip-faces)))
-(add-hook 'markdown-mode-hook
-          (lambda ()
-            (setq-local ekp-region-skip-faces ekp-region-markdown-skip-faces)))
+(add-hook 'org-mode-hook      #'ekp-org-setup)
+(add-hook 'markdown-mode-hook #'ekp-markdown-setup)
 ```
+
+在 Org 与 Markdown buffer 里,若你没有自定义配置,
+`ekp-auto-justify-mode` 会自动套用对应预设。
 
 ### 保护代码块与 verbatim 文本
 
@@ -113,11 +136,14 @@ Elisp 与 C 两个引擎的输出**完全一致**;Elisp 是永远可用的后备
   `ekp-auto-justify-mode` 自动预留悬挂宽度。
 - **段落形状** — `ekp-first-line-indent`(`t` = 2 em)实现中文段首
   缩进惯例;或用 TeX 式 `ekp-parshape` 逐行指定 `(缩进 . 宽度)`。
-  两者走 Elisp 2D 路径(C 模块自动旁路,同 `ekp-looseness`)。
+  首行缩进走高速的 1D 路径与 C 引擎;只有完整的 `ekp-parshape` 和
+  `ekp-looseness` 才回落到 Elisp 专属的 2D 动态规划。
 - **不可断字符** — NBSP、窄 NBSP、数字空格、WORD JOINER 天然把两侧
   锁在同一行。
 - 禁则覆盖全角**与半角**标点:行首不会出现 `。、」!?` 或独立的
-  `.,;:!?`,行尾不会出现 `「(` 等。
+  `.,;:!?`,行尾不会出现 `「(` 等。日文行首禁则还覆盖小假名、长音
+  符和叠字符(`っ ょ ー 々`),可通过 `ekp-cjk-no-line-start-extra`
+  配置。
 
 已知限制:行中的 CLREQ 标点**压缩**(如「字。下」行内挤压)无法渲
 染——Emacs 不能缩减字形 advance——因此行边压缩以悬挂方式呈现;左缘
@@ -132,7 +158,9 @@ Elisp 与 C 两个引擎的输出**完全一致**;Elisp 是永远可用的后备
 ```
 
 `dictionaries/hyph_<lang>.dic` 中的任意语言均可;`"de"` 这类短代码会解
-析到第一个匹配的词典。
+析到第一个匹配的词典。每个词典自身的 `LEFTHYPHENMIN` /
+`RIGHTHYPHENMIN` 都会被遵守(英文在断点前保留 ≥2 字母、之后 ≥3);
+给 `ekp-hyphen-create` 传显式边距可覆盖。
 
 ### 间距参数
 
@@ -173,7 +201,8 @@ Elisp 与 C 两个引擎的输出**完全一致**;Elisp 是永远可用的后备
 
 ### 缓存
 
-分词、测宽和 DP 结果按段落缓存。
+分词、测宽和 DP 结果按段落缓存;盒宽还额外做会话级缓存,跨段落共享
+的字形整个会话只测量一次。
 
 - `ekp-para-cache-limit`(默认 256):缓存段落数上限,超过后整体清空。
 - `M-x ekp-clear-caches` 清空所有缓存(更换字体或影响字宽的主题后使用)。
@@ -185,12 +214,13 @@ Silicon 测得;方法见 DEVELOPER_ZH.md:
 
 | 场景(text-zh.txt ≈ 3.6KB) | Elisp(字节编译) | C 模块 |
 |:----------------------------|------------------:|-------:|
-| 两端对齐,宽 200px          |             96 ms |  57 ms |
-| 最优宽度搜索 340–380        |            294 ms |  75 ms |
-| 仅 DP,宽 400px             |             15 ms | 1.3 ms |
+| 两端对齐,宽 200px          |            150 ms |  41 ms |
+| 最优宽度搜索 340–380        |            529 ms | 106 ms |
+| 仅 DP,宽 400px             |             30 ms | 2.5 ms |
 
 **请字节编译本包**——编译后 Elisp 引擎快约 10 倍。两引擎输出完全一
-致;C 模块在最优宽度搜索和长多段文本上收益最大。
+致;C 模块在最优宽度搜索和长多段文本上收益最大。(绝对数值随机器与
+功耗状态波动,重点看比例。)
 
 ## 已知限制
 
@@ -224,4 +254,4 @@ tests/run-tests.sh /path/to/emacs     # 67 个 ERT 测试,全部支持 batch
 
 - **核心算法**: ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf) by Donald E. Knuth and Michael F. Plass (1981)
 - **断词算法**: Frank Liang 算法,改编自 [Pyphen](https://github.com/Kozea/Pyphen)
-- **词典**: [Hunspell 断词模式](https://github.com/Kozea/Pyphen)
+- **词典**: 断词模式来自 [LibreOffice dictionaries](https://github.com/LibreOffice/dictionaries)(GPL/LGPL/MPL;各语言许可见 `dictionaries/README_hyph_*.txt`)

@@ -185,13 +185,18 @@ after the justified text was edited — and builds
   (`lw = width + release`) in the DP, in `ekp-line-glues', and in the
   C-result reconstruction — all three must stay in lockstep.
 - **Per-line widths** (`ekp-parshape' / `ekp-first-line-indent'):
-  resolved by `ekp--line-spec' (line-index → INDENT . WIDTH); they
-  require the (position × line-count) DP and bypass C, like
-  looseness.  Indents render as leading `ekp-glue' spacers.
+  resolved by `ekp--line-spec' (line-index → INDENT . WIDTH).  A
+  plain first-line indent only changes line 0, and a line begins at
+  box 0 exactly when the DP start i = 0, so the 1D pass (and the C
+  engine, via `FIRST-LINE-WIDTH') handle it with no extra state.
+  Only full `ekp-parshape' and `ekp-looseness' need the
+  (position × line-count) DP and bypass C.  Indents render as leading
+  `ekp-glue' spacers.
 
-C module 1.4: `ekp-c-break-with-arrays` takes 14 args
-(…, forbidden-positions, tail-protrudes, hyphen-protrude); batch
-vectors have 14 elements; `ekp-c-set-penalties` takes 4–7.
+C module 1.5: `ekp-c-break-with-arrays' takes 15 args
+(…, forbidden-positions, tail-protrudes, hyphen-protrude,
+first-line-width); batch vectors have 15 elements;
+`ekp-c-set-penalties' takes 4–7.
 
 Performance after the feature wave (byte-compiled + C, Apple
 Silicon, batch): justify zh w=200 ≈ 54 ms, range zh ≈ 117 ms —
@@ -214,29 +219,32 @@ engines never disagree.
 
 ## 7. C Module Integration
 
-The C module (`ekp_c/`, version 1.1) runs only stage ④.  Elisp remains
+The C module (`ekp_c/`, version 1.5) runs only stage ④.  Elisp remains
 the source of truth for all font-dependent data.
 
-- `ekp-c-break-with-arrays` (11 args): the para's prefix arrays, glue
-  arrays, hyphen data, line width and the two space-run arrays.
-  Returns `(breaks . cost)`.
-- `ekp-c-break-batch`: a vector of 11-element vectors, processed in
+- `ekp-c-break-with-arrays` (15 args): the para's prefix arrays, glue
+  arrays, hyphen data, line width, the two space-run arrays, the
+  forbidden/protrusion arrays and the first-line width.  Returns
+  `(breaks . cost)`.
+- `ekp-c-break-batch`: a vector of 15-element vectors, processed in
   parallel by a pthread pool — one task per paragraph (that is the
-  correct granularity; the DP itself is sequential by nature).
-- `ekp-c-set-penalties` (4–6 args): called by `ekp--c-sync-params`
+  correct granularity; the DP itself is sequential by nature).  The
+  pool is created lazily on the first multi-paragraph batch and sized
+  to the machine's cores; a full queue blocks the submitter rather
+  than dropping the task.
+- `ekp-c-set-penalties` (4–7 args): called by `ekp--c-sync-params`
   before *every* C entry, so `ekp-line-penalty` & friends always take
   effect (regression: they were never synced before).
 - `ekp-c-module-load` refuses modules older than
   `ekp-c-module-required-version` and falls back to Elisp, preventing
   arity mismatches after upgrades.
 
-Any C failure (NULL result) silently falls back to the Elisp engine.
-The two engines are verified to produce byte-identical output by
-`ekp-test-c-parity-simple` / `ekp-test-c-parity-files`.
-
-`ekp-c-break-lines` (C-side tokenization via `ekp_paragraph.c` and
-`ekp_hyphen.c`) is an experimental, self-contained path that ekp.el
-does not use; see `ekp_c/README.md`.
+Any C failure — a NULL result, an allocation failure, or a bad
+argument — falls back to the Elisp engine; the Elisp bridge also
+wraps the calls in `condition-case`.  The module never silently
+produces a different layout on partial failure.  The two engines are
+verified byte-identical by `ekp-test-c-parity-simple` /
+`ekp-test-c-parity-files` and the 300-case property fuzz.
 
 ## 8. Hyphenation (ekp-hyphen.el)
 
@@ -300,8 +308,12 @@ ekp.el            Core: para struct, caching, DP (1D + looseness),
 ekp-utils.el      Tokenizer (boxes, kinsoku), font detection with
                   batch/tty fallbacks, C module loading
 ekp-hyphen.el     Liang hyphenation + dictionary registry
+ekp-region.el     Buffer/region commands, ekp-auto-justify-mode, and
+                  editor integration (save, isearch, kill-ring, undo)
 ekp_c/            C dynamic module (see ekp_c/README.md)
-dictionaries/     Hunspell hyphenation patterns (from Pyphen)
-tests/            ekp-tests.el (ERT), ekp-bench.el, ekp-demo.el,
-                  sample texts, run-tests.sh
+dictionaries/     Hunspell hyphenation patterns (from LibreOffice)
+tests/            ekp-tests.el, ekp-region-tests.el (ERT),
+                  ekp-fuzz.el (parity fuzz), ekp-bench.el,
+                  ekp-demo.el, ekp-showcase.el, sample texts,
+                  run-tests.sh
 ```
