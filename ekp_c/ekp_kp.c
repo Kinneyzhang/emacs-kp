@@ -98,39 +98,7 @@ static inline double compute_demerits(double badness, int32_t penalty,
 }
 
 /*
- * Parallel work item for demerits computation
- */
-typedef struct {
-    ekp_paragraph_t *para;
-    int32_t line_width;
-    size_t start;
-    size_t end;
-
-    /* Output arrays (pre-allocated) */
-    double *demerits;
-    int32_t *backptrs;
-    int32_t *rest_pixels;
-    uint8_t *fitness;
-    int32_t *hyphen_counts;
-    int32_t *line_counts;
-
-    /* Shared read-only input */
-    const double *prev_demerits;
-    const uint8_t *prev_fitness;
-    const int32_t *prev_hyphen_counts;
-    const int32_t *prev_line_counts;
-
-    /* Parameters */
-    int line_penalty;
-    int hyphen_penalty;
-    int fitness_penalty;
-    double last_line_ratio;
-} dp_work_t;
-
-/*
- * Unified DP input structure for shared core algorithm
- * This allows both ekp_paragraph_t-based and array-based inputs
- * to use the same DP core logic.
+ * Unified DP input structure for the array-based DP core.
  */
 typedef struct {
     /* Prefix sum arrays */
@@ -418,225 +386,6 @@ static void dp_process_position(
     }
 }
 
-/*
- * Process a range of candidate breakpoints (for parallel execution)
- * Now uses shared dp_process_position() core.
- */
-static void process_dp_range(void *arg)
-{
-    dp_work_t *work = (dp_work_t *)arg;
-    ekp_paragraph_t *p = work->para;
-    size_t n = p->box_count;
-    
-    /* Build temporary glue arrays from paragraph structure */
-    int32_t *glue_ideals = malloc(n * sizeof(int32_t));
-    int32_t *glue_shrinks = malloc(n * sizeof(int32_t));
-    int32_t *glue_stretches = malloc(n * sizeof(int32_t));
-    
-    if (!glue_ideals || !glue_shrinks || !glue_stretches) {
-        free(glue_ideals); free(glue_shrinks); free(glue_stretches);
-        return;
-    }
-    
-    for (size_t i = 0; i < n; i++) {
-        glue_ideals[i] = p->glues[i].ideal;
-        glue_shrinks[i] = p->glues[i].shrink;
-        glue_stretches[i] = p->glues[i].stretch;
-    }
-    
-    /* Create unified input structure */
-    dp_input_t in = {
-        .ideal_prefix = p->ideal_prefix,
-        .min_prefix = p->min_prefix,
-        .max_prefix = p->max_prefix,
-        .glue_ideals = glue_ideals,
-        .glue_shrinks = glue_shrinks,
-        .glue_stretches = glue_stretches,
-        .hyphen_positions = p->hyphen_positions,
-        .hyphen_count = p->hyphen_count,
-        .hyphen_width = p->hyphen_width,
-        .lead_spaces = NULL,
-        .trail_spaces = NULL,
-        .n = n,
-        .line_width = work->line_width,
-        .line_penalty = work->line_penalty,
-        .hyphen_penalty = work->hyphen_penalty,
-        .fitness_penalty = work->fitness_penalty,
-        .last_line_ratio = work->last_line_ratio,
-        .consec_hyphen_penalty =
-            ekp_global ? ekp_global->consec_hyphen_penalty : 100,
-        .last_line_short_penalty =
-            ekp_global ? ekp_global->last_line_short_penalty : 50.0,
-        .allow_emergency = true
-    };
-    
-    /* Process each position in range */
-    for (size_t i = work->start; i < work->end; i++) {
-        if (work->prev_demerits[i] >= EKP_INFINITY)
-            continue;
-        
-        dp_process_position(&in, i,
-                           work->prev_demerits[i],
-                           work->prev_fitness[i],
-                           work->prev_hyphen_counts[i],
-                           work->prev_line_counts[i],
-                           work->demerits,
-                           work->backptrs,
-                           work->rest_pixels,
-                           work->fitness,
-                           work->hyphen_counts,
-                           work->line_counts);
-    }
-    
-    free(glue_ideals);
-    free(glue_shrinks);
-    free(glue_stretches);
-}
-
-/*
- * Main line breaking function
- */
-ekp_result_t *ekp_break_lines(ekp_paragraph_t *p, int32_t line_width)
-{
-    if (!p || p->box_count == 0 || line_width <= 0)
-        return NULL;
-
-    size_t n = p->box_count;
-
-    /* Allocate DP arrays */
-    double *demerits = malloc((n + 1) * sizeof(double));
-    int32_t *backptrs = malloc((n + 1) * sizeof(int32_t));
-    int32_t *rest_pixels = malloc((n + 1) * sizeof(int32_t));
-    uint8_t *fitness = malloc((n + 1) * sizeof(uint8_t));
-    int32_t *hyphen_counts = malloc((n + 1) * sizeof(int32_t));
-    int32_t *line_counts = malloc((n + 1) * sizeof(int32_t));
-
-    if (!demerits || !backptrs || !rest_pixels ||
-        !fitness || !hyphen_counts || !line_counts) {
-        free(demerits);
-        free(backptrs);
-        free(rest_pixels);
-        free(fitness);
-        free(hyphen_counts);
-        free(line_counts);
-        return NULL;
-    }
-
-    /* Initialize */
-    for (size_t i = 0; i <= n; i++) {
-        demerits[i] = EKP_INFINITY;
-        backptrs[i] = -1;
-        rest_pixels[i] = 0;
-        fitness[i] = FITNESS_DECENT;
-        hyphen_counts[i] = 0;
-        line_counts[i] = 0;
-    }
-    demerits[0] = 0.0;
-
-    /* Get parameters */
-    int line_penalty = ekp_global ? ekp_global->line_penalty : 10;
-    int hyphen_penalty = ekp_global ? ekp_global->hyphen_penalty : 50;
-    int fitness_penalty = ekp_global ? ekp_global->fitness_penalty : 100;
-    double last_ratio = ekp_global ? ekp_global->last_line_ratio : 0.5;
-
-    /*
-     * Single-threaded DP: simple and correct.
-     *
-     * Note: Previous "parallel" implementation had data races - multiple
-     * threads writing to shared demerits[] array without synchronization.
-     * DP has inherent sequential dependencies (demerits[k] depends on all
-     * demerits[i] where i < k), making intra-paragraph parallelism complex.
-     *
-     * For real parallelism, use ekp_break_batch() to process multiple
-     * paragraphs concurrently - that's the correct granularity.
-     */
-    dp_work_t work = {
-        .para = p,
-        .line_width = line_width,
-        .start = 0,
-        .end = n,
-        .demerits = demerits,
-        .backptrs = backptrs,
-        .rest_pixels = rest_pixels,
-        .fitness = fitness,
-        .hyphen_counts = hyphen_counts,
-        .line_counts = line_counts,
-        .prev_demerits = demerits,
-        .prev_fitness = fitness,
-        .prev_hyphen_counts = hyphen_counts,
-        .prev_line_counts = line_counts,
-        .line_penalty = line_penalty,
-        .hyphen_penalty = hyphen_penalty,
-        .fitness_penalty = fitness_penalty,
-        .last_line_ratio = last_ratio,
-    };
-
-    /* Iterative DP: O(n²) worst case, typically O(n·m) with early termination */
-    for (size_t i = 0; i < n; i++) {
-        if (demerits[i] >= EKP_INFINITY)
-            continue;
-
-        work.start = i;
-        work.end = i + 1;
-        process_dp_range(&work);
-    }
-
-    /* Trace back optimal path */
-    ekp_result_t *result = calloc(1, sizeof(*result));
-    if (!result) {
-        free(demerits);
-        free(backptrs);
-        free(rest_pixels);
-        free(fitness);
-        free(hyphen_counts);
-        free(line_counts);
-        return NULL;
-    }
-
-    /* Count breaks */
-    size_t break_count = 0;
-    int32_t idx = n;
-    while (idx > 0) {
-        break_count++;
-        idx = backptrs[idx];
-        if (idx < 0)
-            break;
-    }
-
-    result->breaks = malloc(break_count * sizeof(int32_t));
-    result->rest_pixels = malloc(break_count * sizeof(int32_t));
-    if (!result->breaks || !result->rest_pixels) {
-        ekp_result_destroy(result);
-        free(demerits);
-        free(backptrs);
-        free(rest_pixels);
-        free(fitness);
-        free(hyphen_counts);
-        free(line_counts);
-        return NULL;
-    }
-
-    result->break_count = break_count;
-    result->total_cost = demerits[n];
-
-    /* Fill in reverse order */
-    idx = n;
-    for (size_t i = break_count; i > 0; i--) {
-        result->breaks[i - 1] = idx;
-        result->rest_pixels[i - 1] = rest_pixels[idx];
-        idx = backptrs[idx];
-    }
-
-    free(demerits);
-    free(backptrs);
-    free(rest_pixels);
-    free(fitness);
-    free(hyphen_counts);
-    free(line_counts);
-
-    return result;
-}
-
 void ekp_result_destroy(ekp_result_t *r)
 {
     if (!r)
@@ -877,6 +626,10 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
     if (!results)
         return NULL;
 
+    /* Create the worker pool on first parallel use */
+    if (count > 1 && ekp_global && !ekp_global->pool)
+        ekp_global->pool = ekp_pool_create(0);
+
     /* Single paragraph: no point using threads */
     if (count == 1 || !ekp_global || !ekp_global->pool) {
         for (size_t i = 0; i < count; i++) {
@@ -946,16 +699,6 @@ int ekp_init(void)
     if (!ekp_global)
         return -1;
 
-    /* Default spacing */
-    ekp_global->spacing.lws_ideal = 7;
-    ekp_global->spacing.lws_stretch = 3;
-    ekp_global->spacing.lws_shrink = 2;
-    ekp_global->spacing.mws_ideal = 5;
-    ekp_global->spacing.mws_stretch = 2;
-    ekp_global->spacing.mws_shrink = 1;
-    ekp_global->spacing.cws_ideal = 0;
-    ekp_global->spacing.cws_stretch = 2;
-    ekp_global->spacing.cws_shrink = 0;
 
     /* Default K-P parameters */
     ekp_global->line_penalty = 10;
@@ -965,15 +708,9 @@ int ekp_init(void)
     ekp_global->consec_hyphen_penalty = 100;
     ekp_global->last_line_short_penalty = 50.0;
 
-    /* Create thread pool */
-    ekp_global->pool = ekp_pool_create(EKP_THREAD_POOL_SIZE);
-    if (!ekp_global->pool) {
-        free(ekp_global);
-        ekp_global = NULL;
-        return -1;
-    }
-
-    pthread_mutex_init(&ekp_global->cache_lock, NULL);
+    /* The thread pool is created lazily by the first batch call:
+     * plain single-paragraph use never starts worker threads. */
+    ekp_global->pool = NULL;
 
     return 0;
 }
@@ -983,20 +720,6 @@ void ekp_cleanup(void)
     if (!ekp_global)
         return;
 
-    /* Destroy hyphenators */
-    for (size_t i = 0; i < ekp_global->hyphenator_count; i++) {
-        ekp_hyphen_destroy(ekp_global->hyphenators[i]);
-    }
-
-    /* Destroy paragraph cache */
-    if (ekp_global->para_cache) {
-        for (size_t i = 0; i < ekp_global->para_cache_size; i++) {
-            ekp_para_destroy(ekp_global->para_cache[i]);
-        }
-        free(ekp_global->para_cache);
-    }
-
-    pthread_mutex_destroy(&ekp_global->cache_lock);
     ekp_pool_destroy(ekp_global->pool);
     free(ekp_global);
     ekp_global = NULL;

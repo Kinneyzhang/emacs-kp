@@ -67,7 +67,7 @@ else
 endif
 
 # Source files
-SRCS := ekp.c ekp_kp.c ekp_hyphen.c ekp_paragraph.c ekp_thread_pool.c
+SRCS := ekp.c ekp_kp.c ekp_thread_pool.c
 OBJS := $(SRCS:.c=.o)
 
 # Output

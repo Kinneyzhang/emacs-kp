@@ -20,6 +20,7 @@
  */
 
 #include "ekp_module.h"
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -27,25 +28,13 @@
 /* Required for Emacs modules */
 int plugin_is_GPL_compatible;
 
-/* Cached Emacs environment for callbacks */
-static emacs_env *current_env = NULL;
-static emacs_value measure_func = NULL;
-
-/*
- * Pixel measurement callback that calls back into Emacs
- */
-static int32_t emacs_measure_string(const char *text, size_t len)
+/* All pixel quantities travel as int32; clamp instead of silently
+ * wrapping if Elisp ever hands us something absurd. */
+static inline int32_t clamp32(intmax_t v)
 {
-    if (!current_env || !measure_func)
-        return len * 7;  /* fallback: ~7 pixels per char */
-
-    emacs_value str = current_env->make_string(current_env, text, len);
-    emacs_value result = current_env->funcall(current_env, measure_func, 1, &str);
-
-    if (current_env->non_local_exit_check(current_env) != emacs_funcall_exit_return)
-        return len * 7;
-
-    return (int32_t)current_env->extract_integer(current_env, result);
+    if (v > INT32_MAX) return INT32_MAX;
+    if (v < INT32_MIN) return INT32_MIN;
+    return (int32_t)v;
 }
 
 /*
@@ -78,72 +67,6 @@ static emacs_value Fekp_c_cleanup(emacs_env *env, ptrdiff_t nargs,
 }
 
 /*
- * ekp-c-load-hyphenator: Load hyphenation dictionary
- */
-static emacs_value Fekp_c_load_hyphenator(emacs_env *env, ptrdiff_t nargs,
-                                           emacs_value *args, void *data)
-{
-    (void)nargs; (void)data;
-
-    if (!ekp_global) {
-        emacs_value signal = env->intern(env, "error");
-        emacs_value msg = env->make_string(env, "ekp-c not initialized", 21);
-        env->non_local_exit_signal(env, signal, msg);
-        return env->intern(env, "nil");
-    }
-
-    /* Get dictionary path */
-    ptrdiff_t size = 0;
-    env->copy_string_contents(env, args[0], NULL, &size);
-    char *path = malloc(size);
-    if (!path)
-        return env->intern(env, "nil");
-
-    env->copy_string_contents(env, args[0], path, &size);
-
-    /* Load hyphenator */
-    ekp_hyphenator_t *h = ekp_hyphen_create(path);
-    free(path);
-
-    if (!h)
-        return env->intern(env, "nil");
-
-    /* Store in global state */
-    if (ekp_global->hyphenator_count < 32) {
-        ekp_global->hyphenators[ekp_global->hyphenator_count++] = h;
-        return env->make_integer(env, ekp_global->hyphenator_count - 1);
-    }
-
-    ekp_hyphen_destroy(h);
-    return env->intern(env, "nil");
-}
-
-/*
- * ekp-c-set-spacing: Set spacing parameters
- */
-static emacs_value Fekp_c_set_spacing(emacs_env *env, ptrdiff_t nargs,
-                                       emacs_value *args, void *data)
-{
-    (void)data;
-
-    if (!ekp_global || nargs < 9) {
-        return env->intern(env, "nil");
-    }
-
-    ekp_global->spacing.lws_ideal = env->extract_integer(env, args[0]);
-    ekp_global->spacing.lws_stretch = env->extract_integer(env, args[1]);
-    ekp_global->spacing.lws_shrink = env->extract_integer(env, args[2]);
-    ekp_global->spacing.mws_ideal = env->extract_integer(env, args[3]);
-    ekp_global->spacing.mws_stretch = env->extract_integer(env, args[4]);
-    ekp_global->spacing.mws_shrink = env->extract_integer(env, args[5]);
-    ekp_global->spacing.cws_ideal = env->extract_integer(env, args[6]);
-    ekp_global->spacing.cws_stretch = env->extract_integer(env, args[7]);
-    ekp_global->spacing.cws_shrink = env->extract_integer(env, args[8]);
-
-    return env->intern(env, "t");
-}
-
-/*
  * ekp-c-set-penalties: Set K-P parameters
  */
 static emacs_value Fekp_c_set_penalties(emacs_env *env, ptrdiff_t nargs,
@@ -154,142 +77,20 @@ static emacs_value Fekp_c_set_penalties(emacs_env *env, ptrdiff_t nargs,
     if (!ekp_global || nargs < 4)
         return env->intern(env, "nil");
 
-    ekp_global->line_penalty = env->extract_integer(env, args[0]);
-    ekp_global->hyphen_penalty = env->extract_integer(env, args[1]);
-    ekp_global->fitness_penalty = env->extract_integer(env, args[2]);
+    ekp_global->line_penalty = clamp32(env->extract_integer(env, args[0]));
+    ekp_global->hyphen_penalty = clamp32(env->extract_integer(env, args[1]));
+    ekp_global->fitness_penalty = clamp32(env->extract_integer(env, args[2]));
     ekp_global->last_line_ratio = env->extract_float(env, args[3]);
     if (nargs > 4)
-        ekp_global->consec_hyphen_penalty = env->extract_integer(env, args[4]);
+        ekp_global->consec_hyphen_penalty = clamp32(env->extract_integer(env, args[4]));
     if (nargs > 5)
         ekp_global->last_line_short_penalty = env->extract_float(env, args[5]);
     /* Per-line extra stretch for non-justify alignment; reset to 0
      * when the caller omits it so stale values never leak. */
     ekp_global->extra_stretch =
-        (nargs > 6) ? (int32_t)env->extract_integer(env, args[6]) : 0;
+        (nargs > 6) ? (int32_t)clamp32(env->extract_integer(env, args[6])) : 0;
 
     return env->intern(env, "t");
-}
-
-/*
- * ekp-c-hyphenate: Get hyphenation positions for a word
- */
-static emacs_value Fekp_c_hyphenate(emacs_env *env, ptrdiff_t nargs,
-                                     emacs_value *args, void *data)
-{
-    (void)data;
-
-    if (!ekp_global || nargs < 2)
-        return env->intern(env, "nil");
-
-    intmax_t h_idx = env->extract_integer(env, args[0]);
-    if (h_idx < 0 || (size_t)h_idx >= ekp_global->hyphenator_count)
-        return env->intern(env, "nil");
-
-    ekp_hyphenator_t *h = ekp_global->hyphenators[h_idx];
-
-    /* Get word */
-    ptrdiff_t size = 0;
-    env->copy_string_contents(env, args[1], NULL, &size);
-    char *word = malloc(size);
-    if (!word)
-        return env->intern(env, "nil");
-
-    env->copy_string_contents(env, args[1], word, &size);
-
-    /* Hyphenate */
-    int8_t positions[EKP_MAX_WORD_LEN];
-    int count = ekp_hyphen_word(h, word, size - 1, positions, EKP_MAX_WORD_LEN);
-    free(word);
-
-    /* Build result list */
-    emacs_value result = env->intern(env, "nil");
-    emacs_value cons_sym = env->intern(env, "cons");
-
-    for (int i = count - 1; i >= 0; i--) {
-        emacs_value pos = env->make_integer(env, positions[i]);
-        emacs_value args2[2] = {pos, result};
-        result = env->funcall(env, cons_sym, 2, args2);
-    }
-
-    return result;
-}
-
-/*
- * ekp-c-break-lines: Core line breaking function
- *
- * Args: (string hyphenator-index line-width measure-func)
- * Returns: (breaks . total-cost) where breaks is a list
- */
-static emacs_value Fekp_c_break_lines(emacs_env *env, ptrdiff_t nargs,
-                                       emacs_value *args, void *data)
-{
-    (void)data;
-
-    if (!ekp_global || nargs < 4)
-        return env->intern(env, "nil");
-
-    /* Get string */
-    ptrdiff_t size = 0;
-    env->copy_string_contents(env, args[0], NULL, &size);
-    char *text = malloc(size);
-    if (!text)
-        return env->intern(env, "nil");
-
-    env->copy_string_contents(env, args[0], text, &size);
-    size_t text_len = size - 1;
-
-    /* Get hyphenator */
-    intmax_t h_idx = env->extract_integer(env, args[1]);
-    ekp_hyphenator_t *h = NULL;
-    if (h_idx >= 0 && (size_t)h_idx < ekp_global->hyphenator_count)
-        h = ekp_global->hyphenators[h_idx];
-
-    /* Get line width */
-    int32_t line_width = env->extract_integer(env, args[2]);
-
-    /* Get measure function */
-    current_env = env;
-    measure_func = args[3];
-
-    /* Create paragraph */
-    ekp_paragraph_t *para = ekp_para_create(text, text_len, h, emacs_measure_string);
-    free(text);
-
-    if (!para) {
-        current_env = NULL;
-        measure_func = NULL;
-        return env->intern(env, "nil");
-    }
-
-    /* Break lines */
-    ekp_result_t *result = ekp_break_lines(para, line_width);
-
-    current_env = NULL;
-    measure_func = NULL;
-
-    if (!result) {
-        ekp_para_destroy(para);
-        return env->intern(env, "nil");
-    }
-
-    /* Build result: ((breaks...) . cost) */
-    emacs_value breaks_list = env->intern(env, "nil");
-    emacs_value cons_sym = env->intern(env, "cons");
-
-    for (size_t i = result->break_count; i > 0; i--) {
-        emacs_value brk = env->make_integer(env, result->breaks[i - 1]);
-        emacs_value args2[2] = {brk, breaks_list};
-        breaks_list = env->funcall(env, cons_sym, 2, args2);
-    }
-
-    emacs_value cost = env->make_float(env, result->total_cost);
-    emacs_value args2[2] = {breaks_list, cost};
-    emacs_value final = env->funcall(env, cons_sym, 2, args2);
-
-    ekp_result_destroy(result);
-    ekp_para_destroy(para);
-
-    return final;
 }
 
 /*
@@ -314,7 +115,11 @@ static emacs_value Fekp_c_thread_count(emacs_env *env, ptrdiff_t nargs,
                                         emacs_value *args, void *data)
 {
     (void)nargs; (void)args; (void)data;
-    return env->make_integer(env, EKP_THREAD_POOL_SIZE);
+    /* Pool is created lazily; report its actual size once it exists,
+     * else the size it will get. */
+    if (ekp_global && ekp_global->pool)
+        return env->make_integer(env, (intmax_t)ekp_global->pool->thread_count);
+    return env->make_integer(env, (intmax_t)ekp_pool_default_threads());
 }
 
 /*
@@ -370,18 +175,18 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
 
     /* Extract prefix arrays */
     for (ptrdiff_t i = 0; i < prefix_len; i++) {
-        ideal_prefix[i] = env->extract_integer(env, env->vec_get(env, args[0], i));
-        min_prefix[i] = env->extract_integer(env, env->vec_get(env, args[1], i));
-        max_prefix[i] = env->extract_integer(env, env->vec_get(env, args[2], i));
-        lead_spaces[i] = env->extract_integer(env, env->vec_get(env, args[9], i));
-        trail_spaces[i] = env->extract_integer(env, env->vec_get(env, args[10], i));
+        ideal_prefix[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[0], i)));
+        min_prefix[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[1], i)));
+        max_prefix[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[2], i)));
+        lead_spaces[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[9], i)));
+        trail_spaces[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[10], i)));
     }
 
     /* Extract glue arrays */
     for (size_t i = 0; i < n; i++) {
-        glue_ideals[i] = env->extract_integer(env, env->vec_get(env, args[3], i));
-        glue_shrinks[i] = env->extract_integer(env, env->vec_get(env, args[4], i));
-        glue_stretches[i] = env->extract_integer(env, env->vec_get(env, args[5], i));
+        glue_ideals[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[3], i)));
+        glue_shrinks[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[4], i)));
+        glue_stretches[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[5], i)));
     }
 
     /* Get hyphen positions vector */
@@ -391,23 +196,23 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
         hyph_pos = malloc(hyph_count * sizeof(int32_t));
         if (hyph_pos) {
             for (ptrdiff_t i = 0; i < hyph_count; i++) {
-                hyph_pos[i] = env->extract_integer(env, env->vec_get(env, args[6], i));
+                hyph_pos[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[6], i)));
             }
         }
     }
 
-    int32_t hyph_width = env->extract_integer(env, args[7]);
-    int32_t line_width = env->extract_integer(env, args[8]);
+    int32_t hyph_width = clamp32(env->extract_integer(env, args[7]));
+    int32_t line_width = clamp32(env->extract_integer(env, args[8]));
 
     /* Right-edge protrusion: per-gap array (n+1) and hyphen scalar */
     int32_t *tail_pro = malloc(prefix_len * sizeof(int32_t));
     if (tail_pro) {
         for (ptrdiff_t i = 0; i < prefix_len; i++) {
-            tail_pro[i] = env->extract_integer(env, env->vec_get(env, args[12], i));
+            tail_pro[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[12], i)));
         }
     }
-    int32_t hyphen_protrude = env->extract_integer(env, args[13]);
-    int32_t first_line_width = env->extract_integer(env, args[14]);
+    int32_t hyphen_protrude = clamp32(env->extract_integer(env, args[13]));
+    int32_t first_line_width = clamp32(env->extract_integer(env, args[14]));
 
     /* Forbidden break positions (sorted gap indices, may be empty) */
     ptrdiff_t forb_count = env->vec_size(env, args[11]);
@@ -416,9 +221,25 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
         forb_pos = malloc(forb_count * sizeof(int32_t));
         if (forb_pos) {
             for (ptrdiff_t i = 0; i < forb_count; i++) {
-                forb_pos[i] = env->extract_integer(env, env->vec_get(env, args[11], i));
+                forb_pos[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[11], i)));
             }
         }
+    }
+
+    /* One consolidated gate: any partial allocation above (silent
+     * "no kinsoku / no hyphenation" degradation) or a pending Lisp
+     * signal from a bad element type must fail the whole call — the
+     * Elisp engine is the correct fallback, not a subtly different
+     * layout. */
+    if ((hyph_count > 0 && !hyph_pos) ||
+        (forb_count > 0 && !forb_pos) ||
+        !tail_pro ||
+        env->non_local_exit_check(env) != emacs_funcall_exit_return) {
+        free(ideal_prefix); free(min_prefix); free(max_prefix);
+        free(glue_ideals); free(glue_shrinks); free(glue_stretches);
+        free(lead_spaces); free(trail_spaces);
+        free(hyph_pos); free(forb_pos); free(tail_pro);
+        return env->intern(env, "nil");
     }
 
     /* Call the pure DP function */
@@ -500,17 +321,17 @@ static bool extract_paragraph_data(
     }
 
     for (ptrdiff_t i = 0; i < prefix_len; i++) {
-        (*ideal_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[0], i));
-        (*min_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[1], i));
-        (*max_prefix)[i] = env->extract_integer(env, env->vec_get(env, args[2], i));
-        (*lead_spaces)[i] = env->extract_integer(env, env->vec_get(env, args[9], i));
-        (*trail_spaces)[i] = env->extract_integer(env, env->vec_get(env, args[10], i));
+        (*ideal_prefix)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[0], i)));
+        (*min_prefix)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[1], i)));
+        (*max_prefix)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[2], i)));
+        (*lead_spaces)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[9], i)));
+        (*trail_spaces)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[10], i)));
     }
 
     for (size_t i = 0; i < *n; i++) {
-        (*glue_ideals)[i] = env->extract_integer(env, env->vec_get(env, args[3], i));
-        (*glue_shrinks)[i] = env->extract_integer(env, env->vec_get(env, args[4], i));
-        (*glue_stretches)[i] = env->extract_integer(env, env->vec_get(env, args[5], i));
+        (*glue_ideals)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[3], i)));
+        (*glue_shrinks)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[4], i)));
+        (*glue_stretches)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[5], i)));
     }
 
     *hyph_count = env->vec_size(env, args[6]);
@@ -519,13 +340,13 @@ static bool extract_paragraph_data(
         *hyph_pos = malloc(*hyph_count * sizeof(int32_t));
         if (*hyph_pos) {
             for (ptrdiff_t i = 0; i < *hyph_count; i++) {
-                (*hyph_pos)[i] = env->extract_integer(env, env->vec_get(env, args[6], i));
+                (*hyph_pos)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[6], i)));
             }
         }
     }
 
-    *hyph_width = env->extract_integer(env, args[7]);
-    *line_width = env->extract_integer(env, args[8]);
+    *hyph_width = clamp32(env->extract_integer(env, args[7]));
+    *line_width = clamp32(env->extract_integer(env, args[8]));
 
     *forb_count = env->vec_size(env, args[11]);
     *forb_pos = NULL;
@@ -533,7 +354,7 @@ static bool extract_paragraph_data(
         *forb_pos = malloc(*forb_count * sizeof(int32_t));
         if (*forb_pos) {
             for (ptrdiff_t i = 0; i < *forb_count; i++) {
-                (*forb_pos)[i] = env->extract_integer(env, env->vec_get(env, args[11], i));
+                (*forb_pos)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[11], i)));
             }
         }
     }
@@ -541,11 +362,26 @@ static bool extract_paragraph_data(
     *tail_pro = malloc(prefix_len * sizeof(int32_t));
     if (*tail_pro) {
         for (ptrdiff_t i = 0; i < prefix_len; i++) {
-            (*tail_pro)[i] = env->extract_integer(env, env->vec_get(env, args[12], i));
+            (*tail_pro)[i] = clamp32(env->extract_integer(env, env->vec_get(env, args[12], i)));
         }
     }
-    *hyphen_protrude = env->extract_integer(env, args[13]);
-    *first_line_width = env->extract_integer(env, args[14]);
+    *hyphen_protrude = clamp32(env->extract_integer(env, args[13]));
+    *first_line_width = clamp32(env->extract_integer(env, args[14]));
+
+    if ((*hyph_count > 0 && !*hyph_pos) ||
+        (*forb_count > 0 && !*forb_pos) ||
+        !*tail_pro ||
+        env->non_local_exit_check(env) != emacs_funcall_exit_return) {
+        free(*ideal_prefix); free(*min_prefix); free(*max_prefix);
+        free(*glue_ideals); free(*glue_shrinks); free(*glue_stretches);
+        free(*lead_spaces); free(*trail_spaces);
+        free(*hyph_pos); free(*forb_pos); free(*tail_pro);
+        *ideal_prefix = *min_prefix = *max_prefix = NULL;
+        *glue_ideals = *glue_shrinks = *glue_stretches = NULL;
+        *lead_spaces = *trail_spaces = NULL;
+        *hyph_pos = *forb_pos = *tail_pro = NULL;
+        return false;
+    }
 
     return true;
 }
@@ -740,18 +576,6 @@ int emacs_module_init(struct emacs_runtime *runtime)
     defun(env, "ekp-c-cleanup", 0, 0, Fekp_c_cleanup,
           "Cleanup EKP C module resources.");
 
-    defun(env, "ekp-c-load-hyphenator", 1, 1, Fekp_c_load_hyphenator,
-          "Load hyphenation dictionary from PATH.\n\
-Returns hyphenator index or nil on failure.\n\n(fn PATH)");
-
-    defun(env, "ekp-c-set-spacing", 9, 9, Fekp_c_set_spacing,
-          "Set spacing parameters (in pixels).\n\n\
-Arguments are: LWS-IDEAL LWS-STRETCH LWS-SHRINK\n\
-               MWS-IDEAL MWS-STRETCH MWS-SHRINK\n\
-               CWS-IDEAL CWS-STRETCH CWS-SHRINK\n\n\
-LWS = Latin Word Space, MWS = Mixed, CWS = CJK.\n\n\
-(fn LWS-I LWS-+ LWS-- MWS-I MWS-+ MWS-- CWS-I CWS-+ CWS--)");
-
     defun(env, "ekp-c-set-penalties", 4, 7, Fekp_c_set_penalties,
           "Set Knuth-Plass algorithm penalties.\n\n\
 LINE-PENALTY: base penalty per line break (default 10)\n\
@@ -762,18 +586,6 @@ CONSEC-HYPHEN-PENALTY: multiplier for consecutive hyphen runs (default 100)\n\
 LAST-LINE-SHORT-PENALTY: multiplier for short last lines (default 50.0)\n\n\
 (fn LINE-PENALTY HYPHEN-PENALTY FITNESS-PENALTY LAST-LINE-RATIO \
 &optional CONSEC-HYPHEN-PENALTY LAST-LINE-SHORT-PENALTY)");
-
-    defun(env, "ekp-c-hyphenate", 2, 2, Fekp_c_hyphenate,
-          "Get hyphenation positions for WORD using HYPHENATOR-INDEX.\n\
-Returns list of positions where word can be hyphenated.\n\n(fn HYPHENATOR-INDEX WORD)");
-
-    defun(env, "ekp-c-break-lines", 4, 4, Fekp_c_break_lines,
-          "Break STRING into lines of LINE-WIDTH pixels.\n\n\
-Uses Knuth-Plass optimal line breaking with hyphenation.\n\
-HYPHENATOR-INDEX: index from `ekp-c-load-hyphenator', or -1 for none\n\
-MEASURE-FUNC: function that takes a string and returns pixel width\n\n\
-Returns (BREAKS . TOTAL-COST) where BREAKS is list of break positions.\n\n\
-(fn STRING HYPHENATOR-INDEX LINE-WIDTH MEASURE-FUNC)");
 
     defun(env, "ekp-c-break-with-arrays", 15, 15, Fekp_c_break_with_arrays,
           "Break lines using Elisp's pre-computed prefix arrays (preferred API).\n\n\

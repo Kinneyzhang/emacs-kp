@@ -339,13 +339,9 @@ after CALLBACK returns."
 (declare-function ekp-c-init "ext:ekp")
 (declare-function ekp-c-version "ext:ekp")
 (declare-function ekp-c-thread-count "ext:ekp")
-(declare-function ekp-c-load-hyphenator "ext:ekp")
 
 (defvar ekp-c-module-loaded nil
   "Non-nil if C module is loaded.")
-
-(defvar ekp-c-hyphenator-index nil
-  "Index of the loaded hyphenator in C module.")
 
 (defun ekp-c-module-dir ()
   "Return the C module directory."
@@ -388,20 +384,6 @@ Run 'make' in ekp_c/ to rebuild; falling back to Elisp."
               (message "ekp-c module loaded (version %s, %d threads)"
                        (ekp-c-version) (ekp-c-thread-count)))))
       (message "C module not found. Run 'make' in ekp_c/ directory."))))
-
-(defun ekp-c-load-dictionary (lang)
-  "Load hyphenation dictionary for LANG into C module."
-  (when ekp-c-module-loaded
-    (let* ((root-dir (ekp-root-dir))
-           (dict-file (expand-file-name
-                       (format "dictionaries/hyph_%s.dic" lang)
-                       root-dir)))
-      (when (file-exists-p dict-file)
-        (setq ekp-c-hyphenator-index
-              (ekp-c-load-hyphenator dict-file))
-        (when ekp-c-hyphenator-index
-          (message "Loaded hyphenator for %s (index %d)"
-                   lang ekp-c-hyphenator-index))))))
 
 ;;;###autoload
 (defun ekp-c-module-build ()

@@ -1680,7 +1680,8 @@ the reconstructed rests overfill the indented line."
 The C module receives all font-dependent data from Elisp; it only
 runs the pure DP.  Falls back to Elisp when the C call fails."
   (ekp--c-sync-params)
-  (let* ((result (ekp-c-break-with-arrays
+  (let* ((result (condition-case nil
+                     (ekp-c-break-with-arrays
                   (ekp-para-ideal-prefixs para)
                   (ekp-para-min-prefixs para)
                   (ekp-para-max-prefixs para)
@@ -1695,7 +1696,10 @@ runs the pure DP.  Falls back to Elisp when the C call fails."
                   (ekp-para-forbidden-positions para)
                   (ekp-para-tail-protrudes para)
                   (ekp-para-hyphen-protrude para)
-                  (cdr (ekp--line-spec para 0 line-pixel))))
+                  (cdr (ekp--line-spec para 0 line-pixel)))
+                   ;; A module-level signal must not escape: the
+                   ;; Elisp engine is the fallback for any C failure.
+                   (error nil)))
          (c-breaks (car result))
          (c-cost (cdr result)))
     (if (null c-breaks)
@@ -1723,12 +1727,16 @@ Only computes strings that aren't already cached."
                            (mapcar (lambda (ip)
                                      (ekp--prepare-para-for-c (cdr ip) line-pixel))
                                    needs-compute)))
-             (batch-results (ekp-c-break-batch batch-input)))
+             ;; nil (whole-batch failure or a signal) falls back to
+             ;; the Elisp engine per paragraph below.
+             (batch-results (condition-case nil
+                                (ekp-c-break-batch batch-input)
+                              (error nil))))
         (cl-loop for ip in needs-compute
                  for j from 0
                  for idx = (car ip)
                  for para = (cdr ip)
-                 for res = (aref batch-results j)
+                 for res = (and batch-results (aref batch-results j))
                  for breaks = (car res)
                  for cost = (cdr res)
                  do (aset results idx

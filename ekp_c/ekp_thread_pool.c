@@ -18,6 +18,9 @@
 #include "ekp_module.h"
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 #define QUEUE_CAPACITY 1024
 
@@ -41,8 +44,12 @@ static void *worker_thread(void *arg)
         /* Dequeue work */
         void (*func)(void *) = pool->queue[pool->queue_head].func;
         void *work_arg = pool->queue[pool->queue_head].arg;
+        bool was_full =
+            ((pool->queue_tail + 1) % pool->queue_size) == pool->queue_head;
         pool->queue_head = (pool->queue_head + 1) % pool->queue_size;
         pool->active_count++;
+        if (was_full)
+            pthread_cond_broadcast(&pool->done_cond);
 
         pthread_mutex_unlock(&pool->queue_lock);
 
@@ -62,12 +69,25 @@ static void *worker_thread(void *arg)
     return NULL;
 }
 
+size_t ekp_pool_default_threads(void)
+{
+    long n = 0;
+#if defined(_SC_NPROCESSORS_ONLN)
+    n = sysconf(_SC_NPROCESSORS_ONLN);
+#endif
+    if (n <= 0)
+        n = 4;
+    if (n > EKP_THREAD_POOL_MAX)
+        n = EKP_THREAD_POOL_MAX;
+    return (size_t)n;
+}
+
 ekp_thread_pool_t *ekp_pool_create(size_t num_threads)
 {
     if (num_threads == 0)
-        num_threads = EKP_THREAD_POOL_SIZE;
-    if (num_threads > EKP_THREAD_POOL_SIZE)
-        num_threads = EKP_THREAD_POOL_SIZE;
+        num_threads = ekp_pool_default_threads();
+    if (num_threads > EKP_THREAD_POOL_MAX)
+        num_threads = EKP_THREAD_POOL_MAX;
 
     ekp_thread_pool_t *pool = calloc(1, sizeof(*pool));
     if (!pool)
@@ -134,17 +154,21 @@ void ekp_pool_submit(ekp_thread_pool_t *pool, void (*func)(void *), void *arg)
 
     pthread_mutex_lock(&pool->queue_lock);
 
-    size_t next_tail = (pool->queue_tail + 1) % pool->queue_size;
-
-    /* Queue full - drop task (shouldn't happen with proper sizing) */
-    if (next_tail == pool->queue_head) {
+    /* Queue full: wait for a worker to make room.  Dropping the task
+     * here used to silently degrade the batch to the Elisp fallback
+     * exactly when parallelism mattered most. */
+    while (((pool->queue_tail + 1) % pool->queue_size) == pool->queue_head
+           && !pool->shutdown) {
+        pthread_cond_wait(&pool->done_cond, &pool->queue_lock);
+    }
+    if (pool->shutdown) {
         pthread_mutex_unlock(&pool->queue_lock);
         return;
     }
 
     pool->queue[pool->queue_tail].func = func;
     pool->queue[pool->queue_tail].arg = arg;
-    pool->queue_tail = next_tail;
+    pool->queue_tail = (pool->queue_tail + 1) % pool->queue_size;
 
     pthread_cond_signal(&pool->queue_cond);
     pthread_mutex_unlock(&pool->queue_lock);
