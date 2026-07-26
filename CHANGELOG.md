@@ -4,7 +4,9 @@ All notable changes to emacs-kp are documented here.  The format
 follows [Keep a Changelog](https://keepachangelog.com/), and the
 project aims to follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.0.0] - 2026-07-27
+
+First tagged release.  Highlights of the work leading up to it:
 
 ### Editor integration
 
