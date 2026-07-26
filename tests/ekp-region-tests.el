@@ -166,6 +166,49 @@
       ;; re-enable so with-mode's cleanup disable is a no-op state-wise
       (ekp-auto-justify-mode 1))))
 
+(ert-deftest ekp-region-test-verbatim-paragraph-skipped ()
+  "A code-block paragraph stays byte-identical; prose around it justifies."
+  (let* ((code (propertize "(defun foo (x)   (list 1     2))"
+                           'ekp-verbatim t 'face 'font-lock-keyword-face))
+         (text (concat "prose before with words enough to wrap lines\n"
+                       code
+                       "\nprose after also long enough to wrap lines")))
+    (ekp-region-test--with-text text
+      (ekp-justify-region (point-min) (point-max) 20)
+      ;; the code line is still there, character-exact, spacing intact
+      (goto-char (point-min))
+      (should (search-forward "(defun foo (x)   (list 1     2))" nil t))
+      ;; prose got justified (soft breaks appeared)
+      (should (text-property-not-all (point-min) (point-max)
+                                     'ekp-soft-break nil))
+      (ekp-unjustify-region (point-min) (point-max))
+      (should (equal-including-properties (buffer-string) text)))))
+
+(ert-deftest ekp-region-test-skip-faces ()
+  "Paragraphs wearing a skip face stay verbatim."
+  (let* ((ekp-region-skip-faces '(font-lock-comment-face))
+         (code (propertize ";; a  comment   line kept   as-is"
+                           'face 'font-lock-comment-face))
+         (text (concat "prose paragraph long enough to wrap\n" code)))
+    (ekp-region-test--with-text text
+      (ekp-justify-region (point-min) (point-max) 15)
+      (goto-char (point-min))
+      (should (search-forward ";; a  comment   line kept   as-is" nil t))
+      (ekp-unjustify-region (point-min) (point-max))
+      (should (equal-including-properties (buffer-string) text)))))
+
+(ert-deftest ekp-region-test-skip-predicate ()
+  "The paragraph predicate is the general escape hatch."
+  (let ((text "keepme raw   spacing\nnormal prose that wraps around"))
+    (ekp-region-test--with-text text
+      (setq-local ekp-region-skip-predicate
+                  (lambda (p) (string-prefix-p "keepme" p)))
+      (ekp-justify-region (point-min) (point-max) 12)
+      (goto-char (point-min))
+      (should (looking-at-p "keepme raw   spacing$"))
+      (ekp-unjustify-region (point-min) (point-max))
+      (should (equal (buffer-string) text)))))
+
 (ert-deftest ekp-region-test-indent-roundtrip ()
   "First-line indent spacers vanish exactly on unjustify."
   (let ((ekp-first-line-indent 6)

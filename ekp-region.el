@@ -46,6 +46,21 @@ by the display engine due to rounding."
   "Idle seconds before edited paragraphs are re-justified."
   :type 'number)
 
+(defcustom ekp-region-skip-faces nil
+  "Faces whose paragraphs are never justified (kept verbatim).
+Point major-mode faces here — e.g. `org-block' and `org-code' for
+Org, `markdown-code-face' for Markdown — and code blocks pass
+through untouched.  Checked against the `face' property of each
+paragraph, symbol or list."
+  :type '(repeat face))
+
+(defvar-local ekp-region-skip-predicate nil
+  "When non-nil, a function called with a paragraph string.
+Return non-nil to keep that paragraph verbatim (no justification).
+The general escape hatch for mode-specific block detection; prefer
+the `ekp-verbatim' text property or `ekp-region-skip-faces' when
+they suffice.")
+
 (defvar ekp-region--inhibit nil
   "Non-nil while ekp-region is modifying the buffer itself.")
 
@@ -88,12 +103,39 @@ extend past the flush edge, so the layout width must leave room."
     (push (substring string start) parts)
     (nreverse parts)))
 
+(defun ekp-region--face-hit-p (string)
+  "Non-nil when STRING carries any face from `ekp-region-skip-faces'."
+  (let ((pos 0) (len (length string)) hit)
+    (while (and (not hit) (< pos len))
+      (let ((f (get-text-property pos 'face string)))
+        (when (if (listp f)
+                  (seq-intersection f ekp-region-skip-faces)
+                (memq f ekp-region-skip-faces))
+          (setq hit t))
+        (setq pos (or (next-single-property-change pos 'face string len)
+                      len))))
+    hit))
+
+(defun ekp-region--skip-para-p (para)
+  "Non-nil when the paragraph string PARA must stay verbatim.
+Code blocks and other protected text: marked with the `ekp-verbatim'
+property, matching `ekp-region-skip-faces', or accepted by
+`ekp-region-skip-predicate'."
+  (or (text-property-not-all 0 (length para) 'ekp-verbatim nil para)
+      (and ekp-region-skip-faces (ekp-region--face-hit-p para))
+      (and ekp-region-skip-predicate
+           (funcall ekp-region-skip-predicate para))))
+
 (defun ekp-region--justify-string (text pixel)
   "Return TEXT justified to PIXEL with exact-recovery markers.
 Hard newlines are preserved one-to-one.  Whitespace-only paragraphs
-(which the string API would empty out) survive as hidden text."
+(which the string API would empty out) survive as hidden text;
+verbatim paragraphs (see `ekp-region--skip-para-p') pass through
+untouched."
   (let* ((paras (split-string text "\n"))
-         (cores (cl-remove-if #'string-blank-p paras))
+         (skips (mapcar #'ekp-region--skip-para-p paras))
+         (cores (cl-loop for p in paras for s in skips
+                         unless (or s (string-blank-p p)) collect p))
          (out (and cores
                    (ekp-region--split-hard
                     (ekp-pixel-justify (string-join cores "\n") pixel)))))
@@ -101,11 +143,10 @@ Hard newlines are preserved one-to-one.  Whitespace-only paragraphs
       (error "ekp-region: paragraph count mismatch (%d vs %d)"
              (length out) (length cores)))
     (string-join
-     (mapcar (lambda (p)
-               (if (string-blank-p p)
-                   (ekp--hide-string p)
-                 (pop out)))
-             paras)
+     (cl-loop for p in paras for s in skips
+              collect (cond (s p)
+                            ((string-blank-p p) (ekp--hide-string p))
+                            (t (pop out))))
      "\n")))
 
 (defun ekp-region--pos-for-offset (string offset)
@@ -215,6 +256,21 @@ numbers with units)."
   "Remove `ekp-no-break' marking from the region."
   (interactive "r")
   (remove-text-properties beg end '(ekp-no-break nil)))
+
+;;;###autoload
+(defun ekp-verbatim-region (beg end)
+  "Protect the region's paragraphs from justification (code blocks).
+Whole paragraphs carrying the `ekp-verbatim' property pass through
+`ekp-justify-region' and `ekp-auto-justify-mode' untouched.  For an
+unbreakable span inside prose, use `ekp-no-break-region' instead."
+  (interactive "r")
+  (add-text-properties beg end '(ekp-verbatim t)))
+
+;;;###autoload
+(defun ekp-clear-verbatim-region (beg end)
+  "Remove `ekp-verbatim' protection from the region."
+  (interactive "r")
+  (remove-text-properties beg end '(ekp-verbatim nil)))
 
 ;;;; Auto-justify minor mode
 
