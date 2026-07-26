@@ -390,6 +390,57 @@ keeps the buffer justified, and leaves it unmodified."
         (should (equal (buffer-string) text))
         (should-not ekp-auto-justify-mode)))))
 
+;;;; Ecosystem compatibility (kill ring / isearch / fields / read-only)
+
+(ert-deftest ekp-region-test-kill-ring-gets-logical-text ()
+  "Copying justified text extracts the logical text.
+CJK justification injects real space characters between glyphs;
+they must not travel with a kill/yank."
+  (let ((text "中文复制检查内容足够长会断行 with some latin"))
+    (ekp-region-test--with-text text
+      (ekp-justify-region (point-min) (point-max) 20)
+      (should (local-variable-p 'filter-buffer-substring-function))
+      (should (equal (filter-buffer-substring (point-min) (point-max))
+                     text)))))
+
+(ert-deftest ekp-region-test-isearch-sees-logical-text ()
+  "The isearch hooks expose the logical text, then restore the layout."
+  (let ((text "跨行搜索的目标短语必须能找到 internationalization word"))
+    (ekp-region-test--with-text text
+      (ekp-justify-region (point-min) (point-max) 20)
+      (let ((justified (buffer-string)))
+        ;; Sanity: layout breaks the phrase apart.
+        (should (> (cl-count ?\n justified) 0))
+        (ekp-region--isearch-begin)
+        ;; Logical view: the full phrase and the long word are findable.
+        (goto-char (point-min))
+        (should (search-forward "目标短语必须能找到" nil t))
+        (goto-char (point-min))
+        (should (search-forward "internationalization" nil t))
+        (ekp-region--isearch-end)
+        ;; Layout restored byte-identically.
+        (should (equal-including-properties (buffer-string) justified))))))
+
+(ert-deftest ekp-region-test-field-paragraph-skipped ()
+  "Paragraphs containing field or read-only text stay verbatim."
+  (let* ((prompt (propertize "shell> " 'field 'output))
+         (text (concat prompt "command output   here\n"
+                       "prose paragraph long enough to wrap around")))
+    (ekp-region-test--with-text text
+      (ekp-justify-region (point-min) (point-max) 15)
+      (goto-char (point-min))
+      (should (search-forward "command output   here" nil t)))))
+
+(ert-deftest ekp-region-test-read-only-command-barfs ()
+  "Interactive justify on a read-only buffer signals, not corrupts."
+  (ekp-region-test--with-text "read only 检查内容"
+    (set-mark (point-min))
+    (goto-char (point-max))
+    (activate-mark)
+    (read-only-mode 1)
+    (should-error (call-interactively #'ekp-justify-region)
+                  :type 'buffer-read-only)))
+
 (provide 'ekp-region-tests)
 
 ;;; ekp-region-tests.el ends here

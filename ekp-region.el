@@ -148,6 +148,16 @@ extend past the flush edge, so the layout width must leave room."
             ekp-region-margin-pixel
             (ekp-region-protrusion-reserve))))
 
+(defun ekp-region--effective-width (&optional buffer)
+  "Justification width for BUFFER: the narrowest window showing it.
+With the buffer in several windows only one width can be laid out;
+the narrowest keeps every window free of overflow-wrapped lines.
+Falls back to the selected window when the buffer is not displayed."
+  (let ((wins (get-buffer-window-list (or buffer (current-buffer)) nil t)))
+    (if wins
+        (apply #'min (mapcar #'ekp-region--window-pixel wins))
+      (ekp-region--window-pixel))))
+
 ;;;; Pure string transforms
 
 (defun ekp-region--split-hard (string)
@@ -181,6 +191,10 @@ Code blocks and other protected text: marked with the `ekp-verbatim'
 property, matching `ekp-region-skip-faces', or accepted by
 `ekp-region-skip-predicate'."
   (or (text-property-not-all 0 (length para) 'ekp-verbatim nil para)
+      ;; Structured buffer text (comint/eshell prompts, forms) must
+      ;; never be re-written: fields and read-only spans stay put.
+      (text-property-not-all 0 (length para) 'field nil para)
+      (text-property-not-all 0 (length para) 'read-only nil para)
       (and ekp-region-skip-faces (ekp-region--face-hit-p para))
       (and ekp-region-skip-predicate
            (funcall ekp-region-skip-predicate para))))
@@ -239,8 +253,11 @@ interactively, a numeric prefix argument supplies it explicitly.
 Already-justified text is unjustified first, so the command is
 idempotent and can re-flow to a new width."
   (interactive
-   (list (region-beginning) (region-end)
-         (and current-prefix-arg (prefix-numeric-value current-prefix-arg))))
+   (progn
+     (barf-if-buffer-read-only)
+     (list (region-beginning) (region-end)
+           (and current-prefix-arg
+                (prefix-numeric-value current-prefix-arg)))))
   (setq pixel (or pixel (ekp-region--window-pixel)))
   (let ((beg (copy-marker (min beg end)))
         (end (copy-marker (max beg end) t))
@@ -264,11 +281,32 @@ idempotent and can re-flow to a new width."
                   (goto-char (+ beg (ekp-region--pos-for-offset
                                      justified point-offset)))))
               (add-text-properties beg end (list 'ekp-justified pixel))))
-          ;; Saving a justified buffer must write the logical text.
-          (add-hook 'before-save-hook #'ekp-region--before-save nil t)
-          (add-hook 'after-save-hook #'ekp-region--after-save nil t))
+          (ekp-region--install-integrations))
       (set-marker beg nil)
       (set-marker end nil))))
+
+(defun ekp-region--install-integrations ()
+  "Install the buffer-local hooks justified text depends on.
+Idempotent; added by `ekp-justify-region' and `ekp-auto-justify-mode'."
+  ;; Saving a justified buffer must write the logical text.
+  (add-hook 'before-save-hook #'ekp-region--before-save nil t)
+  (add-hook 'after-save-hook #'ekp-region--after-save nil t)
+  ;; Isearch searches the logical text.
+  (add-hook 'isearch-mode-hook #'ekp-region--isearch-begin nil t)
+  (add-hook 'isearch-mode-end-hook #'ekp-region--isearch-end nil t)
+  ;; The kill ring receives the logical text.
+  (setq-local filter-buffer-substring-function
+              #'ekp-region--filter-buffer-substring))
+
+(defun ekp-region--remove-integrations ()
+  "Remove the hooks installed by `ekp-region--install-integrations'."
+  (remove-hook 'before-save-hook #'ekp-region--before-save t)
+  (remove-hook 'after-save-hook #'ekp-region--after-save t)
+  (remove-hook 'isearch-mode-hook #'ekp-region--isearch-begin t)
+  (remove-hook 'isearch-mode-end-hook #'ekp-region--isearch-end t)
+  (when (eq filter-buffer-substring-function
+            #'ekp-region--filter-buffer-substring)
+    (kill-local-variable 'filter-buffer-substring-function)))
 
 ;;;###autoload
 (defun ekp-unjustify-region (beg end)
@@ -276,7 +314,7 @@ idempotent and can re-flow to a new width."
 Removes synthesized glue and soft hyphens, replaces soft line breaks
 with the whitespace they swallowed, and re-exposes hidden paragraph
 tails.  Text the user typed into the justified region is preserved."
-  (interactive "r")
+  (interactive "*r")
   (let ((end-m (copy-marker (max beg end) t))
         (ekp-region--inhibit t)
         (inhibit-read-only t))
@@ -359,6 +397,61 @@ so the user never sees the buffer un-justified."
     ;; The file on disk holds exactly this buffer's logical text.
     (set-buffer-modified-p nil)))
 
+;;;; Isearch: search the logical text
+
+(defvar-local ekp-region--isearch-state nil
+  "Spans unjustified while isearch is active: ((BEG-M END-M WIDTH)...).")
+
+(defun ekp-region--isearch-begin ()
+  "Show the logical text while searching.
+Justified layout injects real space characters between CJK glyphs and
+splits words across soft breaks and hyphens, so searching the layout
+finds almost nothing.  The buffer is un-justified for the duration of
+the search and restored by `ekp-region--isearch-end'."
+  (let ((spans (and (null ekp-region--isearch-state)
+                    (ekp-region--justified-spans))))
+    (when spans
+      (let ((buffer-undo-list t))
+        (setq ekp-region--isearch-state
+              (mapcar (pcase-lambda (`(,beg ,end ,width))
+                        (list (copy-marker beg) (copy-marker end t) width))
+                      spans))
+        (pcase-dolist (`(,beg ,end ,_w) ekp-region--isearch-state)
+          (ekp-unjustify-region beg end))))))
+
+(defun ekp-region--isearch-end ()
+  "Restore the justified layout after isearch."
+  (when ekp-region--isearch-state
+    (let ((buffer-undo-list t))
+      (pcase-dolist (`(,beg ,end ,width) ekp-region--isearch-state)
+        (when (and (marker-position beg) (marker-position end))
+          (ekp-justify-region beg end width))
+        (set-marker beg nil)
+        (set-marker end nil)))
+    (setq ekp-region--isearch-state nil)))
+
+;;;; Kill/yank: the kill ring receives the logical text
+
+(defun ekp-region--logical-string (string)
+  "Return STRING with any ekp layout markers structurally inverted.
+Non-justified strings are returned unchanged (same object)."
+  (if (cl-some (lambda (prop)
+                 (text-property-not-all 0 (length string) prop nil string))
+               '(ekp-glue ekp-soft-break ekp-soft-hyphen
+                 ekp-hidden ekp-justified))
+      (with-temp-buffer
+        (insert string)
+        (ekp-unjustify-region (point-min) (point-max))
+        (buffer-string))
+    string))
+
+(defun ekp-region--filter-buffer-substring (beg end &optional delete)
+  "Extract BEG..END for the kill ring as logical text.
+Killing justified text and yanking it elsewhere must transport the
+words, not the pixel layout of the source window (DELETE as in
+`filter-buffer-substring-function')."
+  (ekp-region--logical-string (buffer-substring--filter beg end delete)))
+
 ;;;###autoload
 (defun ekp-no-break-region (beg end)
   "Mark the region as an unbreakable typesetting atom.
@@ -436,26 +529,39 @@ undo just restored).  The next real edit or resize re-flows normally."
           (run-with-idle-timer ekp-auto-justify-edit-delay nil
                                #'ekp-region--flush-dirty (current-buffer)))))
 
+(defun ekp-region--composing-p ()
+  "Non-nil while an input method composition (quail preedit) is active.
+Re-flowing the buffer under a live preedit overlay corrupts the
+composition the user is still typing."
+  (and (bound-and-true-p quail-overlay)
+       (overlayp quail-overlay)
+       (overlay-buffer quail-overlay)))
+
 (defun ekp-region--flush-dirty (buffer)
   "Re-justify the paragraphs of BUFFER touched by recent edits."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (when (and ekp-auto-justify-mode ekp-region--dirty ekp-region--auto-width)
-        (let* ((pairs (prog1 ekp-region--dirty (setq ekp-region--dirty nil)))
-               ;; Convert all bounds to markers before the first
-               ;; re-justification shifts later positions.
-               (regions (mapcar (lambda (r)
-                                  (cons (copy-marker (car r))
-                                        (copy-marker (cdr r) t)))
-                                (ekp-region--merge-regions
-                                 (mapcar #'ekp-region--para-bounds pairs)))))
-          (dolist (r regions)
-            (ekp-justify-region (car r) (cdr r) ekp-region--auto-width)
-            (set-marker (car r) nil)
-            (set-marker (cdr r) nil))
-          (dolist (p pairs)
-            (set-marker (car p) nil)
-            (set-marker (cdr p) nil)))))))
+      (if (ekp-region--composing-p)
+          ;; Let the user finish composing; try again after the delay.
+          (setq ekp-region--edit-timer
+                (run-with-idle-timer ekp-auto-justify-edit-delay nil
+                                     #'ekp-region--flush-dirty buffer))
+        (when (and ekp-auto-justify-mode ekp-region--dirty ekp-region--auto-width)
+          (let* ((pairs (prog1 ekp-region--dirty (setq ekp-region--dirty nil)))
+                 ;; Convert all bounds to markers before the first
+                 ;; re-justification shifts later positions.
+                 (regions (mapcar (lambda (r)
+                                    (cons (copy-marker (car r))
+                                          (copy-marker (cdr r) t)))
+                                  (ekp-region--merge-regions
+                                   (mapcar #'ekp-region--para-bounds pairs)))))
+            (dolist (r regions)
+              (ekp-justify-region (car r) (cdr r) ekp-region--auto-width)
+              (set-marker (car r) nil)
+              (set-marker (cdr r) nil))
+            (dolist (p pairs)
+              (set-marker (car p) nil)
+              (set-marker (cdr p) nil))))))))
 
 (defun ekp-region--on-resize (window-or-frame)
   "Debounced re-flow after WINDOW-OR-FRAME changed size.
@@ -468,15 +574,25 @@ buffer current — so resolve both explicitly."
                    (t (get-buffer-window (current-buffer))))))
     (when (window-live-p win)
       (with-current-buffer (window-buffer win)
-        (when ekp-auto-justify-mode
-          (let ((w (ekp-region--window-pixel win)))
-            (when (and ekp-region--auto-width (/= w ekp-region--auto-width))
-              (when (timerp ekp-region--resize-timer)
-                (cancel-timer ekp-region--resize-timer))
-              (setq ekp-region--resize-timer
-                    (run-with-timer ekp-auto-justify-resize-delay nil
-                                    #'ekp-region--reflow
-                                    (current-buffer) w)))))))))
+        (ekp-region--schedule-reflow)))))
+
+(defun ekp-region--on-window-change ()
+  "Re-check the layout width after the window configuration changed.
+Catches the buffer becoming displayed (possibly for the first time),
+window splits, and deletions of the narrowest window."
+  (ekp-region--schedule-reflow))
+
+(defun ekp-region--schedule-reflow ()
+  "Debounce a re-flow of the current buffer to its effective width."
+  (when ekp-auto-justify-mode
+    (let ((w (ekp-region--effective-width)))
+      (when (and ekp-region--auto-width (/= w ekp-region--auto-width))
+        (when (timerp ekp-region--resize-timer)
+          (cancel-timer ekp-region--resize-timer))
+        (setq ekp-region--resize-timer
+              (run-with-timer ekp-auto-justify-resize-delay nil
+                              #'ekp-region--reflow
+                              (current-buffer) w))))))
 
 (defun ekp-region--cancel-pending ()
   "Drop any queued lazy re-flow chunks."
@@ -581,25 +697,25 @@ the buffer text is restored exactly when the mode is turned off."
   :lighter " EKP"
   (if ekp-auto-justify-mode
       (progn
-        (setq ekp-region--auto-width
-              (ekp-region--window-pixel (get-buffer-window)))
+        (setq ekp-region--auto-width (ekp-region--effective-width))
         (ekp-region--reflow (current-buffer) ekp-region--auto-width)
         (add-hook 'window-size-change-functions #'ekp-region--on-resize nil t)
+        (add-hook 'window-configuration-change-hook
+                  #'ekp-region--on-window-change nil t)
         (add-hook 'after-change-functions #'ekp-region--after-change nil t)
-        (add-hook 'before-save-hook #'ekp-region--before-save nil t)
-        (add-hook 'after-save-hook #'ekp-region--after-save nil t)
+        (ekp-region--install-integrations)
         ;; Turning the major mode off/over kills local hooks silently;
         ;; the buffer must get its logical text back first.
         (add-hook 'change-major-mode-hook #'ekp-region--teardown nil t))
     (remove-hook 'window-size-change-functions #'ekp-region--on-resize t)
+    (remove-hook 'window-configuration-change-hook
+                 #'ekp-region--on-window-change t)
     (remove-hook 'after-change-functions #'ekp-region--after-change t)
     (remove-hook 'change-major-mode-hook #'ekp-region--teardown t)
     (ekp-region--teardown)
-    ;; Keep the save hooks only while justified text remains (the
-    ;; teardown above removed all of it; a later ekp-justify-region
-    ;; re-adds them).
-    (remove-hook 'before-save-hook #'ekp-region--before-save t)
-    (remove-hook 'after-save-hook #'ekp-region--after-save t)))
+    ;; The teardown removed all justified text; a later
+    ;; ekp-justify-region re-installs what it needs.
+    (ekp-region--remove-integrations)))
 
 (defun ekp-region--teardown ()
   "Cancel timers and restore the whole buffer's logical text.
