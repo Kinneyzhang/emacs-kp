@@ -52,17 +52,28 @@
   新增行为级禁则测试(任意宽度:行首无 close、行尾无 open、
   字。」不拆)。fuzz 断言与引擎无关,应保持 0 失败。
 
-## 阶段与提交计划
+## 阶段与提交计划(全部完成 2026-07-26)
 
-- [ ] A 地基:标点成盒 + breaks-allowed + DP/C(1.2)+ 测试迁移
-- [ ] B no-break API:ekp-no-break 属性、NBSP/WJ/2060/202F、刚性 glue
-- [ ] C 对齐模式:ekp-alignment(justify|ragged-right|ragged-left|center)
-      + C extra-stretch(1.3)
-- [ ] D 突出/悬挂:ekp-protrusion(类→左右比率)+ C 两数组(1.4)
-      + region 层宽度补偿
-- [ ] E parshape:ekp-parshape + ekp-first-line-indent(2D,elisp-only)
-- [ ] F verbatim:段落豁免(region 谓词/属性)+ 行内原子(含禁断词)
-- [ ] G 文档(readme×2 DEVELOPER×2)+ GUI 目检 + 记忆更新
+- [x] A 地基 64eb2f3:标点成盒 + breaks-allowed + DP/C 1.2;顺带修复
+      连续闭合标点行首漏洞、open-punct 跨空格盒序错乱、「Hello 断词失效;
+      半角标点禁则(纯标点盒判定)
+- [x] B ea96a6d:ekp-no-break 属性(刚性原子/禁断词)、NBSP/NNBSP/
+      FIGURE SPACE/WJ/ZWNBSP、命令 ×2;零 C 改动
+- [x] C 57a3abe:ekp-alignment 四模式 + ekp-ragged-stretch-pixel;
+      C 1.3(set-penalties 第 7 参 extra-stretch,缺省归零)
+- [x] D f6aa64b:ekp-protrusion 右缘悬挂(cjk-close/latin-close/hyphen
+      比率);DP/渲染/C 重建三处 lw=width+release 同步;C 1.4
+      (break-with-arrays 14 参);region 预留 protrusion-reserve;
+      仅右缘(左缘无法渲染,文档已注明)
+- [x] E 720b1cd:ekp-parshape + ekp-first-line-indent(t=2em 按段落
+      CJK 字体);loose 2D 每行宽;C 旁路
+- [x] F 4d9a018:ekp-verbatim 段落豁免 + ekp-region-skip-faces +
+      buffer-local skip-predicate;行内原子沿用 ekp-no-break;核心零改动
+- [x] G:readme×2 排版特性/verbatim 章节、DEVELOPER×2 §5.1;GUI 目检
+      (悬挂+缩进+verbatim+auto-mode 齐行/ragged 两态截图确认)
+
+最终状态:66 ERT 全绿,fuzz 300/300(每阶段跑),C 模块 1.4 两引擎
+逐字节一致。行中挤压不可渲染(Emacs 无负宽 display)= 已知边界。
 
 ## 验证清单(每阶段)
 

@@ -147,6 +147,29 @@ batch/tty 下按字符列精确。
 (`ekp-unjustify-region`)——即使排版后又被编辑过也能精确还原——并在
 其上实现 `ekp-justify-region` / `ekp-auto-justify-mode`。
 
+### 5.1 断行许可、对齐、悬挂、段形
+
+- **断行许可**:每个 CJK 字符(含标点)独立成盒;
+  `ekp-para-breaks-allowed` 按禁则(全角与半角)、`ekp-no-break`
+  区间及 NBSP 族连接符禁止相应间隙,被禁间隙不携带 glue。DP 跳过
+  被禁候选但继续延伸行;紧急兜底把"内部无许可断点的连跑段"视为
+  原子。C 侧接收稀疏 `forbidden-positions` 向量。
+- **对齐**(`ekp-alignment`):非两端对齐把 glue 伸缩数组与类参数
+  置零,DP 给 `max_w` 加每行额外伸展 R(`ekp-c-set-penalties` 第 7
+  参),badness = 100·(欠宽/R)³;渲染层按模式分派剩余(尾部/对半/
+  头部)。
+- **悬挂**(`ekp-protrusion`):逐间隙 `tail-protrudes[k]`(穿透尾
+  随空格盒取最后内容盒)加 `hyphen-protrude` 标量,在 DP、
+  `ekp-line-glues`、C 结果重建三处同步放宽每个候选的有效目标宽
+  (`lw = width + release`)——三处必须保持一致。
+- **每行宽度**(`ekp-parshape` / `ekp-first-line-indent`):由
+  `ekp--line-spec`(行号 → 缩进 . 宽度)解析;需要(位置×行数)DP,
+  与 looseness 一样旁路 C。缩进渲染为行首 `ekp-glue` 垫片。
+
+C 模块 1.4:`ekp-c-break-with-arrays` 14 参(…、
+forbidden-positions、tail-protrudes、hyphen-protrude);batch 向量
+14 元;`ekp-c-set-penalties` 4–7 参。
+
 ## 6. Looseness
 
 `ekp-looseness` ≠ 0 时切换到 `ekp--dp-run-loose`:完整的

@@ -89,6 +89,45 @@ loading refuses with a message asking you to rebuild.
 `ekp-region-margin-pixel` (default 2) is subtracted from the window
 width as a rounding safety margin.
 
+### Protecting code and other verbatim text
+
+- Block level: paragraphs carrying the `ekp-verbatim` text property
+  (`M-x ekp-verbatim-region`), wearing a face listed in
+  `ekp-region-skip-faces` (e.g. `org-block`, `markdown-code-face`), or
+  matched by the buffer-local function `ekp-region-skip-predicate`
+  pass through completely untouched.
+- Inline level: spans carrying `ekp-no-break`
+  (`M-x ekp-no-break-region`) become rigid atoms — never broken,
+  never hyphenated, spacing kept literal — ideal for inline code,
+  product names, or numbers with units.
+
+## Typography
+
+- **Alignment** — `ekp-alignment`: `justify` (default),
+  `ragged-right`, `ragged-left`, or `center`.  Non-justify modes keep
+  word spacing natural while Knuth-Plass still minimizes raggedness
+  within `ekp-ragged-stretch-pixel` (≈2 em) per line.
+- **Hanging punctuation** — set `ekp-protrusion` to `t` and line-final
+  punctuation (。、」 as well as periods, commas and break hyphens)
+  hangs past the flush edge by `ekp-protrusion-ratios`.  The 0.5
+  default for fullwidth closers is visually equivalent to CLREQ
+  line-end punctuation compression.  `ekp-auto-justify-mode` reserves
+  the protrusion width automatically.
+- **Paragraph shapes** — `ekp-first-line-indent` (`t` = 2 em) for the
+  CJK paragraph convention, or full TeX-style `ekp-parshape` with
+  per-line `(INDENT . WIDTH)`.  Both are Elisp-only paths (the C
+  module is bypassed, as with `ekp-looseness`).
+- **Unbreakables** — NO-BREAK SPACE, NARROW NBSP, FIGURE SPACE and
+  WORD JOINER characters keep their neighbors together out of the box.
+- Kinsoku covers full- *and* halfwidth punctuation: a line never
+  starts with `。、」!?` or a lone `.,;:!?`, never ends with `「(` etc.
+
+Limitations worth knowing: mid-line CLREQ punctuation *compression*
+(e.g. 「字。下」 squeezed inside a line) cannot be rendered — Emacs
+cannot shrink a glyph's advance — which is why line-edge compression
+is delivered via protrusion instead; left-edge protrusion is likewise
+not renderable (text cannot start before the line origin).
+
 ## Configuration
 
 ### Hyphenation language

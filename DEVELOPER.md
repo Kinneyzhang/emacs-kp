@@ -165,6 +165,34 @@ inverts these four structurally (`ekp-unjustify-region`) — exact even
 after the justified text was edited — and builds
 `ekp-justify-region` / `ekp-auto-justify-mode` on top.
 
+### 5.1 Break permissions, alignment, protrusion, shapes
+
+- **Break permissions**: every CJK char (punctuation included) is its
+  own box; `ekp-para-breaks-allowed` forbids gaps per kinsoku (full-
+  and halfwidth), `ekp-no-break' spans and NBSP-family joiners.
+  Forbidden gaps carry no glue.  The DP skips them as candidates while
+  the line keeps extending; the emergency fallback treats a run with
+  no permitted inner break as atomic.  C receives the sparse
+  `forbidden-positions` vector.
+- **Alignment** (`ekp-alignment`): non-justify modes zero the glue
+  stretch/shrink arrays and class params; the DP widens `max_w` by an
+  extra per-line stretch R (`ekp-c-set-penalties` arg 7), so badness =
+  100·(shortfall/R)³.  The renderer places each line's leftover per
+  mode (trailing / split / leading).
+- **Protrusion** (`ekp-protrusion`): per-gap `tail-protrudes[k]` (the
+  last non-space box's allowance, looked through trailing spaces) and
+  a `hyphen-protrude` scalar widen each candidate's effective target
+  (`lw = width + release`) in the DP, in `ekp-line-glues', and in the
+  C-result reconstruction — all three must stay in lockstep.
+- **Per-line widths** (`ekp-parshape' / `ekp-first-line-indent'):
+  resolved by `ekp--line-spec' (line-index → INDENT . WIDTH); they
+  require the (position × line-count) DP and bypass C, like
+  looseness.  Indents render as leading `ekp-glue' spacers.
+
+C module 1.4: `ekp-c-break-with-arrays` takes 14 args
+(…, forbidden-positions, tail-protrudes, hyphen-protrude); batch
+vectors have 14 elements; `ekp-c-set-penalties` takes 4–7.
+
 ## 6. Looseness
 
 `ekp-looseness` ≠ 0 switches to `ekp--dp-run-loose`, a full

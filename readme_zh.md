@@ -77,6 +77,37 @@ Elisp 与 C 两个引擎的输出**完全一致**;Elisp 是永远可用的后备
 
 `ekp-region-margin-pixel`(默认 2)是从窗口宽度中扣除的取整安全边距。
 
+### 保护代码块与 verbatim 文本
+
+- 段落级:携带 `ekp-verbatim` 文本属性(`M-x ekp-verbatim-region`)、
+  face 在 `ekp-region-skip-faces` 列表中(如 `org-block`、
+  `markdown-code-face`)、或被 buffer-local 的
+  `ekp-region-skip-predicate` 判定的段落**原样跳过**,一个字节都不动。
+- 行内级:带 `ekp-no-break` 属性的区间(`M-x ekp-no-break-region`)
+  成为刚性原子——不断行、不断词、空格保持字面宽度——适合行内代码、
+  产品名、数字加单位。
+
+## 排版特性
+
+- **对齐模式** — `ekp-alignment`:`justify`(默认)/`ragged-right`/
+  `ragged-left`/`center`。非两端对齐模式下词间距保持自然,K-P 仍在
+  每行 `ekp-ragged-stretch-pixel`(≈2 em)的余量内全局最小化参差。
+- **标点悬挂** — 置 `ekp-protrusion` 为 `t`,行尾标点(。、」以及
+  西文句读、断词连字符)按 `ekp-protrusion-ratios` 悬出齐边。全角
+  闭合标点默认 0.5,视觉上等价于 CLREQ 的行尾标点半角化。
+  `ekp-auto-justify-mode` 自动预留悬挂宽度。
+- **段落形状** — `ekp-first-line-indent`(`t` = 2 em)实现中文段首
+  缩进惯例;或用 TeX 式 `ekp-parshape` 逐行指定 `(缩进 . 宽度)`。
+  两者走 Elisp 2D 路径(C 模块自动旁路,同 `ekp-looseness`)。
+- **不可断字符** — NBSP、窄 NBSP、数字空格、WORD JOINER 天然把两侧
+  锁在同一行。
+- 禁则覆盖全角**与半角**标点:行首不会出现 `。、」!?` 或独立的
+  `.,;:!?`,行尾不会出现 `「(` 等。
+
+已知限制:行中的 CLREQ 标点**压缩**(如「字。下」行内挤压)无法渲
+染——Emacs 不能缩减字形 advance——因此行边压缩以悬挂方式呈现;左缘
+悬挂同理不可渲染(文本无法起笔于行原点之前)。
+
 ## 配置
 
 ### 断词语言
