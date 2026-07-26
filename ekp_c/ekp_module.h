@@ -16,7 +16,7 @@
 
 /* Version */
 #define EKP_VERSION_MAJOR 1
-#define EKP_VERSION_MINOR 3
+#define EKP_VERSION_MINOR 4
 
 /* Limits */
 #define EKP_MAX_PATTERN_LEN 64
@@ -258,7 +258,9 @@ ekp_result_t *ekp_break_with_prefixes(
     const int32_t *lead_spaces,
     const int32_t *trail_spaces,
     const int32_t *forbidden_positions,
-    size_t forbidden_count);
+    size_t forbidden_count,
+    const int32_t *tail_protrudes,
+    int32_t hyphen_protrude);
 
 /*
  * Batch input for parallel processing
@@ -279,6 +281,8 @@ typedef struct {
     const int32_t *trail_spaces;  /* nullable, n+1 elements */
     const int32_t *forbidden_positions;  /* nullable, sorted gap indices */
     size_t forbidden_count;
+    const int32_t *tail_protrudes;  /* nullable, n+1 elements */
+    int32_t hyphen_protrude;
 } ekp_batch_input_t;
 
 /*

@@ -143,6 +143,12 @@ typedef struct {
     const int32_t *forbidden_positions;
     size_t forbidden_count;
 
+    /* Right-edge protrusion (nullable, n+1): pixels the line's final
+     * glyph may hang past the flush edge when breaking at gap k;
+     * hyphen_protrude is the same for soft hyphens. */
+    const int32_t *tail_protrudes;
+    int32_t hyphen_protrude;
+
     /* Space-box run widths (nullable, n+1 elements each):
      * lead_spaces[i]  = width of space-box run starting at box i
      * trail_spaces[k] = width of space-box run ending at box k-1
@@ -292,6 +298,11 @@ static void dp_process_position(
         bool end_hyphen = dp_is_hyphen(in, k - 1);
         int32_t hyph_w = end_hyphen ? in->hyphen_width : 0;
 
+        /* Right-edge protrusion widens this candidate's target */
+        int32_t lw = line_width +
+            (end_hyphen ? in->hyphen_protrude
+                        : (in->tail_protrudes ? in->tail_protrudes[k] : 0));
+
         /* Line metrics from i to k, excluding leading glue and the
          * space-box runs the renderer strips (leading + trailing). */
         int32_t raw_ideal = in->ideal_prefix[k] - in->ideal_prefix[i] - lead_ideal;
@@ -308,32 +319,32 @@ static void dp_process_position(
                        in->extra_stretch;
 
         /* Too long? (last line is never shrunk below its ideal) */
-        if (min_w > line_width || (is_last && ideal > line_width)) {
+        if (min_w > lw || (is_last && ideal > lw)) {
             if (atomic_run && in->allow_emergency)
                 dp_relax_emergency(in, i, k, prev_dem, prev_hyph, prev_lines,
-                                   line_width - ideal, end_hyphen,
+                                   lw - ideal, end_hyphen,
                                    demerits, backptrs, rest_pixels,
                                    fitness, hyphen_counts, line_counts);
             break;  /* No point trying longer lines */
         }
 
         /* Valid break? */
-        bool valid = (min_w <= line_width && max_w >= line_width) ||
-                    (is_last && ideal <= line_width);
+        bool valid = (min_w <= lw && max_w >= lw) ||
+                    (is_last && ideal <= lw);
 
         if (!valid) {
             /* Rigid underfull atomic run: emergency-record so the
              * position after it stays reachable (2nd pass only). */
             if (atomic_run && in->allow_emergency)
                 dp_relax_emergency(in, i, k, prev_dem, prev_hyph, prev_lines,
-                                   line_width - ideal, end_hyphen,
+                                   lw - ideal, end_hyphen,
                                    demerits, backptrs, rest_pixels,
                                    fitness, hyphen_counts, line_counts);
             continue;
         }
 
         /* Compute demerits */
-        int32_t adjustment = line_width - ideal;
+        int32_t adjustment = lw - ideal;
         int32_t flexibility = (adjustment > 0) ?
             (max_w - ideal) : (ideal - min_w);
 
@@ -356,7 +367,7 @@ static void dp_process_position(
                                               in->consec_hyphen_penalty);
         } else if (is_last) {
             /* Last line: minimal penalty if reasonably filled */
-            double fill_ratio = (double)ideal / line_width;
+            double fill_ratio = (double)ideal / lw;
             if (fill_ratio < in->last_line_ratio) {
                 badness = in->last_line_short_penalty * (1.0 - fill_ratio);
             } else {
@@ -647,7 +658,9 @@ ekp_result_t *ekp_break_with_prefixes(
     const int32_t *lead_spaces,
     const int32_t *trail_spaces,
     const int32_t *forbidden_positions,
-    size_t forbidden_count)
+    size_t forbidden_count,
+    const int32_t *tail_protrudes,
+    int32_t hyphen_protrude)
 {
     if (!ideal_prefix || !min_prefix || !max_prefix || n == 0 || line_width <= 0)
         return NULL;
@@ -699,6 +712,8 @@ ekp_result_t *ekp_break_with_prefixes(
         .hyphen_width = hyphen_width,
         .forbidden_positions = forbidden_positions,
         .forbidden_count = forbidden_count,
+        .tail_protrudes = tail_protrudes,
+        .hyphen_protrude = hyphen_protrude,
         .lead_spaces = lead_spaces,
         .trail_spaces = trail_spaces,
         .n = n,
@@ -821,7 +836,8 @@ static void batch_worker(void *arg)
         in->hyphen_positions, in->hyphen_count,
         in->hyphen_width, in->line_width,
         in->lead_spaces, in->trail_spaces,
-        in->forbidden_positions, in->forbidden_count);
+        in->forbidden_positions, in->forbidden_count,
+        in->tail_protrudes, in->hyphen_protrude);
 }
 
 /*
@@ -850,7 +866,8 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
                 in->hyphen_positions, in->hyphen_count,
                 in->hyphen_width, in->line_width,
                 in->lead_spaces, in->trail_spaces,
-                in->forbidden_positions, in->forbidden_count);
+                in->forbidden_positions, in->forbidden_count,
+                in->tail_protrudes, in->hyphen_protrude);
         }
         return results;
     }
@@ -868,7 +885,8 @@ ekp_result_t **ekp_break_batch(ekp_batch_input_t *inputs, size_t count)
                 in->hyphen_positions, in->hyphen_count,
                 in->hyphen_width, in->line_width,
                 in->lead_spaces, in->trail_spaces,
-                in->forbidden_positions, in->forbidden_count);
+                in->forbidden_positions, in->forbidden_count,
+                in->tail_protrudes, in->hyphen_protrude);
         }
         return results;
     }

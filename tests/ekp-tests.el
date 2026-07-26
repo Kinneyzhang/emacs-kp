@@ -198,6 +198,41 @@ Used to verify no content is lost by justification."
                  (ekp-pixel-justify text 60))))
         (should (string= a b))))))
 
+(ert-deftest ekp-test-protrusion-hangs-line-end-punct ()
+  "Protrusion lets line-final fullwidth punctuation hang past the edge."
+  (let ((ekp-protrusion t)
+        ;; periodic 5-char sentences: at 20px exactly two per line, so
+        ;; every interior break lands right after 。
+        (text (mapconcat #'identity (make-list 6 "四字一句。") "")))
+    (let* ((lines (split-string (ekp-pixel-justify text 20) "\n")))
+      (should (> (length lines) 1))
+      ;; at least one non-last line hangs its punctuation
+      (should (seq-some (lambda (l) (> (string-pixel-width l) 20))
+                        (butlast lines)))
+      ;; and never beyond the configured ratio (0.5 × 2px in batch)
+      (dolist (l (butlast lines))
+        (should (<= (string-pixel-width l) 21))))))
+
+(ert-deftest ekp-test-protrusion-off-is-flush ()
+  "With protrusion off (default), no line exceeds the target width."
+  (let ((text "第一句话结束。第二句话继续写下去,内容足够长才会断行成很多行。"))
+    (dolist (l (butlast (split-string (ekp-pixel-justify text 20) "\n")))
+      (should (<= (string-pixel-width l) 20)))))
+
+(ert-deftest ekp-test-protrusion-c-parity ()
+  "C and elisp agree with protrusion enabled."
+  (skip-unless (ekp-tests--c-available))
+  (let ((ekp-protrusion t)
+        (text "悬挂 parity 检查。标点很多,逗号,句号。分号;更多内容写在这里。"))
+    (dolist (w '(24 40 60))
+      (let ((a (let ((ekp-use-c-module nil))
+                 (ekp-clear-caches)
+                 (ekp-pixel-justify text w)))
+            (b (let ((ekp-use-c-module t))
+                 (ekp-clear-caches)
+                 (ekp-pixel-justify text w))))
+        (should (string= a b))))))
+
 (ert-deftest ekp-test-no-break-span-atomic ()
   "An ekp-no-break span never splits, stretches, or hyphenates."
   (let* ((code (propertize "foo bar baz" 'ekp-no-break t))

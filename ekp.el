@@ -102,6 +102,24 @@ This is what a ragged line may fall short of the target width without
 badness reaching infinity (like \\raggedright with a finite \\rightskip
 stretch).  nil derives 8× the Latin word-space ideal (≈2 em).")
 
+(defvar ekp-protrusion nil
+  "Non-nil enables right-edge character protrusion (hanging punctuation).
+A line ending in punctuation lets part of that glyph hang past the
+flush edge, per `ekp-protrusion-ratios' — CLREQ line-end punctuation
+squeeze and microtype-style hanging periods/hyphens in one mechanism.
+Left-edge protrusion is not implemented: Emacs cannot render text
+before the line origin.  When enabled, reserve the protrusion width
+in the layout (see `ekp-region-protrusion-reserve')." )
+
+(defvar ekp-protrusion-ratios
+  '((cjk-close . 0.5) (latin-close . 0.5) (hyphen . 1.0))
+  "Alist CLASS → RATIO of the glyph width allowed to protrude.
+`cjk-close': fullwidth closers (。、」); 0.5 hangs exactly the
+whitespace half of the glyph — visually equivalent to CLREQ line-end
+compression.  `latin-close': chars from `ekp--no-line-start-chars'
+ending a word (period, comma, quotes).  `hyphen': the soft hyphen
+inserted at a break.")
+
 (defvar ekp-looseness 0
   "Target line count offset: 0=optimal, +1=looser (more lines), -1=tighter.
 When non-zero, a full (position × line-count) dynamic program is run
@@ -137,6 +155,11 @@ when non-zero the C module is bypassed automatically.")
   ;; index n (paragraph end) is always allowed.  forbidden-positions is
   ;; the same information as a sparse int vector for the C bridge.
   breaks-allowed forbidden-positions
+  ;; Right-edge protrusion: tail-protrudes[k] = pixels the last
+  ;; non-space box before gap k may hang past the flush edge (all
+  ;; zeros when `ekp-protrusion' is off); hyphen-protrude = same for
+  ;; the soft hyphen at a hyphenated break.
+  tail-protrudes hyphen-protrude
   ;; Glue params snapshot at para creation time (plist)
   glue-params
   (dp-cache nil :type hash-table))
@@ -459,6 +482,7 @@ are derived per string)."
           ekp-latin-lang
           ekp-alignment
           ekp-ragged-stretch-pixel
+          (and ekp-protrusion ekp-protrusion-ratios)
           (if (and ekp--params-explicit (ekp--params-set-p))
               (list ekp-lws-ideal-pixel ekp-lws-stretch-pixel
                     ekp-lws-shrink-pixel ekp-mws-ideal-pixel
@@ -496,6 +520,32 @@ reduces the number of `string-pixel-width' calls."
 (defun ekp--space-box-type-p (box-type)
   "Return non-nil if BOX-TYPE describes a whitespace box."
   (and box-type (eq (car box-type) 'space)))
+
+(defun ekp--tail-protrude-pixel (box box-type)
+  "Pixels the last visible char of BOX may protrude past the flush edge."
+  (if (not ekp-protrusion)
+      0
+    (let* ((tail-type (cdr box-type))
+           (last-str (substring box -1))
+           (ratio (cond
+                   ((eq tail-type 'cjk-close)
+                    (alist-get 'cjk-close ekp-protrusion-ratios 0))
+                   ((memq (aref box (1- (length box)))
+                          (append ekp--no-line-start-chars nil))
+                    (alist-get 'latin-close ekp-protrusion-ratios 0))
+                   (t 0))))
+      (if (> ratio 0)
+          (floor (* ratio (string-pixel-width last-str)))
+        0))))
+
+(defun ekp--line-edge-release (para _start end)
+  "Pixels released at the right edge of the line [START, END).
+The protrusion of the line's final glyph: the soft hyphen's when the
+line breaks at a hyphenation point, otherwise the last non-space
+box's.  0 when `ekp-protrusion' was off at paragraph build time."
+  (if (ekp--hyphenate-p (ekp-para-hyphen-positions para) (1- end))
+      (ekp-para-hyphen-protrude para)
+    (aref (ekp-para-tail-protrudes para) end)))
 
 (defun ekp--ragged-extra-stretch ()
   "Resolve the per-line flexibility for non-justify alignment."
@@ -537,7 +587,13 @@ Computes ALL data in one pass: text, params, and prefix arrays."
          (lead-spaces (make-vector (1+ n) 0))
          (trail-spaces (make-vector (1+ n) 0))
          (breaks-allowed (make-bool-vector (1+ n) t))
-         (forbidden nil))
+         (forbidden nil)
+         (tail-protrudes (make-vector (1+ n) 0))
+         (hyphen-protrude
+          (if ekp-protrusion
+              (floor (* (alist-get 'hyphen ekp-protrusion-ratios 0)
+                        hyphen-pixel))
+            0)))
     ;; Break permissions.  A gap is unbreakable when:
     ;; - kinsoku: the line would end with an opener or start with a
     ;;   closer (full- and halfwidth alike),
@@ -565,6 +621,21 @@ Computes ALL data in one pass: text, params, and prefix arrays."
             (unless (eq (aref glues-types k) 'nws)
               (aset glues-types k 'nws))))
         (setq k (1+ k))))
+    ;; Right-edge protrusion: tail-protrudes[k] = protrusion of the
+    ;; last non-space box before gap k (renderer strips trailing
+    ;; space boxes, so look through them).
+    (when ekp-protrusion
+      (let ((pro (make-vector (max n 1) 0)))
+        (dotimes (b n)
+          (aset pro b (ekp--tail-protrude-pixel (aref boxes b)
+                                                (aref boxes-types b))))
+        (let ((k 1))
+          (while (<= k n)
+            (aset tail-protrudes k
+                  (if (ekp--space-box-type-p (aref boxes-types (1- k)))
+                      (aref tail-protrudes (1- k))
+                    (aref pro (1- k))))
+            (setq k (1+ k))))))
     ;; Single loop for all prefix computations
     (dotimes (i n)
       (let* ((box-w (aref boxes-widths i))
@@ -628,6 +699,8 @@ Computes ALL data in one pass: text, params, and prefix arrays."
      :trail-spaces trail-spaces
      :breaks-allowed breaks-allowed
      :forbidden-positions (vconcat (nreverse forbidden))
+     :tail-protrudes tail-protrudes
+     :hyphen-protrude hyphen-protrude
      :glue-params (let ((justify (eq ekp-alignment 'justify)))
                     (list :lws-ideal ekp-lws-ideal-pixel
                           :lws-stretch (if justify ekp-lws-stretch-pixel 0)
@@ -843,6 +916,8 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
          (lead-spaces (ekp-para-lead-spaces para))
          (trail-spaces (ekp-para-trail-spaces para))
          (breaks-ok (ekp-para-breaks-allowed para))
+         (tail-protrudes (ekp-para-tail-protrudes para))
+         (hyphen-protrude (ekp-para-hyphen-protrude para))
          (params (ekp-para-glue-params para))
          (lws-stretch (plist-get params :lws-stretch))
          (mws-stretch (plist-get params :mws-stretch))
@@ -886,6 +961,11 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                      (atomic-run (not saw-allowed))
                      (end-with-hyphenp (aref hyph-flags (1- k)))
                      (hyph-w (if end-with-hyphenp hyphen-pixel 0))
+                     ;; right-edge protrusion releases width at this k
+                     (lw (+ line-pixel
+                            (if end-with-hyphenp
+                                hyphen-protrude
+                              (aref tail-protrudes k))))
                      (raw-ideal (- (aref ideal-prefixs k) ip-i lead-glue-ideal))
                      (space-w (min raw-ideal
                                    (+ lead-space (aref trail-spaces k))))
@@ -899,20 +979,20 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                 (cond
                  ;; Line already too long: emergency-record atomic run,
                  ;; then stop extending.
-                 ((or (> minw line-pixel)
-                      (and is-last (> ideal line-pixel)))
+                 ((or (> minw lw)
+                      (and is-last (> ideal lw)))
                   (when (and atomic-run allow-emergency)
                     (ekp--dp-relax-emergency
                      demerits backptrs rests gaps hyphen-counts
                      fitness-classes i k prev-dem
-                     (- line-pixel ideal) end-with-hyphenp
+                     (- lw ideal) end-with-hyphenp
                      prev-hyphen-count
                      (unless single-box (ekp--gaps-between para i k))))
                   (throw 'break nil))
                  ;; Valid break point
-                 ((or (<= minw line-pixel maxw)
-                      (and is-last (<= ideal line-pixel)))
-                  (let* ((adjustment (- line-pixel ideal))
+                 ((or (<= minw lw maxw)
+                      (and is-last (<= ideal lw)))
+                  (let* ((adjustment (- lw ideal))
                          dem line-gaps fitness new-hyphen)
                     (cond
                      ;; Single box line: fixed flexibility of 1
@@ -929,7 +1009,7 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                                    end-with-hyphenp prev-hyphen-count))))
                      ;; Last line: minimal demerits if reasonably filled
                      (is-last
-                      (let* ((fill-ratio (/ (float ideal) line-pixel))
+                      (let* ((fill-ratio (/ (float ideal) lw))
                              (badness (if (< fill-ratio
                                              ekp-last-line-min-ratio)
                                           (* ekp-last-line-short-penalty
@@ -982,7 +1062,7 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                   (ekp--dp-relax-emergency
                    demerits backptrs rests gaps hyphen-counts
                    fitness-classes i k prev-dem
-                   (- line-pixel ideal) end-with-hyphenp
+                   (- lw ideal) end-with-hyphenp
                    prev-hyphen-count
                    (unless single-box (ekp--gaps-between para i k)))))
                 (setq saw-allowed t)
@@ -1063,6 +1143,8 @@ breaks when no valid layout exists."
          (lead-spaces (ekp-para-lead-spaces para))
          (trail-spaces (ekp-para-trail-spaces para))
          (breaks-ok (ekp-para-breaks-allowed para))
+         (tail-protrudes (ekp-para-tail-protrudes para))
+         (hyphen-protrude (ekp-para-hyphen-protrude para))
          (params (ekp-para-glue-params para))
          (lws-stretch (plist-get params :lws-stretch))
          (mws-stretch (plist-get params :mws-stretch))
@@ -1102,6 +1184,11 @@ breaks when no valid layout exists."
                      (end-with-hyphenp
                       (ekp--hyphenate-p hyphen-positions (1- k)))
                      (hyph-w (if end-with-hyphenp hyphen-pixel 0))
+                     ;; right-edge protrusion releases width at this k
+                     (lw (+ line-pixel
+                            (if end-with-hyphenp
+                                hyphen-protrude
+                              (aref tail-protrudes k))))
                      (raw-ideal (- (aref ideal-prefixs k) ip-i lead-glue-ideal))
                      (space-w (min raw-ideal
                                    (+ lead-space (aref trail-spaces k))))
@@ -1112,11 +1199,11 @@ breaks when no valid layout exists."
                      (maxw (+ (- (aref max-prefixs k) mx-i lead-glue-max
                                  space-w)
                               hyph-w extra-stretch))
-                     (adjustment (- line-pixel ideal))
+                     (adjustment (- lw ideal))
                      candidate)
                 (cond
-                 ((or (> minw line-pixel)
-                      (and is-last (> ideal line-pixel)))
+                 ((or (> minw lw)
+                      (and is-last (> ideal lw)))
                   (when (and atomic-run allow-emergency)
                     (setq candidate
                           (list (+ (expt (+ ekp-line-penalty
@@ -1131,8 +1218,8 @@ breaks when no valid layout exists."
                     (ekp--dp-loose-relax states counts-at k (1+ lc) i
                                          prev-dem candidate))
                   (throw 'break nil))
-                 ((or (<= minw line-pixel maxw)
-                      (and is-last (<= ideal line-pixel)))
+                 ((or (<= minw lw maxw)
+                      (and is-last (<= ideal lw)))
                   (setq candidate
                         (cond
                          (single-box
@@ -1146,7 +1233,7 @@ breaks when no valid layout exists."
                                    end-with-hyphenp prev-hyphen-count)
                                   adjustment nil 1 nh)))
                          (is-last
-                          (let* ((fill-ratio (/ (float ideal) line-pixel))
+                          (let* ((fill-ratio (/ (float ideal) lw))
                                  (badness (if (< fill-ratio
                                                  ekp-last-line-min-ratio)
                                               (* ekp-last-line-short-penalty
@@ -1287,7 +1374,9 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
   "Compute (RESTS . GAPS) lists for BREAKS, matching the DP's metrics."
   (let ((start 0) rests gapss)
     (dolist (end breaks)
-      (push (- line-pixel (ekp--line-ideal-pixel para start end)) rests)
+      (push (- (+ line-pixel (ekp--line-edge-release para start end))
+               (ekp--line-ideal-pixel para start end))
+            rests)
       (push (if (or (= end (1+ start))
                     (= end (length (ekp-para-boxes para))))
                 nil
@@ -1308,7 +1397,7 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
     dp-result))
 
 (defun ekp--prepare-para-for-c (para line-pixel)
-  "Prepare PARA data as a 12-element vector for the C batch API."
+  "Prepare PARA data as a 14-element vector for the C batch API."
   (vector (ekp-para-ideal-prefixs para)
           (ekp-para-min-prefixs para)
           (ekp-para-max-prefixs para)
@@ -1320,7 +1409,9 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
           line-pixel
           (ekp-para-lead-spaces para)
           (ekp-para-trail-spaces para)
-          (ekp-para-forbidden-positions para)))
+          (ekp-para-forbidden-positions para)
+          (ekp-para-tail-protrudes para)
+          (ekp-para-hyphen-protrude para)))
 
 (defun ekp--dp-cache-via-c (para line-pixel)
   "Compute breaks using the C module with PARA's precomputed arrays.
@@ -1339,7 +1430,9 @@ runs the pure DP.  Falls back to Elisp when the C call fails."
                   line-pixel
                   (ekp-para-lead-spaces para)
                   (ekp-para-trail-spaces para)
-                  (ekp-para-forbidden-positions para)))
+                  (ekp-para-forbidden-positions para)
+                  (ekp-para-tail-protrudes para)
+                  (ekp-para-hyphen-protrude para)))
          (c-breaks (car result))
          (c-cost (cdr result)))
     (if (null c-breaks)
@@ -1534,6 +1627,11 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                                        nil))
              (is-last (>= end boxes-num))
              (hyphen-p (ekp--hyphenate-p hyphen-positions (1- end)))
+             ;; right-edge protrusion widens this line's effective target
+             (eff-pixel (+ line-pixel
+                           (if hyphen-p
+                               (ekp-para-hyphen-protrude para)
+                             (aref (ekp-para-tail-protrudes para) end))))
              ;; DP-consistent metrics (space-box runs excluded, hyphen incl.)
              (ideal-pixel (ekp--line-ideal-pixel para start end))
              (max-pixel (let* ((mx (ekp-para-max-prefixs para))
@@ -1556,7 +1654,7 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
               (cond
                ;; Single box: just trailing space
                ((= 1 (- end start))
-                (ekp--line-glue-single-box line-pixel
+                (ekp--line-glue-single-box eff-pixel
                                            (- ideal-pixel
                                               (if hyphen-p hyphen-pixel 0))
                                            hyphen-p hyphen-pixel))
@@ -1564,15 +1662,15 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                ;; natural glue widths plus a trailing filler.
                ((or is-last ragged)
                 (ekp--line-glue-last-line
-                 para line-glues-types ideal-pixel line-pixel))
+                 para line-glues-types ideal-pixel eff-pixel))
                ;; Emergency underfull line (can't stretch to width):
                ;; set glues to max and pad with trailing filler.
-               ((< max-pixel line-pixel)
+               ((< max-pixel eff-pixel)
                 (append '(0)
                         (mapcar (lambda (type)
                                   (ekp--para-glue-max para type))
                                 line-glues-types)
-                        (list (max 0 (- line-pixel max-pixel)))))
+                        (list (max 0 (- eff-pixel max-pixel)))))
                ;; Normal justified line
                (t
                 (ekp--line-glue-normal para line-glues-types

@@ -59,9 +59,20 @@ by the display engine due to rounding."
 
 ;;;; Width
 
+(defun ekp-region-protrusion-reserve ()
+  "Pixels reserved at the right margin for hanging punctuation.
+Non-zero only while `ekp-protrusion' is enabled: protruding glyphs
+extend past the flush edge, so the layout width must leave room."
+  (if ekp-protrusion
+      (max 2 (ceiling (* (alist-get 'cjk-close ekp-protrusion-ratios 0.5)
+                         (string-pixel-width "。"))))
+    0))
+
 (defun ekp-region--window-pixel (&optional window)
   "Usable text width in pixels of WINDOW (default: selected window)."
-  (max 1 (- (window-body-width window t) ekp-region-margin-pixel)))
+  (max 1 (- (window-body-width window t)
+            ekp-region-margin-pixel
+            (ekp-region-protrusion-reserve))))
 
 ;;;; Pure string transforms
 
