@@ -57,6 +57,26 @@ cd ekp_c && make        # 需要 C11 编译器,产出 ekp.dylib/.so/.dll
 Elisp 与 C 两个引擎的输出**完全一致**;Elisp 是永远可用的后备。若磁盘
 上的模块版本旧于 Elisp 代码的要求,加载会拒绝并提示重新编译。
 
+## 交互使用(buffer 与 region)
+
+`ekp-region.el` 把字符串 API 变成 buffer 级命令:
+
+```elisp
+(require 'ekp-region)
+```
+
+- `M-x ekp-justify-region` — 把选区排版到窗口文本宽度(数字前缀参数
+  可指定像素宽)。
+- `M-x ekp-unjustify-region` — **精确**还原原文,包括被折叠的连续空
+  格。排版是无损的:每个合成空隙、软换行、软连字符都携带它所替换的
+  原文,还原是纯结构变换,即使排版后又编辑过也能正确还原。
+- `M-x ekp-auto-justify-mode` — 让整个 buffer 保持按窗口宽度排版。
+  窗口宽度变化时自动重排(防抖延迟 `ekp-auto-justify-resize-delay`);
+  编辑后只重排被改动的段落(空闲延迟 `ekp-auto-justify-edit-delay`),
+  未变段落直接命中段落缓存。关闭 mode 时 buffer 精确恢复原状。
+
+`ekp-region-margin-pixel`(默认 2)是从窗口宽度中扣除的取整安全边距。
+
 ## 配置
 
 ### 断词语言

@@ -1425,41 +1425,25 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
   (and box (not (string-empty-p box))
        (or (string-blank-p box) (= (string-width box) 0))))
 
-(defun ekp--interleave (list1 list2)
-  "Interleave elements of LIST1 and LIST2."
-  (let (result)
-    (while (or list1 list2)
-      (when list1 (push (pop list1) result))
-      (when list2 (push (pop list2) result)))
-    (nreverse result)))
-
-(defun ekp--combine-glues-and-boxes (glues boxes)
-  "Combine GLUES (n+1 elements) and BOXES (n elements) into string."
-  (let* ((glues (append glues nil))
-         (last-glue (car (last glues)))
-         (glues (butlast glues))
-         (boxes (append boxes nil)))
-    (if (= (length glues) (length boxes))
-        (string-join (append (ekp--interleave glues boxes)
-                             (list last-glue)))
-      (error "Glues count (%d) must equal boxes count (%d) + 1"
-             (1+ (length glues)) (length boxes)))))
-
 (defun ekp--strip-line-spaces (line-boxes line-glues
                                           &optional strip-leading strip-trailing)
   "Strip leading/trailing space boxes from LINE-BOXES based on flags.
 STRIP-LEADING / STRIP-TRAILING: strip space boxes at that edge.
-Returns (stripped-boxes . adjusted-glues).
+LINE-GLUES is treated as an opaque list of n+1 glue values kept in
+sync with the boxes.  Returns (kept-boxes kept-glues nlead ntrail)
+where NLEAD / NTRAIL count the boxes stripped at each edge.
 
 The stripped widths are NOT redistributed: the DP already excluded
 these space-box runs from its line metrics, so the remaining boxes
 plus distributed glues already fill the target width exactly."
-  (let* ((boxes (append line-boxes nil))
-         (glues (append line-glues nil)))
+  (let ((boxes (append line-boxes nil))
+        (glues (append line-glues nil))
+        (nlead 0) (ntrail 0))
     (when (> (length boxes) 0)
       ;; Strip trailing space boxes (if requested)
       (when strip-trailing
         (while (and boxes (ekp--box-space-p (car (last boxes))))
+          (setq ntrail (1+ ntrail))
           (setq boxes (butlast boxes))
           ;; Remove second-to-last glue (the one before the trailing
           ;; space box); keep the last glue (line's trailing filler).
@@ -1468,55 +1452,140 @@ plus distributed glues already fill the target width exactly."
       ;; Strip leading space boxes (if requested)
       (when strip-leading
         (while (and boxes (ekp--box-space-p (car boxes)))
+          (setq nlead (1+ nlead))
           (setq boxes (cdr boxes))
           ;; Remove the second glue (the one after the leading glue)
           (when (> (length glues) 1)
             (setq glues (cons (car glues) (cddr glues)))))))
-    (cons (vconcat boxes) glues)))
+    (list boxes glues nlead ntrail)))
+
+(defun ekp--box-offsets (string boxes)
+  "Locate each of BOXES in STRING; return a vector of (START . END).
+Boxes are in order and separated only by characters the tokenizer
+dropped (whitespace runs, zero-width breakers), so a sequential
+leftmost scan aligns them unambiguously."
+  (let ((offsets (make-vector (length boxes) nil))
+        (p 0) (i 0))
+    (dolist (box boxes)
+      (let ((blen (length box)))
+        (while (not (eq t (compare-strings string p (+ p blen) box 0 blen)))
+          (setq p (1+ p)))
+        (aset offsets i (cons p (+ p blen)))
+        (setq p (+ p blen))
+        (setq i (1+ i))))
+    offsets))
+
+(defun ekp--hide-string (string)
+  "Return STRING marked `ekp-hidden' and displayed as nothing."
+  (if (string-empty-p string)
+      string
+    (propertize string 'ekp-hidden t 'display "")))
+
+(defun ekp--render-glue (pixel payload)
+  "Render a glue of PIXEL width that replaced original text PAYLOAD.
+Zero-width glue renders as the hidden PAYLOAD itself, so no original
+character is ever dropped."
+  (cond
+   ((> pixel 0)
+    (propertize " " 'display `(space :width (,pixel)) 'ekp-glue payload))
+   (t (ekp--hide-string payload))))
 
 (defun ekp--hyphen-for-box (box)
-  "Return a hyphen string styled like the end of BOX."
+  "Return a hyphen string styled like the end of BOX.
+The `ekp-soft-hyphen' property marks it as synthesized, so
+`ekp-unjustify-region' can strip it structurally."
   (let ((props (and (> (length box) 0)
                     (text-properties-at (1- (length box)) box))))
-    (if props (apply #'propertize "-" props) "-")))
+    (apply #'propertize "-" 'ekp-soft-hyphen t props)))
 
 (defun ekp--pixel-justify (string line-pixel)
-  "Justify single-paragraph STRING to LINE-PIXEL."
-  (let* ((boxes (ekp--boxes string))
+  "Justify single-paragraph STRING to LINE-PIXEL.
+
+The output is lossless with respect to STRING:
+- synthesized spacing carries an `ekp-glue' property whose value is
+  the original text it replaced (usually a whitespace run),
+- soft line breaks are newlines whose `ekp-soft-break' property holds
+  the original text swallowed around the break,
+- original text outside any visible line (paragraph-edge whitespace)
+  survives as zero-display `ekp-hidden' text,
+- break hyphens carry `ekp-soft-hyphen'.
+`ekp-unjustify-region' inverts all four structurally."
+  (let* ((boxes (append (ekp--boxes string) nil))
+         (offsets (ekp--box-offsets string boxes))
          (breaks (ekp-line-breaks string line-pixel))
          (num (length breaks))
          (lines-glues (ekp-line-glues string line-pixel))
          (hyphen-positions (ekp--hyphen-positions string))
-         (start 0) strings)
+         (start 0)
+         ;; (rendered-text first-box-idx last-box-idx) per visible line
+         (lines nil))
     (dotimes (i num)
       (let* ((end (nth i breaks))
              (line-boxes (cl-subseq boxes start end))
-             (line-glues-raw (mapcar #'ekp-pixel-spacing
-                                     (aref lines-glues i)))
+             (glue-pixels (append (aref lines-glues i) nil))
              ;; Strip space boxes:
              ;; - First line (i=0): keep leading spaces (indentation)
              ;; - Other lines: strip leading spaces (break artifacts)
              ;; - All lines: strip trailing spaces
              (is-first-line (= i 0))
-             (stripped (ekp--strip-line-spaces line-boxes line-glues-raw
+             (stripped (ekp--strip-line-spaces line-boxes glue-pixels
                                                (not is-first-line)
                                                t))
-             (line-boxes (car stripped))
-             (line-glues (cdr stripped))
+             (kept (nth 0 stripped))
+             (kept-glues (nth 1 stripped))
+             (first-idx (+ start (nth 2 stripped)))
              ;; Check if last box of this line needs hyphen
              (need-hyphen
               (and (< i (1- num))  ; not last line
                    (ekp--hyphenate-p hyphen-positions (1- end)))))
-        (when (and need-hyphen (> (length line-boxes) 0))
-          (let ((last-idx (1- (length line-boxes))))
-            (aset line-boxes last-idx
-                  (concat (aref line-boxes last-idx)
-                          (ekp--hyphen-for-box (aref line-boxes last-idx))))))
-        (when (> (length line-boxes) 0)
-          (push (ekp--combine-glues-and-boxes line-glues line-boxes)
-                strings))
+        (when kept
+          (let ((parts nil) (idx first-idx) (glues kept-glues) (n 0))
+            (dolist (box kept)
+              (push (ekp--render-glue
+                     (pop glues)
+                     (if (> idx first-idx)
+                         (substring string
+                                    (cdr (aref offsets (1- idx)))
+                                    (car (aref offsets idx)))
+                       ;; leading glue of a line is always 0px and
+                       ;; replaces nothing; edge text is handled by
+                       ;; soft breaks / hidden runs below
+                       ""))
+                    parts)
+              (push box parts)
+              (setq idx (1+ idx) n (1+ n)))
+            (when need-hyphen
+              (push (ekp--hyphen-for-box (car (last kept))) parts))
+            ;; trailing filler glue (synthesized, replaces nothing)
+            (push (ekp--render-glue (car glues) "") parts)
+            (push (list (apply #'concat (nreverse parts))
+                        first-idx (+ first-idx n -1))
+                  lines)))
         (setq start end)))
-    (mapconcat 'identity (nreverse strings) "\n")))
+    (setq lines (nreverse lines))
+    (if (null lines)
+        ;; Defensive: no visible box at all (blank paragraphs are
+        ;; filtered before this function).
+        (ekp--hide-string string)
+      (let* ((first-line (car lines))
+             (last-line (car (last lines)))
+             (parts (list (ekp--hide-string
+                           (substring string 0
+                                      (car (aref offsets (nth 1 first-line)))))))
+             (prev nil))
+        (dolist (line lines)
+          (when prev
+            (push (propertize "\n" 'ekp-soft-break
+                              (substring string
+                                         (cdr (aref offsets (nth 2 prev)))
+                                         (car (aref offsets (nth 1 line)))))
+                  parts))
+          (push (nth 0 line) parts)
+          (setq prev line))
+        (push (ekp--hide-string
+               (substring string (cdr (aref offsets (nth 2 last-line)))))
+              parts)
+        (apply #'concat (nreverse parts))))))
 
 (defun ekp--validate-width (line-pixel)
   "Signal a user error unless LINE-PIXEL is a positive integer."

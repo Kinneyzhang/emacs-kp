@@ -64,6 +64,31 @@ engines produce **identical output**; Elisp is the always-available
 fallback.  If the module on disk is older than the Elisp code expects,
 loading refuses with a message asking you to rebuild.
 
+## Interactive Use (buffer & region)
+
+`ekp-region.el` turns the string API into buffer-level commands:
+
+```elisp
+(require 'ekp-region)
+```
+
+- `M-x ekp-justify-region` — justify the region to the window text
+  width (with a numeric prefix argument, to that many pixels).
+- `M-x ekp-unjustify-region` — restore the original text **exactly**,
+  including collapsed whitespace runs.  Justification is lossless: every
+  synthesized space, soft line break, and soft hyphen carries the
+  original text it replaced, so restoring is a structural transform that
+  also works after you edited the justified text.
+- `M-x ekp-auto-justify-mode` — keep the whole buffer justified to the
+  window width.  Re-flows (debounced by
+  `ekp-auto-justify-resize-delay`) when the window width changes, and
+  after edits re-justifies only the touched paragraphs
+  (`ekp-auto-justify-edit-delay`), so unchanged paragraphs hit the
+  paragraph cache.  Turning the mode off restores the buffer exactly.
+
+`ekp-region-margin-pixel` (default 2) is subtracted from the window
+width as a rounding safety margin.
+
 ## Configuration
 
 ### Hyphenation language

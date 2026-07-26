@@ -26,7 +26,7 @@ jobs:
         run: |
           emacs -Q --batch -L . \
             --eval '(setq byte-compile-error-on-warn t)' \
-            -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el
+            -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
       - name: Run ERT suite (C-module tests auto-skip)
         run: tests/run-tests.sh emacs
 
