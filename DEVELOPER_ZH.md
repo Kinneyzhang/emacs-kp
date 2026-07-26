@@ -132,6 +132,21 @@ penalty/flagged 断点),主流程无 `q`/looseness(见 §6),相邻松紧惩
 Glue 渲染为 `(space :width (N))` display 属性,GUI 下像素级精确,
 batch/tty 下按字符列精确。
 
+渲染输出是**无损**的:先用 `ekp--box-offsets` 在原串中定位每个盒子,
+然后每一处合成/隐藏内容都记录它所对应的原文——
+
+| 属性              | 位置            | 值 / 含义                  |
+|-------------------|-----------------|----------------------------|
+| `ekp-glue`        | 合成的 glue 空格| 它所替换的原文             |
+| `ekp-soft-break`  | 插入的 `\n`     | 断点处被吞掉的空白         |
+| `ekp-soft-hyphen` | 插入的连字符    | 仅作标记                   |
+| `ekp-hidden`      | 段落边缘文本    | 原样保留,`display ""` 隐藏|
+
+零宽 glue 若对应非空原文,直接渲染为隐藏的原文本身,因此任何字符都
+不会丢失。`ekp-region.el` 对这四类标记做纯结构逆变换
+(`ekp-unjustify-region`)——即使排版后又被编辑过也能精确还原——并在
+其上实现 `ekp-justify-region` / `ekp-auto-justify-mode`。
+
 ## 6. Looseness
 
 `ekp-looseness` ≠ 0 时切换到 `ekp--dp-run-loose`:完整的

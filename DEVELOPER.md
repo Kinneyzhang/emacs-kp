@@ -148,6 +148,23 @@ already excluded them (§3).
 Glues become `(space :width (N))` display properties, so justification
 is pixel-exact in GUI Emacs and column-exact in batch/tty.
 
+The output is **lossless**: boxes are located in the source string
+(`ekp--box-offsets`), and every synthesized or hidden piece records the
+original text it stands for —
+
+| property          | on                    | value / meaning                |
+|-------------------|-----------------------|--------------------------------|
+| `ekp-glue`        | synthesized glue space| original text it replaced      |
+| `ekp-soft-break`  | inserted `\n`         | whitespace swallowed at break  |
+| `ekp-soft-hyphen` | inserted hyphen       | marker only                    |
+| `ekp-hidden`      | paragraph-edge text   | kept verbatim, `display ""`    |
+
+Zero-width glue with a non-empty original renders as the hidden
+original itself, so no character is ever dropped.  `ekp-region.el`
+inverts these four structurally (`ekp-unjustify-region`) — exact even
+after the justified text was edited — and builds
+`ekp-justify-region` / `ekp-auto-justify-mode` on top.
+
 ## 6. Looseness
 
 `ekp-looseness` ≠ 0 switches to `ekp--dp-run-loose`, a full
