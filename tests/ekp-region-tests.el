@@ -506,6 +506,97 @@ they must not travel with a kill/yank."
           (should (equal ekp-region-skip-faces ekp-region-org-skip-faces))
         (ekp-auto-justify-mode -1)))))
 
+;;;; Lazy re-flow scheduling
+
+(ert-deftest ekp-region-test-huge-edit-goes-lazy ()
+  "A dirty region larger than the lazy threshold is chunked, not sync."
+  (let ((ekp-auto-justify-lazy-threshold 50)
+        (ekp-auto-justify-chunk-size 2)
+        (text (mapconcat #'identity
+                         (make-list 10 "大量粘贴模拟内容足够长会断行")
+                         "\n")))
+    (ekp-region-test--with-text text
+      (cl-letf (((symbol-function 'ekp-region--window-pixel)
+                 (lambda (&optional _) 60)))
+        (ekp-auto-justify-mode 1)
+        (unwind-protect
+            (progn
+              ;; drain the enable-time lazy queue first
+              (let ((ekp-auto-justify-tick-budget 10.0) (guard 0))
+                (while (and ekp-region--pending (< guard 100))
+                  (when (timerp ekp-region--chunk-timer)
+                    (cancel-timer ekp-region--chunk-timer)
+                    (setq ekp-region--chunk-timer nil))
+                  (ekp-region--process-chunk (current-buffer))
+                  (setq guard (1+ guard))))
+              ;; simulate a huge edit: whole buffer marked dirty
+              (push (cons (copy-marker (point-min))
+                          (copy-marker (point-max)))
+                    ekp-region--dirty)
+              (when (timerp ekp-region--edit-timer)
+                (cancel-timer ekp-region--edit-timer))
+              (ekp-region--flush-dirty (current-buffer))
+              ;; not processed synchronously: a queue exists
+              (should ekp-region--pending)
+              ;; drain and verify convergence to the one-shot result
+              (let ((ekp-auto-justify-tick-budget 10.0) (guard 0))
+                (while (and ekp-region--pending (< guard 100))
+                  (when (timerp ekp-region--chunk-timer)
+                    (cancel-timer ekp-region--chunk-timer)
+                    (setq ekp-region--chunk-timer nil))
+                  (ekp-region--process-chunk (current-buffer))
+                  (setq guard (1+ guard))))
+              (should-not ekp-region--pending)
+              (let ((lazy (buffer-string)))
+                (ekp-auto-justify-mode -1)
+                (ekp-justify-region (point-min) (point-max) 60)
+                (should (equal-including-properties (buffer-string) lazy))
+                (ekp-auto-justify-mode 1)))
+          (ekp-auto-justify-mode -1))))))
+
+(ert-deftest ekp-region-test-prioritize-visible-chunks ()
+  "Chunks intersecting the visible span move to the queue front."
+  (ekp-region-test--with-text "abc"
+    (setq ekp-region--auto-width 100)
+    (let* ((mk (lambda (a b) (cons (copy-marker a) (copy-marker b))))
+           (c1 (funcall mk 1 2))
+           (c2 (funcall mk 2 3))
+           (c3 (funcall mk 3 4)))
+      (setq ekp-region--pending (cons 100 (list c1 c2 c3)))
+      (cl-letf (((symbol-function 'ekp-region--visible-span)
+                 (lambda () (cons 3 4))))
+        (ekp-region--prioritize-visible))
+      (should (eq (cadr ekp-region--pending) c3))
+      (ekp-region--cancel-pending))))
+
+(ert-deftest ekp-region-test-tick-budget-batches-chunks ()
+  "A generous tick budget drains several chunks in one tick;
+a zero budget still makes progress (exactly one chunk)."
+  (let ((text (mapconcat #'identity
+                         (make-list 6 "分块预算检查内容足够长")
+                         "\n")))
+    (ekp-region-test--with-text text
+      (setq ekp-region--auto-width 40)
+      (setq ekp-region--pending
+            (cons 40 (ekp-region--make-chunks (point-min) (point-max))))
+      (setq-local ekp-auto-justify-chunk-size 1)
+      ;; zero budget: one chunk per tick
+      (let ((ekp-auto-justify-tick-budget 0)
+            (before (length (cdr ekp-region--pending))))
+        (cl-letf (((symbol-function 'input-pending-p) #'ignore))
+          (let ((ekp-auto-justify-mode t))
+            (ekp-region--process-chunk (current-buffer))))
+        (should (= (length (cdr ekp-region--pending)) (1- before))))
+      (when (timerp ekp-region--chunk-timer)
+        (cancel-timer ekp-region--chunk-timer)
+        (setq ekp-region--chunk-timer nil))
+      ;; big budget: the rest drains in one tick
+      (let ((ekp-auto-justify-tick-budget 10.0))
+        (cl-letf (((symbol-function 'input-pending-p) #'ignore))
+          (let ((ekp-auto-justify-mode t))
+            (ekp-region--process-chunk (current-buffer)))))
+      (should-not ekp-region--pending))))
+
 (provide 'ekp-region-tests)
 
 ;;; ekp-region-tests.el ends here

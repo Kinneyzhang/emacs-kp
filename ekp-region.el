@@ -71,8 +71,14 @@ rest follows in idle background chunks."
   :type 'natnum)
 
 (defcustom ekp-auto-justify-chunk-size 10
-  "Paragraphs re-justified per background tick in lazy re-flows."
+  "Paragraphs re-justified per background chunk in lazy re-flows."
   :type 'natnum)
+
+(defcustom ekp-auto-justify-tick-budget 0.005
+  "Seconds of work per background tick in lazy re-flows.
+Each tick processes chunks until the budget is exhausted (at least
+one), then yields back to the command loop."
+  :type 'number)
 
 (defconst ekp-region-org-skip-faces
   '(org-block org-block-begin-line org-block-end-line org-code
@@ -609,14 +615,74 @@ composition the user is still typing."
                                     (cons (copy-marker (car r))
                                           (copy-marker (cdr r) t)))
                                   (ekp-region--merge-regions
-                                   (mapcar #'ekp-region--para-bounds pairs)))))
-            (dolist (r regions)
-              (ekp-justify-region (car r) (cdr r) ekp-region--auto-width)
-              (set-marker (car r) nil)
-              (set-marker (cdr r) nil))
+                                   (mapcar #'ekp-region--para-bounds pairs))))
+                 (total (cl-reduce #'+ regions
+                                   :key (lambda (r) (- (cdr r) (car r)))
+                                   :initial-value 0)))
+            (if (> total ekp-auto-justify-lazy-threshold)
+                ;; A huge dirty area (big paste, revert): chunk it like
+                ;; a lazy re-flow instead of freezing the command loop.
+                (progn
+                  (ekp-region--enqueue-chunks
+                   (mapcan (lambda (r)
+                             (prog1 (ekp-region--make-chunks (car r) (cdr r))
+                               (set-marker (car r) nil)
+                               (set-marker (cdr r) nil)))
+                           regions))
+                  (ekp-region--prioritize-visible))
+              (dolist (r regions)
+                (ekp-justify-region (car r) (cdr r) ekp-region--auto-width)
+                (set-marker (car r) nil)
+                (set-marker (cdr r) nil)))
             (dolist (p pairs)
               (set-marker (car p) nil)
               (set-marker (cdr p) nil))))))))
+
+(defun ekp-region--enqueue-chunks (chunks)
+  "Queue CHUNKS for background processing at the current auto width.
+Prepends to an existing queue at the same width (edits win over the
+tail of a resize re-flow); anything queued for a stale width was
+already superseded and is dropped."
+  (when chunks
+    (if (and ekp-region--pending
+             (eql (car ekp-region--pending) ekp-region--auto-width))
+        (setcdr ekp-region--pending
+                (nconc chunks (cdr ekp-region--pending)))
+      (ekp-region--cancel-pending)
+      (setq ekp-region--pending (cons ekp-region--auto-width chunks)))
+    (unless (timerp ekp-region--chunk-timer)
+      (setq ekp-region--chunk-timer
+            (run-with-timer 0.02 nil #'ekp-region--process-chunk
+                            (current-buffer))))))
+
+(defun ekp-region--prioritize-visible ()
+  "Move queued chunks that intersect the visible span to the front.
+Scrolling into an unprocessed area should not have to wait for the
+whole queue."
+  (when (cdr ekp-region--pending)
+    (pcase-let ((`(,vbeg . ,vend) (ekp-region--visible-span)))
+      (let* ((chunks (cdr ekp-region--pending))
+             (vis (cl-remove-if-not
+                   (lambda (c) (and (< (car c) vend) (> (cdr c) vbeg)))
+                   chunks))
+             (rest (cl-remove-if
+                    (lambda (c) (memq c vis))
+                    chunks)))
+        (setcdr ekp-region--pending (nconc vis rest))))))
+
+(defun ekp-region--on-scroll (window _start)
+  "Re-prioritize the lazy queue after WINDOW scrolled.
+Runs off a zero timer: inside `window-scroll-functions' the window's
+final extent is not known yet."
+  (let ((buf (window-buffer window)))
+    (when (buffer-live-p buf)
+      (run-with-timer
+       0 nil
+       (lambda ()
+         (when (buffer-live-p buf)
+           (with-current-buffer buf
+             (when (and ekp-auto-justify-mode ekp-region--pending)
+               (ekp-region--prioritize-visible)))))))))
 
 (defun ekp-region--on-resize (window-or-frame)
   "Debounced re-flow after WINDOW-OR-FRAME changed size.
@@ -699,17 +765,27 @@ window splits, and deletions of the narrowest window."
        ;; a newer re-flow superseded this queue
        ((not (eql (car ekp-region--pending) ekp-region--auto-width))
         (ekp-region--cancel-pending))
-       ;; be polite: yield to pending input, try again shortly
-       ((input-pending-p)
+       ;; be polite: yield to pending input and live compositions
+       ((or (input-pending-p) (ekp-region--composing-p))
         (setq ekp-region--chunk-timer
               (run-with-timer 0.1 nil #'ekp-region--process-chunk buffer)))
        (t
-        (let* ((width (car ekp-region--pending))
-               (chunk (pop (cdr ekp-region--pending))))
-          (when chunk
-            (ekp-justify-region (car chunk) (cdr chunk) width)
-            (set-marker (car chunk) nil)
-            (set-marker (cdr chunk) nil))
+        (let ((width (car ekp-region--pending))
+              (deadline (+ (float-time) ekp-auto-justify-tick-budget))
+              (first t))
+          ;; Work until the tick budget runs out — at least one chunk,
+          ;; never with input waiting.  Peek-then-pop: an abort inside
+          ;; justification must not lose the chunk.
+          (while (and (cdr ekp-region--pending)
+                      (or first
+                          (and (< (float-time) deadline)
+                               (not (input-pending-p)))))
+            (setq first nil)
+            (let ((chunk (cadr ekp-region--pending)))
+              (ekp-justify-region (car chunk) (cdr chunk) width)
+              (setcdr ekp-region--pending (cddr ekp-region--pending))
+              (set-marker (car chunk) nil)
+              (set-marker (cdr chunk) nil)))
           (if (cdr ekp-region--pending)
               (setq ekp-region--chunk-timer
                     (run-with-timer 0.02 nil
@@ -778,6 +854,7 @@ the buffer text is restored exactly when the mode is turned off."
         (add-hook 'window-size-change-functions #'ekp-region--on-resize nil t)
         (add-hook 'window-configuration-change-hook
                   #'ekp-region--on-window-change nil t)
+        (add-hook 'window-scroll-functions #'ekp-region--on-scroll nil t)
         (add-hook 'after-change-functions #'ekp-region--after-change nil t)
         (ekp-region--install-integrations)
         ;; Turning the major mode off/over kills local hooks silently;
@@ -786,6 +863,7 @@ the buffer text is restored exactly when the mode is turned off."
     (remove-hook 'window-size-change-functions #'ekp-region--on-resize t)
     (remove-hook 'window-configuration-change-hook
                  #'ekp-region--on-window-change t)
+    (remove-hook 'window-scroll-functions #'ekp-region--on-scroll t)
     (remove-hook 'after-change-functions #'ekp-region--after-change t)
     (remove-hook 'change-major-mode-hook #'ekp-region--teardown t)
     (ekp-region--teardown)
