@@ -32,10 +32,23 @@ typesetting, entirely inside Emacs.
 - Emacs **29.1+** (uses `string-pixel-width` and `object-intervals`)
 - Optional, for the C module: a C11 compiler and pthreads
 
-## Quick Start
+## Installation
+
+Clone the repository and add it to your `load-path` (the
+`dictionaries/` directory must sit next to the `.el` files):
 
 ```elisp
 (add-to-list 'load-path "/path/to/emacs-kp")
+(require 'ekp)
+(require 'ekp-region)   ; buffer/region commands
+```
+
+Byte-compiling is strongly recommended — the Elisp engine is about
+10× faster compiled.
+
+## Quick Start
+
+```elisp
 (require 'ekp)
 
 ;; Justify a paragraph to 600 pixels
@@ -73,12 +86,15 @@ loading refuses with a message asking you to rebuild.
 ```
 
 - `M-x ekp-justify-region` — justify the region to the window text
-  width (with a numeric prefix argument, to that many pixels).
-- `M-x ekp-unjustify-region` — restore the original text **exactly**,
-  including collapsed whitespace runs.  Justification is lossless: every
-  synthesized space, soft line break, and soft hyphen carries the
-  original text it replaced, so restoring is a structural transform that
-  also works after you edited the justified text.
+  width (with a numeric prefix argument, to that many pixels).  With
+  no active region, it justifies the paragraph at point.
+- `M-x ekp-justify-buffer` — justify the whole buffer.
+- `M-x ekp-unjustify-region` / `ekp-unjustify-buffer` — restore the
+  original text **exactly**, including collapsed whitespace runs.
+  Justification is lossless: every synthesized space, soft line break,
+  and soft hyphen carries the original text it replaced, so restoring
+  is a structural transform that also works after you edited the
+  justified text.
 - `M-x ekp-auto-justify-mode` — keep the whole buffer justified to the
   window width.  Re-flows (debounced by
   `ekp-auto-justify-resize-delay`) when the window width changes, and
@@ -86,23 +102,37 @@ loading refuses with a message asking you to rebuild.
   (`ekp-auto-justify-edit-delay`), so unchanged paragraphs hit the
   paragraph cache.  Turning the mode off restores the buffer exactly.
 
+The buffer is treated as a live document, not just a canvas:
+
+- **Saving** writes the *logical* text — soft line breaks, glue
+  spaces and break hyphens never reach disk; the on-screen buffer
+  stays justified.
+- **Searching** (isearch) sees the logical text, so CJK phrases and
+  hyphenated words are found across the layout.
+- **Copying** puts the logical text on the kill ring, so pasted text
+  carries words, not pixel spacing.
+- Merely enabling the mode never marks the buffer modified (no stray
+  lock files or auto-saves), and `undo` is not fought by the re-flow
+  timer.
+
 `ekp-region-margin-pixel` (default 2) is subtracted from the window
 width as a rounding safety margin.
 
 Large buffers (over `ekp-auto-justify-lazy-threshold` characters,
 default 20 000) re-flow visible-first: the portion on screen updates
-synchronously (~15 ms) and the rest follows in idle background chunks.
+synchronously and the rest follows in idle background chunks, with a
+per-tick time budget (`ekp-auto-justify-tick-budget`) and priority
+for whatever you scroll to.
 
-Mode presets for verbatim protection:
+Mode presets for verbatim protection — one call each:
 
 ```elisp
-(add-hook 'org-mode-hook
-          (lambda ()
-            (setq-local ekp-region-skip-faces ekp-region-org-skip-faces)))
-(add-hook 'markdown-mode-hook
-          (lambda ()
-            (setq-local ekp-region-skip-faces ekp-region-markdown-skip-faces)))
+(add-hook 'org-mode-hook      #'ekp-org-setup)
+(add-hook 'markdown-mode-hook #'ekp-markdown-setup)
 ```
+
+`ekp-auto-justify-mode` also applies the matching preset automatically
+in Org and Markdown buffers when you have not configured your own.
 
 ### Protecting code and other verbatim text
 
@@ -130,12 +160,16 @@ Mode presets for verbatim protection:
   the protrusion width automatically.
 - **Paragraph shapes** — `ekp-first-line-indent` (`t` = 2 em) for the
   CJK paragraph convention, or full TeX-style `ekp-parshape` with
-  per-line `(INDENT . WIDTH)`.  Both are Elisp-only paths (the C
-  module is bypassed, as with `ekp-looseness`).
+  per-line `(INDENT . WIDTH)`.  First-line indent runs on the fast 1D
+  path and the C engine; only full `ekp-parshape` and `ekp-looseness`
+  fall back to the Elisp-only 2D dynamic program.
 - **Unbreakables** — NO-BREAK SPACE, NARROW NBSP, FIGURE SPACE and
   WORD JOINER characters keep their neighbors together out of the box.
 - Kinsoku covers full- *and* halfwidth punctuation: a line never
   starts with `。、」!?` or a lone `.,;:!?`, never ends with `「(` etc.
+  Japanese line-start prohibition also covers small kana, the
+  prolonged sound mark and iteration marks (`っ ょ ー 々`), configurable
+  via `ekp-cjk-no-line-start-extra`.
 
 Limitations worth knowing: mid-line CLREQ punctuation *compression*
 (e.g. 「字。下」 squeezed inside a line) cannot be rendered — Emacs
@@ -152,7 +186,10 @@ not renderable (text cannot start before the line origin).
 ```
 
 Any `dictionaries/hyph_<lang>.dic` works; short codes like `"de"`
-resolve to the first matching dictionary.
+resolve to the first matching dictionary.  Each dictionary's own
+`LEFTHYPHENMIN` / `RIGHTHYPHENMIN` are honored (English keeps ≥2
+letters before and ≥3 after a break); pass explicit margins to
+`ekp-hyphen-create` to override.
 
 ### Spacing parameters
 
@@ -197,7 +234,9 @@ is non-zero).
 
 ### Caching
 
-Tokenization, measurement, and DP results are cached per paragraph.
+Tokenization, measurement, and DP results are cached per paragraph;
+box widths are additionally cached session-wide, so a glyph shared
+across paragraphs is measured only once.
 
 - `ekp-para-cache-limit` (default 256): max cached paragraphs; the
   cache is flushed when the limit is reached.
@@ -211,13 +250,15 @@ Emacs 30.2, Apple Silicon; see DEVELOPER.md for methodology:
 
 | Case (text-zh.txt ≈ 3.6 KB)  | Elisp (byte-compiled) | C module |
 |:-----------------------------|----------------------:|---------:|
-| justify, width 200px         |                 96 ms |    57 ms |
-| optimal-width search 340–380 |                294 ms |    75 ms |
-| DP only, width 400px         |                 15 ms |   1.3 ms |
+| justify, width 200px         |                150 ms |    41 ms |
+| optimal-width search 340–380 |                529 ms |   106 ms |
+| DP only, width 400px         |                 30 ms |   2.5 ms |
 
 **Byte-compile the package** — the Elisp engine is ~10× faster
 compiled.  Both engines produce identical output; the C module pays
 off most for optimal-width search and long multi-paragraph texts.
+(Absolute numbers vary with machine and power state; the ratios are
+the point.)
 
 ## Known Limitations
 

@@ -12,11 +12,13 @@ jobs:
   test:
     name: elisp-only (Emacs ${{ matrix.emacs-version }})
     runs-on: ubuntu-latest
+    continue-on-error: ${{ matrix.emacs-version == 'snapshot' }}
     strategy:
       fail-fast: false
       matrix:
-        # 29.1 is the declared floor (Package-Requires); 30.1 is current stable
-        emacs-version: ['29.1', '30.1']
+        # 29.1 is the declared floor (Package-Requires); 30.1 is current
+        # stable; snapshot is advisory (allowed to fail)
+        emacs-version: ['29.1', '30.1', 'snapshot']
     steps:
       - uses: actions/checkout@v4
       - uses: purcell/setup-emacs@master
@@ -29,6 +31,40 @@ jobs:
             -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
       - name: Run ERT suite (C-module tests auto-skip)
         run: tests/run-tests.sh emacs
+
+  lint:
+    name: package-lint + checkdoc
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@master
+        with:
+          version: '30.1'
+      - name: Install package-lint
+        run: |
+          emacs -Q --batch \
+            --eval "(require 'package)" \
+            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
+            --eval "(package-initialize)" \
+            --eval "(package-refresh-contents)" \
+            --eval "(package-install 'package-lint)"
+      - name: package-lint
+        run: |
+          emacs -Q --batch \
+            --eval "(require 'package)" \
+            --eval "(package-initialize)" \
+            --eval "(require 'package-lint)" \
+            --eval "(setq package-lint-main-file \"ekp.el\")" \
+            -f package-lint-batch-and-exit \
+            ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
+      - name: checkdoc
+        run: |
+          emacs -Q --batch \
+            --eval "(setq sentence-end-double-space t)" \
+            --eval "(dolist (f '(\"ekp.el\" \"ekp-utils.el\" \"ekp-hyphen.el\" \"ekp-region.el\"))
+                      (checkdoc-file f))" \
+            2>&1 | tee checkdoc.log
+          test ! -s checkdoc.log
 
   test-c-module:
     name: full suite + C parity (apt Emacs)
@@ -45,6 +81,46 @@ jobs:
             test -n "$HDR" || { echo 'emacs-module.h not found'; exit 1; }
             sudo install -m 644 "$HDR" /usr/local/include/
           fi
+      - name: Build C module
+        run: make -C ekp_c
+      - name: Run ERT suite (with C module)
+        run: tests/run-tests.sh emacs
+      - name: Property fuzz (300 cases, C vs elisp parity)
+        run: emacs -Q --batch -L . -l tests/ekp-fuzz.el
+
+  test-c-sanitizers:
+    name: C module under ASan/UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Emacs
+        run: sudo apt-get update && sudo apt-get install -y emacs-nox gcc
+      - name: Ensure emacs-module.h is findable
+        run: |
+          if [ ! -e /usr/include/emacs-module.h ]; then
+            HDR=$(dpkg -L emacs-common emacs-bin-common 2>/dev/null | grep -m1 '/emacs-module\.h$' || true)
+            [ -n "$HDR" ] || HDR=$(sudo find /usr -name emacs-module.h 2>/dev/null | head -1)
+            test -n "$HDR" || { echo 'emacs-module.h not found'; exit 1; }
+            sudo install -m 644 "$HDR" /usr/local/include/
+          fi
+      - name: Build C module with sanitizers
+        run: make -C ekp_c DEBUG=1
+      - name: Property fuzz under ASan/UBSan
+        # Emacs itself is not ASan-instrumented: preload the runtime and
+        # skip leak checking (the Emacs process "leaks" by design).
+        run: |
+          LIBASAN=$(gcc -print-file-name=libasan.so)
+          LD_PRELOAD="$LIBASAN" ASAN_OPTIONS=detect_leaks=0 \
+            emacs -Q --batch -L . -l tests/ekp-fuzz.el
+
+  test-macos:
+    name: macOS (dylib build + full suite)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: purcell/setup-emacs@master
+        with:
+          version: '30.1'
       - name: Build C module
         run: make -C ekp_c
       - name: Run ERT suite (with C module)
