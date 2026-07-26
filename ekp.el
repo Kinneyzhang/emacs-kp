@@ -252,7 +252,19 @@ when non-zero the C module is bypassed automatically."
   "Fast path: (string-object lang para) of the most recent lookup.
 One justification call resolves the same string object many times;
 this avoids recomputing the full cache key each time.  Invalidated
-by parameter changes, language changes and `ekp-clear-caches'.")
+by parameter changes, language changes, style-variable changes (see
+the variable watchers below) and `ekp-clear-caches'.")
+
+;; The fast path bypasses `ekp--para-key', so every style variable in
+;; that key must invalidate it on change — otherwise (setq
+;; ekp-alignment 'center) kept returning the paragraph resolved under
+;; the previous style to callers reusing the same string object.
+(dolist (var '(ekp-alignment ekp-ragged-stretch-pixel ekp-protrusion
+               ekp-protrusion-ratios ekp-parshape ekp-first-line-indent))
+  (add-variable-watcher
+   var (lambda (_sym _new op _where)
+         (when (memq op '(set let unlet makunbound))
+           (setq ekp--last-para nil)))))
 
 (defcustom ekp-para-cache-limit 256
   "Maximum number of cached paragraphs.
@@ -576,6 +588,51 @@ are covered by the `cjk-open' class.")
 ;;; Cache Implementation
 ;;; ============================================================
 
+(defconst ekp--key-ignored-props '(fontified jit-lock-defer-multiline)
+  "Text properties that never affect layout and churn constantly.
+Font-lock flips `fontified' as text scrolls into view; keeping it in
+cache keys would alias one paragraph into several entries and halve
+the hit rate in fontified buffers.")
+
+(defun ekp--key-intervals (string)
+  "Property intervals of STRING with volatile bookkeeping removed.
+Like `object-intervals', minus `ekp--key-ignored-props'; intervals
+left with no properties are dropped entirely."
+  (let (out)
+    (dolist (iv (object-intervals string))
+      (let ((plist (nth 2 iv)) filtered)
+        (while plist
+          (unless (memq (car plist) ekp--key-ignored-props)
+            (push (car plist) filtered)
+            (push (cadr plist) filtered))
+          (setq plist (cddr plist)))
+        (when filtered
+          (push (list (nth 0 iv) (nth 1 iv) (nreverse filtered)) out))))
+    (nreverse out)))
+
+(defvar ekp--box-width-cache (make-hash-table :test 'equal :size 4096)
+  "Global measurement cache: box key → pixel width.
+Keys are the bare string for property-free boxes, else
+\(STRING . FILTERED-INTERVALS).  Cross-paragraph: the same character
+or word is measured once per Emacs session, not once per paragraph
+\(CJK text repeats a small alphabet of glyphs constantly).  Flushed
+by `ekp-clear-caches' — required after font or theme changes, as
+before.")
+
+(defvar ekp--box-width-cache-limit 65536
+  "Entry cap for `ekp--box-width-cache'; the cache is flushed beyond it.")
+
+(defun ekp--measured-width (str)
+  "`string-pixel-width' of STR, through the global width cache."
+  (let* ((ivs (ekp--key-intervals str))
+         (key (if ivs (cons str ivs) str)))
+    (or (gethash key ekp--box-width-cache)
+        (progn
+          (when (>= (hash-table-count ekp--box-width-cache)
+                    ekp--box-width-cache-limit)
+            (clrhash ekp--box-width-cache))
+          (puthash key (string-pixel-width str) ekp--box-width-cache)))))
+
 (defun ekp--para-key (string)
   "Compute cache key for STRING.
 The key is a structure compared with `equal', so hash collisions
@@ -586,7 +643,7 @@ are derived per string)."
   (let ((latin-font (ekp-latin-font string))
         (cjk-font (ekp-cjk-font string)))
     (list string
-          (prin1-to-string (object-intervals string))
+          (prin1-to-string (ekp--key-intervals string))
           latin-font cjk-font
           ekp-latin-lang
           ekp-alignment
@@ -606,9 +663,9 @@ are derived per string)."
   "Measure pixel widths of BOXES, deduplicating identical boxes.
 Identity = same characters AND same text properties.  When
 UNIFORM-PROPS is non-nil (the whole paragraph carries at most one
-property run), plain string equality suffices as the key.  For CJK
-text where each character is a box, deduplication dramatically
-reduces the number of `string-pixel-width' calls."
+property run), plain string equality suffices as the paragraph-local
+key.  Misses fall through to the session-global width cache, so a
+glyph shared across paragraphs is measured only once."
   (let* ((n (length boxes))
          (seen (make-hash-table :test 'equal :size n))
          (widths (make-vector n 0)))
@@ -618,7 +675,7 @@ reduces the number of `string-pixel-width' calls."
                     (cons box (object-intervals box))))
              (w (gethash key seen)))
         (unless w
-          (setq w (string-pixel-width box))
+          (setq w (ekp--measured-width box))
           (puthash key w seen))
         (aset widths i w)))
     widths))
@@ -626,7 +683,7 @@ reduces the number of `string-pixel-width' calls."
 (defun ekp--hyphen-width-for (string)
   "Pixel width of the hyphen char, styled like STRING's first char."
   (let ((props (and (> (length string) 0) (text-properties-at 0 string))))
-    (string-pixel-width (if props (apply #'propertize "-" props) "-"))))
+    (ekp--measured-width (if props (apply #'propertize "-" props) "-"))))
 
 (defun ekp--space-box-type-p (box-type)
   "Return non-nil if BOX-TYPE describes a whitespace box."
@@ -646,7 +703,7 @@ reduces the number of `string-pixel-width' calls."
                     (alist-get 'latin-close ekp-protrusion-ratios 0))
                    (t 0))))
       (if (> ratio 0)
-          (floor (* ratio (string-pixel-width last-str)))
+          (floor (* ratio (ekp--measured-width last-str)))
         0))))
 
 (defun ekp--line-edge-release (para _start end)
@@ -886,10 +943,12 @@ This is the main entry point for cached paragraph data."
 
 ;;;###autoload
 (defun ekp-clear-caches ()
-  "Clear all paragraph caches."
+  "Clear all paragraph and measurement caches.
+Run after font or theme changes that affect glyph widths."
   (interactive)
   (setq ekp--para-cache nil)
-  (setq ekp--last-para nil))
+  (setq ekp--last-para nil)
+  (clrhash ekp--box-width-cache))
 
 ;;;; Paragraph Accessors
 
@@ -1024,6 +1083,14 @@ stripped space-box runs, plus hyphen width when the line hyphenates."
 ;; - Emergency demerits = (line-penalty + 10000)² + rest², i.e. at
 ;;   least as bad as the worst regular line.
 
+(defsubst ekp--dp-key (line-pixel)
+  "The dp-cache key for LINE-PIXEL under the current `ekp-looseness'.
+Looseness changes the optimization target for the same paragraph and
+width, so results at different looseness values must not alias
+\(regression: a cached looseness-0 layout used to be returned after
+`ekp-looseness' was changed)."
+  (if (zerop ekp-looseness) line-pixel (cons line-pixel ekp-looseness)))
+
 (defun ekp--dp-cache-elisp (para line-pixel)
   "Pure Elisp DP implementation. Returns and caches the dp-result plist.
 Looseness and per-line widths (parshape/first-line indent) need the
@@ -1032,7 +1099,7 @@ Looseness and per-line widths (parshape/first-line indent) need the
       (ekp--dp-cache-elisp-loose para line-pixel)
     (let ((dp-result (or (ekp--dp-run-1d para line-pixel nil)
                          (ekp--dp-run-1d para line-pixel t))))
-      (puthash line-pixel dp-result (ekp-para-dp-cache para))
+      (puthash (ekp--dp-key line-pixel) dp-result (ekp-para-dp-cache para))
       dp-result)))
 
 (defun ekp--hyphen-flags (hyphen-positions n)
@@ -1272,7 +1339,7 @@ Two passes like the 1D engine: strict first, then with emergency
 breaks when no valid layout exists."
   (let ((dp-result (or (ekp--dp-run-loose para line-pixel nil)
                        (ekp--dp-run-loose para line-pixel t))))
-    (puthash line-pixel dp-result (ekp-para-dp-cache para))
+    (puthash (ekp--dp-key line-pixel) dp-result (ekp-para-dp-cache para))
     dp-result))
 
 (defun ekp--dp-run-loose (para line-pixel allow-emergency)
@@ -1483,7 +1550,7 @@ CANDIDATE is (DEM-DELTA REST GAPS FITNESS HYPHEN-COUNT)."
 
 (defun ekp--dp-get-cached (para line-pixel)
   "Get cached DP result from PARA for LINE-PIXEL, or nil."
-  (gethash line-pixel (ekp-para-dp-cache para)))
+  (gethash (ekp--dp-key line-pixel) (ekp-para-dp-cache para)))
 
 (defun ekp--c-available-p ()
   "Return non-nil when the C module can be used for DP."
@@ -1544,7 +1611,7 @@ If `ekp-use-c-module' is non-nil and the C module is available (and
                           :breaks breaks
                           :cost cost
                           :line-count (length breaks))))
-    (puthash line-pixel dp-result (ekp-para-dp-cache para))
+    (puthash (ekp--dp-key line-pixel) dp-result (ekp-para-dp-cache para))
     dp-result))
 
 (defun ekp--prepare-para-for-c (para line-pixel)
@@ -1766,9 +1833,10 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                         'justify))
          (ragged (not (eq alignment 'justify)))
          (hyphen-positions (ekp-para-hyphen-positions para))
-         (breaks (ekp-line-breaks string line-pixel))
-         (lines-rests (ekp-dp-data string line-pixel :rests))
-         (lines-gaps (ekp-dp-data string line-pixel :gaps))
+         (dp (ekp-dp-data string line-pixel))
+         (breaks (plist-get dp :breaks))
+         (lines-rests (plist-get dp :rests))
+         (lines-gaps (plist-get dp :gaps))
          (hyphen-pixel (ekp-para-hyphen-pixel para))
          (line-glues (make-vector (length breaks) nil))
          (start 0))
@@ -1973,7 +2041,8 @@ sweeps that revisit a width pay nothing."
               (cache (ekp-para-dp-cache para)))
           ;; keep memory bounded during long resize sessions
           (when (<= (hash-table-count cache) 64)
-            (puthash line-pixel (plist-put dp :rendered rendered) cache))
+            (puthash (ekp--dp-key line-pixel)
+                     (plist-put dp :rendered rendered) cache))
           rendered))))
 
 (defun ekp--pixel-justify-1 (string line-pixel)

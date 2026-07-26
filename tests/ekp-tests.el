@@ -645,6 +645,57 @@ module is bypassed automatically (it has no looseness support)."
    (let ((ekp-use-c-module nil))
      (should (stringp (ekp-pixel-justify "plain elisp path works" 60))))))
 
+;;;; Cache correctness (M3 wave)
+
+(ert-deftest ekp-test-dp-cache-looseness-isolation ()
+  "Results cached at one looseness must not serve another.
+Regression: after justifying at looseness 0, changing `ekp-looseness'
+returned the stale looseness-0 layout for the same (string, width)."
+  (ekp-clear-caches)
+  (let* ((s "aaa bbb ccc ddd eee fff ggg hhh iii jjj")
+         (r0 (ekp-pixel-justify s 12))
+         (r1 (let ((ekp-looseness 1)) (ekp-pixel-justify s 12))))
+    (ekp-clear-caches)
+    (let ((f1 (let ((ekp-looseness 1)) (ekp-pixel-justify s 12)))
+          (f0 (ekp-pixel-justify s 12)))
+      (should (equal-including-properties r1 f1))
+      (should (equal-including-properties r0 f0))
+      ;; and the two targets genuinely differ on this input
+      (should-not (equal r0 r1)))))
+
+(ert-deftest ekp-test-para-key-ignores-fontified ()
+  "Fontification bookkeeping must not split the paragraph cache."
+  (let* ((plain "fontified 键检查内容")
+         (marked (propertize plain 'fontified t))
+         (faced (propertize plain 'face 'bold))
+         (faced+marked (propertize plain 'face 'bold 'fontified t)))
+    (should (equal (ekp--para-key plain) (ekp--para-key marked)))
+    (should (equal (ekp--para-key faced) (ekp--para-key faced+marked)))
+    (should-not (equal (ekp--para-key plain) (ekp--para-key faced)))))
+
+(ert-deftest ekp-test-global-width-cache-consistent ()
+  "The global width cache returns exactly `string-pixel-width'."
+  (ekp-clear-caches)
+  (dolist (s (list "中" "word" " " (propertize "中" 'face 'bold)))
+    (should (= (ekp--measured-width s) (string-pixel-width s)))
+    ;; second lookup: cached, same value
+    (should (= (ekp--measured-width s) (string-pixel-width s)))))
+
+(ert-deftest ekp-test-style-change-invalidates-fast-path ()
+  "Changing a style variable must invalidate the same-string fast path.
+Regression: with the same string object, (setq ekp-alignment ...)
+kept returning the paragraph resolved under the previous style."
+  (ekp-clear-caches)
+  (let* ((s "style watcher 检查内容足够长断行几次的样子啊")
+         (out-j (ekp-pixel-justify s 30))
+         (out-c (let ((ekp-alignment 'center)) (ekp-pixel-justify s 30))))
+    (ekp-clear-caches)
+    (should (equal-including-properties
+             out-c
+             (let ((ekp-alignment 'center)) (ekp-pixel-justify s 30))))
+    (ekp-clear-caches)
+    (should (equal-including-properties out-j (ekp-pixel-justify s 30)))))
+
 (provide 'ekp-tests)
 
 ;;; ekp-tests.el ends here
