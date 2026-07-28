@@ -41,7 +41,7 @@ ekp_state_t *ekp_global = NULL;
 #define EKP_BADNESS_INF 10000.0
 
 /* Badness computation */
-static inline double compute_badness(int32_t adjustment, int32_t flexibility)
+static inline double compute_badness(int64_t adjustment, int64_t flexibility)
 {
     if (adjustment == 0)
         return 0.0;
@@ -54,7 +54,7 @@ static inline double compute_badness(int32_t adjustment, int32_t flexibility)
 }
 
 /* Fitness classification */
-static inline uint8_t compute_fitness(int32_t adjustment, int32_t flexibility)
+static inline uint8_t compute_fitness(int64_t adjustment, int64_t flexibility)
 {
     if (flexibility <= 0)
         return FITNESS_DECENT;
@@ -219,8 +219,8 @@ static inline bool dp_is_forbidden(const dp_input_t *in, size_t pos)
 static inline void dp_relax_emergency(
     const dp_input_t *in, size_t i, size_t k,
     double prev_dem, int prev_hyph, int prev_lines,
-    int32_t rest, bool end_hyphen,
-    double *demerits, int32_t *backptrs, int32_t *rest_pixels,
+    int64_t rest, bool end_hyphen,
+    double *demerits, int32_t *backptrs, int64_t *rest_pixels,
     uint8_t *fitness, int32_t *hyphen_counts, int32_t *line_counts)
 {
     double base = in->line_penalty + EKP_BADNESS_INF;
@@ -247,22 +247,22 @@ static void dp_process_position(
     /* Output arrays */
     double *demerits,
     int32_t *backptrs,
-    int32_t *rest_pixels,
+    int64_t *rest_pixels,
     uint8_t *fitness,
     int32_t *hyphen_counts,
     int32_t *line_counts)
 {
     size_t n = in->n;
     /* Line 0 (i == 0) may have a different width: first-line indent */
-    int32_t line_width = (i == 0 && in->first_line_width > 0)
+    int64_t line_width = (i == 0 && in->first_line_width > 0)
                              ? in->first_line_width
                              : in->line_width;
 
     /* Get leading glue for line starting at i */
-    int32_t lead_ideal = (in->glue_ideals && i < n) ? in->glue_ideals[i] : 0;
-    int32_t lead_shrink = (in->glue_shrinks && i < n) ? in->glue_shrinks[i] : 0;
-    int32_t lead_stretch = (in->glue_stretches && i < n) ? in->glue_stretches[i] : 0;
-    int32_t lead_space = in->lead_spaces ? in->lead_spaces[i] : 0;
+    int64_t lead_ideal = (in->glue_ideals && i < n) ? in->glue_ideals[i] : 0;
+    int64_t lead_shrink = (in->glue_shrinks && i < n) ? in->glue_shrinks[i] : 0;
+    int64_t lead_stretch = (in->glue_stretches && i < n) ? in->glue_stretches[i] : 0;
+    int64_t lead_space = in->lead_spaces ? in->lead_spaces[i] : 0;
 
     /* Try extending to each position k > i */
     bool saw_allowed = false;
@@ -281,27 +281,28 @@ static void dp_process_position(
         saw_allowed = true;
 
         bool end_hyphen = dp_is_hyphen(in, k - 1);
-        int32_t hyph_w = end_hyphen ? in->hyphen_width : 0;
+        int64_t hyph_w = end_hyphen ? in->hyphen_width : 0;
 
         /* Right-edge protrusion widens this candidate's target */
-        int32_t lw = line_width +
+        int64_t lw = line_width +
             (end_hyphen ? in->hyphen_protrude
                         : (in->tail_protrudes ? in->tail_protrudes[k] : 0));
 
         /* Line metrics from i to k, excluding leading glue and the
          * space-box runs the renderer strips (leading + trailing). */
-        int32_t raw_ideal = in->ideal_prefix[k] - in->ideal_prefix[i] - lead_ideal;
-        int32_t space_w = lead_space +
+        int64_t raw_ideal = (int64_t)in->ideal_prefix[k] -
+                            in->ideal_prefix[i] - lead_ideal;
+        int64_t space_w = lead_space +
             (in->trail_spaces ? in->trail_spaces[k] : 0);
         if (space_w > raw_ideal)
             space_w = raw_ideal;
 
-        int32_t ideal = raw_ideal - space_w + hyph_w;
-        int32_t min_w = in->min_prefix[k] - in->min_prefix[i] -
-                       (lead_ideal - lead_shrink) - space_w + hyph_w;
-        int32_t max_w = in->max_prefix[k] - in->max_prefix[i] -
-                       (lead_ideal + lead_stretch) - space_w + hyph_w +
-                       in->extra_stretch;
+        int64_t ideal = raw_ideal - space_w + hyph_w;
+        int64_t min_w = (int64_t)in->min_prefix[k] - in->min_prefix[i] -
+                        (lead_ideal - lead_shrink) - space_w + hyph_w;
+        int64_t max_w = (int64_t)in->max_prefix[k] - in->max_prefix[i] -
+                        (lead_ideal + lead_stretch) - space_w + hyph_w +
+                        in->extra_stretch;
 
         /* Too long? (last line is never shrunk below its ideal) */
         if (min_w > lw || (is_last && ideal > lw)) {
@@ -329,8 +330,8 @@ static void dp_process_position(
         }
 
         /* Compute demerits */
-        int32_t adjustment = lw - ideal;
-        int32_t flexibility = (adjustment > 0) ?
+        int64_t adjustment = lw - ideal;
+        int64_t flexibility = (adjustment > 0) ?
             (max_w - ideal) : (ideal - min_w);
 
         double badness;
@@ -429,7 +430,8 @@ ekp_result_t *ekp_break_with_prefixes(
     int32_t hyphen_protrude,
     int32_t first_line_width)
 {
-    if (!ideal_prefix || !min_prefix || !max_prefix || n == 0 || line_width <= 0)
+    if (!ideal_prefix || !min_prefix || !max_prefix || n == 0 ||
+        n > INT32_MAX || line_width <= 0)
         return NULL;
     if (first_line_width <= 0)
         first_line_width = line_width;
@@ -437,7 +439,7 @@ ekp_result_t *ekp_break_with_prefixes(
     /* Allocate DP arrays */
     double *demerits = malloc((n + 1) * sizeof(double));
     int32_t *backptrs = malloc((n + 1) * sizeof(int32_t));
-    int32_t *rest_pixels = malloc((n + 1) * sizeof(int32_t));
+    int64_t *rest_pixels = malloc((n + 1) * sizeof(int64_t));
     uint8_t *fitness = malloc((n + 1) * sizeof(uint8_t));
     int32_t *hyph_counts = malloc((n + 1) * sizeof(int32_t));
     int32_t *line_counts = malloc((n + 1) * sizeof(int32_t));
@@ -561,7 +563,7 @@ ekp_result_t *ekp_break_with_prefixes(
     }
 
     result->breaks = malloc(break_count * sizeof(int32_t));
-    result->rest_pixels = malloc(break_count * sizeof(int32_t));
+    result->rest_pixels = malloc(break_count * sizeof(int64_t));
     if (!result->breaks || !result->rest_pixels) {
         ekp_result_destroy(result);
         free(demerits); free(backptrs); free(rest_pixels);

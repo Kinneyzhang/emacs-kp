@@ -28,13 +28,125 @@
 /* Required for Emacs modules */
 int plugin_is_GPL_compatible;
 
-/* All pixel quantities travel as int32; clamp instead of silently
- * wrapping if Elisp ever hands us something absurd. */
+/* Public array values are signed 32-bit pixels. The DP uses wider
+ * intermediates; rejecting an out-of-range API value is safer than
+ * silently changing it. */
 static inline int32_t clamp32(intmax_t v)
 {
     if (v > INT32_MAX) return INT32_MAX;
     if (v < INT32_MIN) return INT32_MIN;
     return (int32_t)v;
+}
+
+static bool lisp_predicate(emacs_env *env, const char *name, emacs_value value)
+{
+    emacs_value result = env->funcall(
+        env, env->intern(env, name), 1, (emacs_value[]){value});
+    return env->is_not_nil(env, result);
+}
+
+static bool i32_value_p(emacs_env *env, emacs_value value)
+{
+    if (!lisp_predicate(env, "integerp", value))
+        return false;
+
+    emacs_value min = env->make_integer(env, INT32_MIN);
+    emacs_value max = env->make_integer(env, INT32_MAX);
+    bool at_least_min = env->is_not_nil(
+        env, env->funcall(
+            env, env->intern(env, ">="), 2, (emacs_value[]){value, min}));
+    bool at_most_max = env->is_not_nil(
+        env, env->funcall(
+            env, env->intern(env, "<="), 2, (emacs_value[]){value, max}));
+    return at_least_min && at_most_max;
+}
+
+static bool finite_number_p(emacs_env *env, emacs_value value)
+{
+    if (lisp_predicate(env, "floatp", value))
+        return isfinite(env->extract_float(env, value));
+    return i32_value_p(env, value);
+}
+
+static emacs_value signal_invalid_input(emacs_env *env, const char *message)
+{
+    emacs_value text = env->make_string(env, message, strlen(message));
+    emacs_value data = env->funcall(
+        env, env->intern(env, "list"), 1, (emacs_value[]){text});
+    env->non_local_exit_signal(
+        env, env->intern(env, "ekp-c-invalid-input"), data);
+    return env->intern(env, "nil");
+}
+
+static bool i32_vector_p(emacs_env *env, emacs_value vector)
+{
+    ptrdiff_t length = env->vec_size(env, vector);
+    for (ptrdiff_t i = 0; i < length; i++) {
+        if (!i32_value_p(env, env->vec_get(env, vector, i)))
+            return false;
+    }
+    return true;
+}
+
+static ptrdiff_t paragraph_field_length(int field, ptrdiff_t prefix_len)
+{
+    switch (field) {
+    case 0: case 1: case 2: case 9: case 10: case 12:
+        return prefix_len;
+    case 3: case 4: case 5:
+        return prefix_len - 1;
+    default:
+        return -1;
+    }
+}
+
+static const char *validate_paragraph_shapes(emacs_env *env, emacs_value *args)
+{
+    static const int vectors[] = {0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12};
+
+    for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++) {
+        if (!lisp_predicate(env, "vectorp", args[vectors[i]]))
+            return "EKP C paragraph array fields must be vectors";
+    }
+
+    ptrdiff_t prefix_len = env->vec_size(env, args[0]);
+    if (prefix_len <= 1 || prefix_len > INT32_MAX)
+        return "EKP C prefix vectors must contain 2..INT32_MAX elements";
+
+    for (int field = 0; field < 15; field++) {
+        ptrdiff_t expected = paragraph_field_length(field, prefix_len);
+        if (expected >= 0 && env->vec_size(env, args[field]) != expected)
+            return "EKP C paragraph vector lengths are inconsistent";
+    }
+    return NULL;
+}
+
+static const char *validate_paragraph_values(emacs_env *env, emacs_value *args)
+{
+    static const int vectors[] = {0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12};
+    static const int scalars[] = {7, 8, 13, 14};
+
+    for (size_t i = 0; i < sizeof(vectors) / sizeof(vectors[0]); i++) {
+        if (!i32_vector_p(env, args[vectors[i]]))
+            return "EKP C paragraph vectors require signed 32-bit integers";
+    }
+    for (size_t i = 0; i < sizeof(scalars) / sizeof(scalars[0]); i++) {
+        if (!i32_value_p(env, args[scalars[i]]))
+            return "EKP C paragraph scalars require signed 32-bit integers";
+    }
+
+    if (env->extract_integer(env, args[8]) <= 0)
+        return "EKP C line width must be positive";
+    if (env->extract_integer(env, args[7]) < 0 ||
+        env->extract_integer(env, args[13]) < 0)
+        return "EKP C hyphen width and protrusion must be nonnegative";
+    return NULL;
+}
+
+static const char *validate_paragraph(emacs_env *env, emacs_value *args)
+{
+    const char *error = validate_paragraph_shapes(env, args);
+    return error ? error : validate_paragraph_values(env, args);
 }
 
 /*
@@ -69,6 +181,47 @@ static emacs_value Fekp_c_cleanup(emacs_env *env, ptrdiff_t nargs,
 /*
  * ekp-c-set-penalties: Set K-P parameters
  */
+typedef struct {
+    int32_t line;
+    int32_t hyphen;
+    int32_t fitness;
+    double last_ratio;
+    int32_t consecutive;
+    double last_short;
+    int32_t extra_stretch;
+} penalty_config_t;
+
+static const char *parse_penalties(emacs_env *env, ptrdiff_t nargs,
+                                   emacs_value *args, penalty_config_t *out)
+{
+    if (!i32_value_p(env, args[0]) || !i32_value_p(env, args[1]) ||
+        !i32_value_p(env, args[2]) || !finite_number_p(env, args[3]) ||
+        (nargs > 4 && !i32_value_p(env, args[4])) ||
+        (nargs > 5 && !finite_number_p(env, args[5])) ||
+        (nargs > 6 && !i32_value_p(env, args[6])))
+        return "EKP C penalties require finite signed 32-bit numbers";
+
+    out->line = clamp32(env->extract_integer(env, args[0]));
+    out->hyphen = clamp32(env->extract_integer(env, args[1]));
+    out->fitness = clamp32(env->extract_integer(env, args[2]));
+    out->last_ratio = lisp_predicate(env, "floatp", args[3])
+        ? env->extract_float(env, args[3])
+        : (double)env->extract_integer(env, args[3]);
+    if (nargs > 4)
+        out->consecutive = clamp32(env->extract_integer(env, args[4]));
+    if (nargs > 5)
+        out->last_short = lisp_predicate(env, "floatp", args[5])
+            ? env->extract_float(env, args[5])
+            : (double)env->extract_integer(env, args[5]);
+    out->extra_stretch = nargs > 6
+        ? clamp32(env->extract_integer(env, args[6])) : 0;
+
+    if (out->last_ratio < 0.0 || out->last_ratio > 1.0 ||
+        out->last_short < 0.0 || out->extra_stretch < 0)
+        return "EKP C ratios and stretch values are outside valid ranges";
+    return NULL;
+}
+
 static emacs_value Fekp_c_set_penalties(emacs_env *env, ptrdiff_t nargs,
                                          emacs_value *args, void *data)
 {
@@ -77,18 +230,21 @@ static emacs_value Fekp_c_set_penalties(emacs_env *env, ptrdiff_t nargs,
     if (!ekp_global || nargs < 4)
         return env->intern(env, "nil");
 
-    ekp_global->line_penalty = clamp32(env->extract_integer(env, args[0]));
-    ekp_global->hyphen_penalty = clamp32(env->extract_integer(env, args[1]));
-    ekp_global->fitness_penalty = clamp32(env->extract_integer(env, args[2]));
-    ekp_global->last_line_ratio = env->extract_float(env, args[3]);
-    if (nargs > 4)
-        ekp_global->consec_hyphen_penalty = clamp32(env->extract_integer(env, args[4]));
-    if (nargs > 5)
-        ekp_global->last_line_short_penalty = env->extract_float(env, args[5]);
-    /* Per-line extra stretch for non-justify alignment; reset to 0
-     * when the caller omits it so stale values never leak. */
-    ekp_global->extra_stretch =
-        (nargs > 6) ? (int32_t)clamp32(env->extract_integer(env, args[6])) : 0;
+    penalty_config_t config = {
+        .consecutive = ekp_global->consec_hyphen_penalty,
+        .last_short = ekp_global->last_line_short_penalty
+    };
+    const char *error = parse_penalties(env, nargs, args, &config);
+    if (error)
+        return signal_invalid_input(env, error);
+
+    ekp_global->line_penalty = config.line;
+    ekp_global->hyphen_penalty = config.hyphen;
+    ekp_global->fitness_penalty = config.fitness;
+    ekp_global->last_line_ratio = config.last_ratio;
+    ekp_global->consec_hyphen_penalty = config.consecutive;
+    ekp_global->last_line_short_penalty = config.last_short;
+    ekp_global->extra_stretch = config.extra_stretch;
 
     return env->intern(env, "t");
 }
@@ -147,10 +303,12 @@ static emacs_value Fekp_c_break_with_arrays(emacs_env *env, ptrdiff_t nargs,
     if (!ekp_global || nargs < 15)
         return env->intern(env, "nil");
 
+    const char *validation_error = validate_paragraph(env, args);
+    if (validation_error)
+        return signal_invalid_input(env, validation_error);
+
     /* Get prefix array sizes (n+1 elements) */
     ptrdiff_t prefix_len = env->vec_size(env, args[0]);
-    if (prefix_len <= 1)
-        return env->intern(env, "nil");
 
     size_t n = prefix_len - 1;  /* number of boxes */
 
@@ -390,9 +548,12 @@ static bool extract_paragraph_data(
  * ekp-c-break-batch: Process multiple paragraphs in parallel
  *
  * Args: vector of (ideal-prefix min-prefix max-prefix glue-ideals glue-shrinks
- *                  glue-stretches hyphen-positions hyphen-width line-width)
+ *                  glue-stretches hyphen-positions hyphen-width line-width
+ *                  lead-spaces trail-spaces forbidden-positions tail-protrudes
+ *                  hyphen-protrude first-line-width)
  *
- * Each element is a vector of 9 elements (same as ekp-c-break-with-arrays args).
+ * Each element is a vector of 15 elements (same as
+ * ekp-c-break-with-arrays args).
  * Returns vector of (breaks . total-cost) for each paragraph.
  *
  * This is the high-performance API for processing multi-paragraph text.
@@ -405,9 +566,30 @@ static emacs_value Fekp_c_break_batch(emacs_env *env, ptrdiff_t nargs,
     if (!ekp_global || nargs < 1)
         return env->intern(env, "nil");
 
+    if (!lisp_predicate(env, "vectorp", args[0]))
+        return signal_invalid_input(
+            env, "EKP C batch input must be a vector");
+
     ptrdiff_t para_count = env->vec_size(env, args[0]);
     if (para_count <= 0)
         return env->intern(env, "nil");
+
+    /* Validate the complete batch before allocating or extracting any
+     * paragraph, so malformed input cannot leave a partial batch. */
+    for (ptrdiff_t p = 0; p < para_count; p++) {
+        emacs_value para_vec = env->vec_get(env, args[0], p);
+        if (!lisp_predicate(env, "vectorp", para_vec) ||
+            env->vec_size(env, para_vec) != 15)
+            return signal_invalid_input(
+                env, "Each EKP C batch paragraph must contain 15 fields");
+
+        emacs_value para_args[15];
+        for (int i = 0; i < 15; i++)
+            para_args[i] = env->vec_get(env, para_vec, i);
+        const char *validation_error = validate_paragraph(env, para_args);
+        if (validation_error)
+            return signal_invalid_input(env, validation_error);
+    }
 
     /* Allocate batch inputs and temporary storage */
     ekp_batch_input_t *inputs = calloc(para_count, sizeof(ekp_batch_input_t));
@@ -569,6 +751,12 @@ int emacs_module_init(struct emacs_runtime *runtime)
     if ((size_t)env->size < sizeof(*env))
         return 2;
 
+    emacs_value error_name = env->intern(env, "ekp-c-invalid-input");
+    emacs_value error_message = env->make_string(
+        env, "Invalid EKP C module input", 26);
+    env->funcall(env, env->intern(env, "define-error"), 2,
+                 (emacs_value[]){error_name, error_message});
+
     /* Define functions */
     defun(env, "ekp-c-init", 0, 0, Fekp_c_init,
           "Initialize EKP C module with thread pool.");
@@ -583,9 +771,10 @@ HYPHEN-PENALTY: penalty for hyphenated breaks (default 50)\n\
 FITNESS-PENALTY: penalty for adjacent line tightness mismatch (default 100)\n\
 LAST-LINE-RATIO: minimum fill ratio for last line (default 0.5)\n\
 CONSEC-HYPHEN-PENALTY: multiplier for consecutive hyphen runs (default 100)\n\
-LAST-LINE-SHORT-PENALTY: multiplier for short last lines (default 50.0)\n\n\
+LAST-LINE-SHORT-PENALTY: multiplier for short last lines (default 50.0)\n\
+EXTRA-STRETCH: per-line non-justify flexibility in pixels (default 0)\n\n\
 (fn LINE-PENALTY HYPHEN-PENALTY FITNESS-PENALTY LAST-LINE-RATIO \
-&optional CONSEC-HYPHEN-PENALTY LAST-LINE-SHORT-PENALTY)");
+&optional CONSEC-HYPHEN-PENALTY LAST-LINE-SHORT-PENALTY EXTRA-STRETCH)");
 
     defun(env, "ekp-c-break-with-arrays", 15, 15, Fekp_c_break_with_arrays,
           "Break lines using Elisp's pre-computed prefix arrays (preferred API).\n\n\

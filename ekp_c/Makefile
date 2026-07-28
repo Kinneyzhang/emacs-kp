@@ -31,15 +31,24 @@ else
     EMACS ?= emacs
 endif
 
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O3 -fPIC
-CFLAGS += -march=native -flto
-CFLAGS += -D_POSIX_C_SOURCE=200809L
+PROFILE ?= portable
+COMMON_CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -fPIC
+COMMON_CFLAGS += -D_POSIX_C_SOURCE=200809L
 
-# Debug build
-ifdef DEBUG
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -O0 -g -fPIC
-CFLAGS += -fsanitize=address,undefined
+ifeq ($(PROFILE),portable)
+    PROFILE_CFLAGS := -O3
+else ifeq ($(PROFILE),native)
+    PROFILE_CFLAGS := -O3 -march=native -flto
+else ifeq ($(PROFILE),debug)
+    PROFILE_CFLAGS := -O0 -g3
+else ifeq ($(PROFILE),sanitize)
+    PROFILE_CFLAGS := -O1 -g3 -fno-omit-frame-pointer
+    PROFILE_CFLAGS += -fsanitize=address,undefined
+else
+    $(error Unknown PROFILE '$(PROFILE)'; use portable, native, debug, or sanitize)
 endif
+
+CFLAGS := $(COMMON_CFLAGS) $(PROFILE_CFLAGS)
 
 # Platform-specific settings
 ifeq ($(UNAME), Darwin)
@@ -115,6 +124,7 @@ info:
 	@echo "MODULE: $(MODULE)"
 	@echo "UNAME: $(UNAME)"
 	@echo "EMACS: $(EMACS)"
+	@echo "PROFILE: $(PROFILE)"
 ifdef EMACS_INCLUDE
 	@echo "EMACS_INCLUDE: $(EMACS_INCLUDE)"
 endif

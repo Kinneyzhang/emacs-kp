@@ -173,16 +173,16 @@ When STR is held as cjk-char, this checks if it still needs attachment."
     (memq (get-char-code-property char 'general-category)
           '(Ps Pi))))
 
-(defun ekp--flush-latin-word (word boxes)
-  "Push latin WORD to BOXES if non-nil.  Return updated boxes."
-  (if word (cons word boxes) boxes))
+(defun ekp--flush-latin-word (parts boxes)
+  "Join reversed Latin PARTS once and push the word to BOXES."
+  (if parts (cons (apply #'concat (nreverse parts)) boxes) boxes))
 
-(defun ekp--flush-cjk-char (char boxes)
-  "Push CJK CHAR to BOXES if non-nil.  Return updated boxes."
-  (if char (cons char boxes) boxes))
+(defun ekp--flush-cjk-char (parts boxes)
+  "Join reversed CJK PARTS once and push the character to BOXES."
+  (if parts (cons (apply #'concat (nreverse parts)) boxes) boxes))
 
-(defun ekp--flush-spaces (spaces boxes prev-state next-width)
-  "Push SPACES to BOXES based on context.
+(defun ekp--flush-spaces (parts boxes prev-state next-width)
+  "Join reversed space PARTS and push them to BOXES based on context.
 PREV-STATE: 1=latin, 2=CJK (previous content type).
 NEXT-WIDTH: width of next character (1=latin, 2=CJK).
 Rules:
@@ -190,8 +190,9 @@ Rules:
 - CJK involved (prev or next is CJK): preserve all spaces
 - Latin-Latin with single space: let glue handle it
 - Latin-Latin with multiple spaces: preserve all but last"
-  (when (and spaces (not (string-empty-p spaces)))
-    (let ((cjk-involved (or (= prev-state 2) (= next-width 2))))
+  (when parts
+    (let ((spaces (apply #'concat (nreverse parts)))
+          (cjk-involved (or (= prev-state 2) (= next-width 2))))
       (cond
        ;; Leading spaces (no previous boxes): preserve all
        ((null boxes)
@@ -210,10 +211,10 @@ Rules:
        (t nil))))
   boxes)
 
-(defun ekp--flush-trailing-spaces (spaces boxes)
-  "Push all trailing SPACES to BOXES (for end of string)."
-  (if (and spaces (not (string-empty-p spaces)))
-      (cons spaces boxes)
+(defun ekp--flush-trailing-spaces (parts boxes)
+  "Join reversed trailing space PARTS once and push them to BOXES."
+  (if parts
+      (cons (apply #'concat (nreverse parts)) boxes)
     boxes))
 
 (defun ekp--zero-width-attaching-p (char)
@@ -232,9 +233,9 @@ STATE is the current mode; LATIN-WORD, CJK-CHAR and BOXES are the
 accumulators.  Return (new-state new-latin-word new-cjk-char new-boxes)."
   (if (= state 1)
       ;; Already in latin mode: accumulate
-      (list 1 (concat latin-word str) nil boxes)
+      (list 1 (cons str latin-word) nil boxes)
     ;; Was in CJK mode: flush held CJK char, switch to latin
-    (list 1 str nil (ekp--flush-cjk-char cjk-char boxes))))
+    (list 1 (list str) nil (ekp--flush-cjk-char cjk-char boxes))))
 
 (defun ekp--handle-cjk-char (str state latin-word cjk-char boxes)
   "Handle a CJK (width=2) character STR.
@@ -246,9 +247,9 @@ Kinsoku is enforced by the DP through per-gap break permissions
 \(`ekp-para-breaks-allowed'), not by merging boxes."
   (if (= state 1)
       ;; Was in latin mode: flush latin word, hold current CJK char
-      (list 2 nil str (ekp--flush-latin-word latin-word boxes))
+      (list 2 nil (list str) (ekp--flush-latin-word latin-word boxes))
     ;; Already in CJK mode: flush held char, hold current
-    (list 2 nil str (ekp--flush-cjk-char cjk-char boxes))))
+    (list 2 nil (list str) (ekp--flush-cjk-char cjk-char boxes))))
 
 (defun ekp-split-to-boxes (string)
   "Split STRING into typographic boxes.
@@ -263,9 +264,9 @@ by merging boxes."
       (goto-char (point-min))
       (let ((state (char-width (seq-first string)))  ; 1=latin, 2=CJK
             (prev-state 1)  ; track previous content state for space handling
-            latin-word   ; accumulator for latin characters
-            cjk-char     ; holds previous CJK char (for punct attachment)
-            spaces       ; accumulator for whitespace runs
+            latin-word   ; reversed fragments for latin characters
+            cjk-char     ; reversed fragments for one CJK character
+            spaces       ; reversed fragments for a whitespace run
             boxes)       ; result list (built in reverse)
         (while (not (eobp))
           (let* ((str (buffer-substring (point) (1+ (point))))
@@ -276,12 +277,15 @@ by merging boxes."
              ((and (= 0 width) (not (string-blank-p str))
                    (ekp--zero-width-attaching-p char))
               (cond
-               (latin-word (setq latin-word (concat latin-word str)))
-               (cjk-char (setq cjk-char (concat cjk-char str)))
-               (spaces (setq spaces (concat spaces str)))
-               (boxes (setcar boxes (concat (car boxes) str)))
+               (latin-word (push str latin-word))
+               (cjk-char (push str cjk-char))
+               (spaces (push str spaces))
+               (boxes
+                (if (= prev-state 2)
+                    (setq cjk-char (list str (pop boxes)) state 2)
+                  (setq latin-word (list str (pop boxes)) state 1)))
                ;; String starts with a combining char: start an accumulator
-               (t (setq latin-word str state 1))))
+               (t (setq latin-word (list str) state 1))))
              ;; Whitespace or other zero-width: flush content, accumulate spaces
              ((or (string-blank-p str) (= 0 width))
               (setq boxes (ekp--flush-cjk-char cjk-char boxes))
@@ -290,7 +294,7 @@ by merging boxes."
               (setq boxes (ekp--flush-latin-word latin-word boxes))
               (when latin-word (setq prev-state 1))
               (setq latin-word nil)
-              (setq spaces (concat spaces str)))
+              (push str spaces))
              ;; Non-whitespace: flush spaces first, then handle char
              (t
               (setq boxes (ekp--flush-spaces spaces boxes prev-state width))
@@ -316,30 +320,6 @@ by merging boxes."
         (vconcat (nreverse boxes))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-
-(defun ekp-start-process-with-callback
-    (process-name command-args callback
-                  &optional output-buffer)
-  "Run COMMAND-ARGS as process PROCESS-NAME; call CALLBACK on success.
-CALLBACK receives (PROCESS BUFFER).  OUTPUT-BUFFER names the output
-buffer (a generated name by default); it is killed after CALLBACK
-returns."
-  (let* ((buffer-name (generate-new-buffer-name
-                       (or output-buffer "*EKP Process Output*")))
-         (process (apply #'start-process process-name
-                         buffer-name command-args)))
-    (set-process-sentinel
-     process
-     (lambda (proc event)
-       (if (string-match-p "finished" event)
-           (when (memq (process-status proc) '(exit signal))
-             (unwind-protect
-                 (funcall callback proc (process-buffer proc))
-               (when (buffer-live-p (process-buffer proc))
-                 (kill-buffer (process-buffer proc)))))
-         (message "%s, please check %s" (string-trim event)
-                  buffer-name))))
-    process))
 
 (defun ekp--module-reload (module)
   "Load MODULE from a temp copy to allow rebuilding."
@@ -375,8 +355,26 @@ returns."
 (defalias 'ekp-c-module-reload #'ekp--module-reload
   "Load MODULE from a temp copy to allow rebuilding.")
 
-(defconst ekp-c-module-required-version "1.5"
+(defconst ekp-c-module-required-version "1.6"
   "Minimum C module version compatible with this Elisp code.")
+
+(defun ekp--c-build-finished (profile process _event)
+  "Handle completion of PROCESS building C PROFILE."
+  (when (memq (process-status process) '(exit signal))
+    (if (and (eq (process-status process) 'exit)
+             (= (process-exit-status process) 0))
+        (condition-case error-data
+            (progn
+              (ekp-c-module-load)
+              (kill-buffer (process-buffer process))
+              (message "EKP C %s build succeeded" profile))
+          (error
+           (display-buffer (process-buffer process))
+           (message "EKP C build loaded unsuccessfully: %s"
+                    (error-message-string error-data))))
+      (display-buffer (process-buffer process))
+      (message "EKP C %s build failed (status %d)"
+               profile (process-exit-status process)))))
 
 ;;;###autoload
 (defun ekp-c-module-load ()
@@ -402,22 +400,35 @@ Run 'make' in ekp_c/ to rebuild; falling back to Elisp."
       (message "C module not found. Run 'make' in ekp_c/ directory."))))
 
 ;;;###autoload
-(defun ekp-c-module-build ()
-  "Build the C module using make."
-  (interactive)
-  (let ((module-dir (ekp-c-module-dir)))
-    (if (and module-dir (file-exists-p
-                         (expand-file-name "Makefile" module-dir)))
-        (ekp-start-process-with-callback
-         "ekp-c-build"
-         (cond
-          ((eq system-type 'windows-nt)
-           `("cmd.exe" "/c" ,(format "cd %s && make" module-dir)))
-          (t `(,shell-file-name "-c" ,(format "cd %s && make" module-dir))))
-         (lambda (_proc _buffer)
-           (ekp-c-module-load)
-           (message "ekp C module build success!")))
-      (error "Makefile not found in ekp_c/ directory"))))
+(defun ekp-c-module-build (&optional profile)
+  "Build the C module with make using PROFILE.
+PROFILE is one of `portable', `native', `debug', or `sanitize';
+the default is `portable'."
+  (interactive
+   (list
+    (intern
+     (completing-read "C build profile: "
+                      '("portable" "native" "debug" "sanitize")
+                      nil t nil nil "portable"))))
+  (setq profile (or profile 'portable))
+  (unless (memq profile '(portable native debug sanitize))
+    (user-error "Unknown EKP C build profile: %S" profile))
+  (let* ((module-dir (ekp-c-module-dir))
+         (makefile (and module-dir
+                        (expand-file-name "Makefile" module-dir)))
+         (make (executable-find "make")))
+    (unless (and makefile (file-exists-p makefile))
+      (user-error "Makefile not found in ekp_c/ directory"))
+    (unless make
+      (user-error "The make executable is not available"))
+    (let* ((default-directory (file-name-as-directory module-dir))
+           (buffer (generate-new-buffer "*ekp-c-build*")))
+      (make-process
+       :name (generate-new-buffer-name "ekp-c-build")
+       :buffer buffer
+       :command (list make (format "PROFILE=%s" profile))
+       :noquery t
+       :sentinel (apply-partially #'ekp--c-build-finished profile)))))
 
 (provide 'ekp-utils)
 

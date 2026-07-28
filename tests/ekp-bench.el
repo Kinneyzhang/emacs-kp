@@ -19,6 +19,7 @@
 ;;; Code:
 
 (require 'ekp)
+(require 'benchmark)
 
 (defun ekp-bench--read (name)
   (with-temp-buffer
@@ -37,6 +38,21 @@
         (push (- (float-time) t0) times)))
     (message "%-42s %8.1f ms  (min of %d)"
              label (* 1000 (apply #'min times)) n)))
+
+(defun ekp-bench-adversarial-builders (length)
+  "Measure tokenizer and dense insertion builders at LENGTH."
+  (let* ((word (make-string length ?a))
+         (positions (number-sequence 2 (- length 2) 8))
+         (split-time
+          (car (benchmark-run 3 (ekp-split-to-boxes word))))
+         (insert-time
+          (cl-letf (((symbol-function 'ekp-hyphen-positions)
+                     (lambda (_h _word) positions)))
+            (car (benchmark-run 3
+                   (ekp-hyphen-inserted nil word))))))
+    (message "builders n=%-5d split=%8.1f ms inserted=%8.1f ms breaks=%d"
+             length (* split-time 1000) (* insert-time 1000)
+             (length positions))))
 
 (let* ((zh (ekp-bench--read "text-zh.txt"))
        (en (ekp-bench--read "text-en_US.txt"))
@@ -72,6 +88,10 @@
         (push (- (float-time) t0) times)))
     (message "%-42s %8.1f ms  (min of 3)" "DP-only zh w=400 (paras cached)"
              (* 1000 (apply #'min times)))))
+
+(message "== adversarial builder scaling ==")
+(dolist (length '(1000 2000 4000 8000))
+  (ekp-bench-adversarial-builders length))
 
 (message "bench done")
 

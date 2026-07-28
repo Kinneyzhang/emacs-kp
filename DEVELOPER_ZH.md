@@ -2,6 +2,9 @@
 
 本文档描述 `emacs-kp` 的实际内部架构、算法与 API,面向贡献者和高级用户。
 
+当前仓库健康度与后续工作的优先级见
+[2026-07-28 系统审计](./Docs/REPOSITORY_AUDIT_20260728.md)。
+
 ## 1. 处理管线
 
 一次排版调用经过五个阶段:
@@ -52,14 +55,20 @@ DP 和渲染需要的一切,每段只算一次:
 | `lead-spaces` | `lead-spaces[i]` = 从盒 i 开始的连续空格盒总宽;下标 0 强制为 0(首行缩进保留) |
 | `trail-spaces` | `trail-spaces[k]` = 到盒 k−1 结束的连续空格盒总宽 |
 | `glue-params` | 创建时九个间距值的 plist 快照 |
-| `dp-cache` | 哈希:行宽 → dp-result plist |
+| `dp-cache` | 以 `equal` 比较的哈希:完整 DP 签名 → dp-result plist |
 
 段落缓存(`ekp--para-cache`)以 `equal` 比较结构化 key——字符串内容、
 文本属性区间的打印形式、检测字体、断词语言(`ekp-latin-lang`)、九个
-显式间距值(或符号 `auto`)。结构化 key 使哈希碰撞无害(旧的 `sxhash`
-整数方案理论上可能串段)。超过 `ekp-para-cache-limit` 时整体清空。
-单条快路径(`ekp--last-para`,按字符串 `eq` + 语言校验)覆盖同一次
-排版内的大量同字符串查询。
+显式间距值或自动 CJK stretch 默认值。其他自动值由字体测量派生,已
+由字体与显示上下文字段表达。结构化 key 使哈希碰撞无害(旧的
+`sxhash` 整数方案理论上可能串段)。超过 `ekp-para-cache-limit` 时
+整体清空。单条快路径(`ekp--last-para`)只绕过哈希 lookup,复用前仍
+比较同一个完整结构 key。因此排版相关 text property 的原地修改会让
+两条路径都 miss,并得到与 fresh paragraph 相同的结果。
+
+DP 签名独立于段落 key,包含行宽、looseness 与全部六个运行时代价参数。
+参数变化会选择新结果,无需丢弃与宽度无关的段落数据;结构化 `equal`
+比较也让非零 looseness 签名能够正常命中缓存。
 
 ### dp-result
 
@@ -80,6 +89,8 @@ width   = raw − space-w  (若盒 k−1 处断词,再加连字符宽)
 理想/最小/最大三个值均 O(1) 得出。行边缘的空格盒串被排除,因为渲染层
 会剥离它们;DP 与渲染层因此严格一致,每一行的渲染宽度精确等于目标宽
 (测试 `ekp-test-justify-line-width-invariant`)。
+`ekp--line-stripped-space-pixel` 统一拥有 1D/loose DP、C 结果重建与
+渲染层使用的这一排除规则。
 
 ## 4. Knuth-Plass 动态规划
 
@@ -146,6 +157,25 @@ batch/tty 下按字符列精确。
 不会丢失。`ekp-region.el` 对这四类标记做纯结构逆变换
 (`ekp-unjustify-region`)——即使排版后又被编辑过也能精确还原——并在
 其上实现 `ekp-justify-region` / `ekp-auto-justify-mode`。
+`ekp--layout-marker-properties` 统一拥有 renderer/region 的完整标记
+词汇表及其不向新输入继承的契约。
+
+保存是非修改式序列化边界。buffer-local
+`write-region-annotate-functions` 中最先运行
+`ekp-region--write-logical-buffer`,把整 buffer 写入切换到隐藏的逻辑
+副本,显示 buffer 始终不变;后续 annotation 与编码转换继续处理该副本。
+成功写入立即销毁副本;失败时每个源 buffer 最多保留一份,下次写入或
+integration teardown 会替换并清理它。只写局部的 `write-region`
+有意保留 Emacs 的物理 buffer 语义;逻辑序列化边界只覆盖整 buffer
+保存路径。
+
+复制过滤有明确的单槽 owner。EKP 记录原
+`filter-buffer-substring-function` 是否为 buffer-local,临时恢复该值
+并调用公开的 `filter-buffer-substring` dispatcher,以保留转换与
+DELETE 语义,再从返回字符串中结构化移除 EKP 布局标记。DELETE 的
+lifecycle 清理在临时绑定解除后执行;auto mode 外最后一个排版区间
+消失时,会恢复原 local 值或重新暴露继承值,同时移除
+save/search/change hooks。
 
 ### 5.1 断行许可、对齐、悬挂、段形
 
@@ -169,7 +199,7 @@ batch/tty 下按字符列精确。
   `ekp-parshape` 和 `ekp-looseness` 才需要(位置×行数)DP 并旁路 C。
   缩进渲染为行首 `ekp-glue` 垫片。
 
-C 模块 1.5:`ekp-c-break-with-arrays` 15 参(…、forbidden-positions、
+C 模块 1.6:`ekp-c-break-with-arrays` 15 参(…、forbidden-positions、
 tail-protrudes、hyphen-protrude、first-line-width);batch 向量 15 元;
 `ekp-c-set-penalties` 4–7 参。
 
@@ -179,6 +209,12 @@ w=200 ≈ 54 ms、range zh ≈ 117 ms——justify 与特性前持平,range 因�
 串驻留、(段落, 宽度) 渲染结果缓存进 dp-cache(上限 64 个宽度)。连
 续变宽实测(60 段 2.6 万字文章,含 region 层全链路):每次变宽约
 73 ms,重访宽度更快;编辑后单段增量重排约 17 ms。
+
+`ekp-bench-adversarial-builders` 单独测量源码解释模式下的退化
+builder。输入从 1,000 增到 8,000 字符时,基于片段的 tokenizer 增长
+6.3×,密集插入增长 7.7×,接近输入 8× 的线性增长。8,000 字符分别从
+3.133 s 降到 1.100 s、从 0.945 s 降到 0.013 s。断词位置缓存使用
+显式 miss sentinel,因此合法的 nil 结果也能复用。
 
 ## 6. Looseness
 
@@ -190,7 +226,7 @@ w=200 ≈ 54 ms、range zh ≈ 117 ms——justify 与特性前持平,range 因�
 
 ## 7. C 模块集成
 
-C 模块(`ekp_c/`,版本 1.5)只执行阶段 ④。所有字体相关数据以 Elisp
+C 模块(`ekp_c/`,版本 1.6)只执行阶段 ④。所有字体相关数据以 Elisp
 为唯一事实来源。
 
 - `ekp-c-break-with-arrays`(15 参数):para 的前缀数组、glue 数组、
@@ -206,9 +242,10 @@ C 模块(`ekp_c/`,版本 1.5)只执行阶段 ④。所有字体相关数据以 E
 - `ekp-c-module-load` 拒绝低于 `ekp-c-module-required-version` 的模块
   并回落到 Elisp,避免升级后的参数数量不匹配。
 
-C 端任何失败——NULL 结果、分配失败或非法参数——都回落到 Elisp 引擎
-(Elisp 桥接层也用 `condition-case` 兜住);模块不会在部分失败时静默
-产出不同的排版。两引擎输出逐字节一致,由
+模块不可用、分配/无结果返回 nil 或 ABI 版本不兼容时回落到 Elisp。
+直接 API 的非法输入 signal `ekp-c-invalid-input`;已启用后端发出的
+任何 signal 都会穿过公共 formatter,dispatcher 不捕获或隐藏。模块
+不会在部分失败时静默产出不同的排版。两引擎输出逐字节一致,由
 `ekp-test-c-parity-simple` / `ekp-test-c-parity-files` 及 300 例性质
 fuzz 验证。
 
@@ -229,13 +266,21 @@ fuzz 验证。
 
 ## 8. 断词(ekp-hyphen.el)
 
-Liang 模式算法,兼容 Pyphen:
+普通 Liang 模式算法:
 
 - `dictionaries/hyph_*.dic` 首次使用时编译为模式哈希并按路径缓存。
   文件可为 UTF-8 或 ISO-8859(Emacs 自动检测;由
   `ekp-test-hyphen-de-iso8859-dict` 验证)。
 - `ekp-hyphen-create LANG` 先精确匹配,再逐级缩短(`"de_CH" → "de"`)。
 - 断点两侧默认至少保留 2 个字符。
+- 非注释 pattern 出现斜杠时失败关闭。libhyphen 替换规则只在断点
+  胜出时改变可见文字与宽度,当前固定宽度 box 无法诚实表达;编译器
+  计数后 signal `ekp-hyphen-unsupported-pattern`,公共排版入口保留该
+  错误。
+- `dictionaries/MANIFEST.tsv` 将 49 个条目固定到 LibreOffice 提交
+  (另明确标记一个 legacy Basque 字节),记录 SHA-256、语法标记和许可
+  证据。`tests/check-dictionaries.sh` 做离线门禁,
+  `dictionaries/update.sh check` 在 macOS/Linux 对照固定上游字节。
 
 词盒按 `^[左标点]* (拉丁词) [右标点]*$` 匹配,因此被标点包裹的词
 (`(word)`、`word!`、`»word«`)仍可断词;标点粘在首/末音节盒上。
@@ -243,11 +288,30 @@ Liang 模式算法,兼容 Pyphen:
 ## 9. 测试与基准
 
 ```bash
-tests/run-tests.sh [emacs]        # 36 个 ERT 测试,batch 可跑
+tests/run-tests.sh [emacs]        # batch 可跑的 ERT 测试集
+tests/run-tests.sh [emacs] --random-order
+tests/run-tests-isolated.sh [emacs] # 每个 ERT 使用全新进程
+tests/check-dictionaries.sh           # 离线清单/校验值门禁
+dictionaries/update.sh check          # 核对固定上游字节
+make -C ekp_c PROFILE=portable      # 默认可移植发布构建
+make -C ekp_c PROFILE=native        # 仅本机基准
+make -C ekp_c PROFILE=debug         # 调试符号,不优化
+make -C ekp_c PROFILE=sanitize      # ASan + UBSan
 emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' -l tests/ekp-bench.el
 emacs -Q --batch -L . --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
       -l tests/ekp-bench.el
 ```
+
+可用 `EKP_TEST_SEED` 复现或改变乱序。测试 fixture 会动态恢复其隔离的
+全部 EKP 配置；分派类测试必须经过公开排版入口，不能只断言内部资格
+谓词。
+
+GUI 矩阵需显式加载 `tests/ekp-gui-verify.el`。任一行失败时，它先打印
+完整表格，再以状态码 1 退出；ERT 套件包含该边界的强制失败负控。
+
+`M-x ekp-c-module-build` 使用同一组四种 profile，并在 `ekp_c/` 中以
+argv 直接启动 make，不再构造 shell `cd` 命令。发布/CI 使用
+`portable`；`native` 仅用于将在同一机器运行的基准。
 
 核心被测不变式:渲染行宽 == 目标宽(像素级对齐)、任意宽度下不丢内
 容、O(1) 前缀机制与暴力算法交叉验证、内置文本上的 Elisp/C 一致性、

@@ -25,28 +25,53 @@
 
 ;;;; Fixtures
 
-(defvar ekp-tests--defaults
-  (list 10 50 100 100 50 0.5 0)
-  "Default values of the tunable K-P variables (see fixture).")
+(defconst ekp-tests--isolated-variables
+  '(ekp-latin-lang
+    ekp-use-c-module
+    ekp-lws-ideal-pixel
+    ekp-lws-stretch-pixel
+    ekp-lws-shrink-pixel
+    ekp-mws-ideal-pixel
+    ekp-mws-stretch-pixel
+    ekp-mws-shrink-pixel
+    ekp-cws-ideal-pixel
+    ekp-cws-stretch-pixel
+    ekp-cws-shrink-pixel
+    ekp-lws-max-pixel
+    ekp-lws-min-pixel
+    ekp-mws-max-pixel
+    ekp-mws-min-pixel
+    ekp-cws-max-pixel
+    ekp-cws-min-pixel
+    ekp-default-cws-stretch-pixel
+    ekp-line-penalty
+    ekp-hyphen-penalty
+    ekp-adjacent-fitness-penalty
+    ekp-consecutive-hyphen-penalty
+    ekp-last-line-short-penalty
+    ekp-last-line-min-ratio
+    ekp-alignment
+    ekp-ragged-stretch-pixel
+    ekp-protrusion
+    ekp-protrusion-ratios
+    ekp-parshape
+    ekp-first-line-indent
+    ekp-looseness
+    ekp-para-cache-limit
+    ekp-cjk-no-line-start-extra
+    ekp--params-explicit)
+  "Dynamically scoped EKP state restored by the clean-state fixture.")
 
 (defmacro ekp-tests--with-clean-state (&rest body)
   "Run BODY with fresh caches and restore all tunables afterwards."
-  `(unwind-protect
-       (progn
-         (ekp-clear-caches)
-         (ekp-param-reset)
-         ,@body)
-     (cl-destructuring-bind (lp hp afp chp llsp llmr loose)
-         ekp-tests--defaults
-       (setq ekp-line-penalty lp
-             ekp-hyphen-penalty hp
-             ekp-adjacent-fitness-penalty afp
-             ekp-consecutive-hyphen-penalty chp
-             ekp-last-line-short-penalty llsp
-             ekp-last-line-min-ratio llmr
-             ekp-looseness loose))
-     (ekp-param-reset)
-     (ekp-clear-caches)))
+  `(cl-progv ekp-tests--isolated-variables
+       (mapcar #'symbol-value ekp-tests--isolated-variables)
+     (unwind-protect
+         (progn
+           (ekp-clear-caches)
+           (ekp-param-reset)
+           ,@body)
+       (ekp-clear-caches))))
 
 (defun ekp-tests--line-widths (out)
   "Rendered pixel width of each line of OUT."
@@ -64,6 +89,22 @@ Used to verify no content is lost by justification."
     (setq ekp-tests--c-tried t)
     (ignore-errors (ekp-c-module-load)))
   (and (boundp 'ekp-c-module-loaded) ekp-c-module-loaded))
+
+(defun ekp-tests--assert-dp-cache-parameter-isolated
+    (variable before after width text)
+  "Assert VARIABLE changing from BEFORE to AFTER invalidates cached DP data."
+  (ekp-tests--with-clean-state
+   (let* ((ekp-use-c-module nil)
+          (baseline (progn (set variable before)
+                           (ekp-dp-cache text width)))
+          (cached (progn (set variable after)
+                         (ekp-dp-cache text width)))
+          (fresh (progn (ekp-clear-caches)
+                        (ekp-dp-cache text width))))
+     (should-not (equal (cons variable baseline)
+                        (cons variable fresh)))
+     (should (equal (cons variable cached)
+                    (cons variable fresh))))))
 
 (defun ekp-tests--file (name)
   (expand-file-name name (expand-file-name "tests" (ekp-root-dir))))
@@ -105,6 +146,75 @@ Used to verify no content is lost by justification."
   "Short language codes resolve to a dictionary."
   (should (ekp-hyphen-create "en"))
   (should-error (ekp-hyphen-create "zz_XX")))
+
+(ert-deftest ekp-test-hyphen-alternative-languages-fail-closed ()
+  "Replacement-pattern dictionaries must not degrade to plain Liang breaks.
+The golden forms are libhyphen outputs; EKP cannot safely emit them until its
+DP represents break-specific replacement widths."
+  (dolist (case '(("hu_HU" "asszony" "asz=szony")
+                  ("ca" "paral·lel" "pa=ral=lel")
+                  ("sq_AL" "adhem" "e")))
+    (let ((lang (nth 0 case))
+          (word (nth 1 case))
+          (golden (nth 2 case)))
+      (condition-case err
+          (progn
+            (ekp-hyphen-create lang)
+            (ert-fail (format "%s incorrectly accepted; golden %s -> %s"
+                              lang word golden)))
+        (ekp-hyphen-unsupported-pattern
+         (should (equal (cadr err) lang))
+         (should (> (nth 3 err) 0))))))
+  ;; Esperanto also contains slash-prefixed patterns whose libhyphen
+  ;; meaning is not representable as an ordinary Liang pattern.
+  (should-error (ekp-hyphen-create "eo")
+                :type 'ekp-hyphen-unsupported-pattern))
+
+(ert-deftest ekp-test-hyphen-alternative-error-reaches-public-dispatch ()
+  "The public formatter must surface unsupported replacement dictionaries."
+  (ekp-tests--with-clean-state
+   (let ((ekp-latin-lang "hu_HU"))
+     (should-error
+      (ekp-pixel-justify "asszony asszony asszony" 12)
+      :type 'ekp-hyphen-unsupported-pattern))))
+
+(ert-deftest ekp-test-hyphen-nil-result-is-cached ()
+  "A word with no break positions must compute only once."
+  (let ((h (ekp-hyphen--create
+            :patterns (make-hash-table :test 'equal)
+            :cache (make-hash-table :test 'equal)
+            :maxlen 0 :left 2 :right 2))
+        (calls 0))
+    (cl-letf (((symbol-function 'ekp-hyphen--compute)
+               (lambda (_h _word)
+                 (cl-incf calls)
+                 nil)))
+      (should-not (ekp-hyphen--positions h "qzxq"))
+      (should-not (ekp-hyphen--positions h "QZXQ"))
+      (should (= calls 1)))))
+
+(ert-deftest ekp-test-hyphen-inserted-dense-breaks ()
+  "Dense insertion must slice the original word without changing properties."
+  (dolist (case '(("abcdefghij" (2 5 8) "--" "ab--cde--fgh--ij")
+                  ("hyphenation" (2 6) "-" "hy-phen-ation")
+                  ("abcdef" nil "*" "abcdef")))
+    (pcase-let ((`(,word ,positions ,hyphen ,expected) case))
+      (setq word (copy-sequence word))
+      (put-text-property 1 (1- (length word)) 'face 'italic word)
+      (cl-letf (((symbol-function 'ekp-hyphen-positions)
+                 (lambda (_h _word) positions)))
+        (let ((actual (ekp-hyphen-inserted nil word hyphen)))
+          (should (equal (substring-no-properties actual) expected))
+          (should (eq (get-text-property 1 'face actual) 'italic)))))))
+
+(ert-deftest ekp-test-tokenizer-long-attached-run-preserves-properties ()
+  "A long token and attached combining run must remain one exact box."
+  (let* ((base (propertize (make-string 4096 ?a) 'face 'bold))
+         (marks (make-string 2048 #x0301))
+         (word (concat base marks))
+         (boxes (ekp-split-to-boxes word)))
+    (should (= (length boxes) 1))
+    (should (equal-including-properties (aref boxes 0) word))))
 
 ;;;; Box splitting
 
@@ -223,9 +333,33 @@ Used to verify no content is lost by justification."
         (should (= (string-pixel-width l) 30))))))
 
 (ert-deftest ekp-test-parshape-bypasses-c ()
-  "Per-line widths force the Elisp 2D path."
-  (let ((ekp-first-line-indent 6))
-    (should-not (ekp--c-available-p))))
+  "Per-line widths force the public dispatcher down the Elisp 2D path."
+  (ekp-tests--with-clean-state
+   (let ((ekp-use-c-module t)
+         (ekp-c-module-loaded t)
+         (ekp-parshape '((0 . 20) (6 . 24)))
+         c-called)
+     (cl-letf (((symbol-function 'ekp-c-break-with-arrays)
+                (lambda (&rest _)
+                  (setq c-called t)
+                  (error "C path must not run for parshape"))))
+       (should (stringp
+                (ekp-pixel-justify
+                 "参差形状必须经过公开分派路径而不是只测内部谓词" 30)))
+       (should-not c-called)))))
+
+(ert-deftest ekp-test-clean-state-restores-config ()
+  "The shared fixture must not leak configuration into later tests."
+  (let ((ekp-use-c-module t)
+        (ekp-alignment 'justify)
+        (ekp-protrusion nil))
+    (ekp-tests--with-clean-state
+     (setq ekp-use-c-module nil
+           ekp-alignment 'center
+           ekp-protrusion t))
+    (should ekp-use-c-module)
+    (should (eq ekp-alignment 'justify))
+    (should-not ekp-protrusion)))
 
 (ert-deftest ekp-test-protrusion-hangs-line-end-punct ()
   "Protrusion lets line-final fullwidth punctuation hang past the edge."
@@ -407,7 +541,7 @@ instead of losing the paragraph (regression: used to return \"\")."
   (ekp-tests--with-clean-state
    (let* ((s "one two three four five six seven eight")
           (breaks (ekp-line-breaks s 30))
-          (n (length (ekp--boxes s))))
+          (n (length (ekp-para-boxes (ekp--get-para s)))))
      (should (equal breaks (sort (copy-sequence breaks) #'<)))
      (should (= (car (last breaks)) n)))))
 
@@ -479,6 +613,28 @@ module is bypassed automatically (it has no looseness support)."
          (p2 (ekp--get-para (propertize "same string" 'face 'bold))))
      (should-not (eq p1 p2)))))
 
+(ert-deftest ekp-test-para-cache-detects-in-place-properties ()
+  "Mutating properties on the same string object must miss every cache path."
+  (ekp-tests--with-clean-state
+   (dolist (text (list (copy-sequence "文中排版")
+                       (copy-sequence "alpha beta gamma")))
+     (let ((before (ekp--get-para text)))
+       (put-text-property 0 (length text) 'ekp-no-break t text)
+       (let ((changed (ekp--get-para text)))
+         (should-not (eq before changed))
+         (should-not (equal (ekp-para-breaks-allowed before)
+                            (ekp-para-breaks-allowed changed)))
+         (ekp-clear-caches)
+         (let ((fresh (ekp--get-para text)))
+           (should (equal (ekp-para-boxes changed)
+                          (ekp-para-boxes fresh)))
+           (should (equal (mapcar #'object-intervals
+                                  (append (ekp-para-boxes changed) nil))
+                          (mapcar #'object-intervals
+                                  (append (ekp-para-boxes fresh) nil))))
+           (should (equal (ekp-para-breaks-allowed changed)
+                          (ekp-para-breaks-allowed fresh)))))))))
+
 (ert-deftest ekp-test-para-cache-limit ()
   (ekp-tests--with-clean-state
    (let ((ekp-para-cache-limit 2))
@@ -496,14 +652,16 @@ module is bypassed automatically (it has no looseness support)."
      (unwind-protect
          (progn
            (setq ekp-latin-lang "en_US")
-           (let ((b-en (copy-sequence (ekp--boxes s))))
+           (let ((b-en (copy-sequence
+                        (ekp-para-boxes (ekp--get-para s)))))
              (setq ekp-latin-lang "de_DE")
              ;; Same string object, no cache clear: must re-hyphenate.
-             (let ((b-de (ekp--boxes s)))
+             (let ((b-de (ekp-para-boxes (ekp--get-para s))))
                (should-not (equal b-en b-de))
                ;; And it must equal a fresh computation.
                (ekp-clear-caches)
-               (should (equal b-de (ekp--boxes s))))))
+               (should
+                (equal b-de (ekp-para-boxes (ekp--get-para s)))))))
        (setq ekp-latin-lang old)))))
 
 (ert-deftest ekp-test-dp-cache-reuse ()
@@ -555,6 +713,42 @@ module is bypassed automatically (it has no looseness support)."
                                  (ekp-para-hyphen-pixel para)
                                0))))
            (should (= (ekp--line-ideal-pixel para i k) expected))))))))
+
+(ert-deftest ekp-test-line-edge-space-rule-brute-force ()
+  "The shared edge-space rule must equal independent box scanning."
+  (ekp-tests--with-clean-state
+   (ekp-param-set 5 2 1 4 2 1 0 3 0)
+   (let* ((para (ekp--get-para "  中文  Latin  mixed  tail  "))
+          (widths (ekp-para-boxes-widths para))
+          (types (ekp-para-boxes-types para))
+          (lead-spaces (ekp-para-lead-spaces para))
+          (trail-spaces (ekp-para-trail-spaces para))
+          (n (length widths)))
+     (dotimes (i n)
+       (cl-loop for k from (1+ i) to n do
+         (let ((lead 0) (trail 0) (j i))
+           (when (> i 0)
+             (while (and (< j k) (eq (car (aref types j)) 'space))
+               (cl-incf lead (aref widths j))
+               (cl-incf j)))
+           (setq j (1- k))
+           (while (and (>= j i) (eq (car (aref types j)) 'space))
+             (cl-incf trail (aref widths j))
+             (cl-decf j))
+           (let ((raw (cl-loop for x from i below k
+                               sum (aref widths x))))
+             (should
+              (= (ekp--line-stripped-space-pixel
+                  raw i k lead-spaces trail-spaces)
+                 (min raw (+ lead trail)))))))))))
+
+(ert-deftest ekp-test-layout-marker-protocol-owned ()
+  "The render/inversion marker vocabulary must be complete and nonsticky."
+  (should (equal ekp--layout-marker-properties
+                 '(ekp-glue ekp-soft-break ekp-soft-hyphen ekp-hidden
+                   ekp-justified)))
+  (dolist (property ekp--layout-marker-properties)
+    (should (eq (alist-get property text-property-default-nonsticky) t))))
 
 (ert-deftest ekp-test-gaps-between-brute-force ()
   "`ekp--gaps-between' must equal naive counting."
@@ -647,6 +841,19 @@ module is bypassed automatically (it has no looseness support)."
    (let ((ekp-use-c-module nil))
      (should (stringp (ekp-pixel-justify "plain elisp path works" 60))))))
 
+(ert-deftest ekp-test-c-module-errors-surface ()
+  "An enabled C backend error must not be silently converted to Elisp."
+  (ekp-tests--with-clean-state
+   (let ((ekp-use-c-module t)
+         (ekp-c-module-loaded t))
+     (cl-letf (((symbol-function 'ekp-c-break-with-arrays)
+                (lambda (&rest _)
+                  (error "forced C backend failure"))))
+       (should-error (ekp-pixel-justify
+                      "backend errors are observable at the public boundary"
+                      60)
+                     :type 'error)))))
+
 ;;;; Cache correctness (M3 wave)
 
 (ert-deftest ekp-test-dp-cache-looseness-isolation ()
@@ -665,6 +872,37 @@ returned the stale looseness-0 layout for the same (string, width)."
       ;; and the two targets genuinely differ on this input
       (should-not (equal r0 r1)))))
 
+(ert-deftest ekp-test-dp-cache-algorithm-parameter-isolation ()
+  "Every algorithm parameter must participate in the DP cache key."
+  (let* ((text-a (concat
+                  "hyphenation representation configuration extraordinary "
+                  "internationalization approximation characterization"))
+         (text-b (concat
+                  "The quick brown fox jumps over the lazy dog and keeps "
+                  "running through the emergency broadcast system test of "
+                  "hyphenation quality"))
+         (cases `((ekp-line-penalty 0 1000 8 ,text-a)
+                  (ekp-hyphen-penalty 0 1000000 8 ,text-a)
+                  (ekp-adjacent-fitness-penalty 0 1000000 8 ,text-b)
+                  (ekp-consecutive-hyphen-penalty 0 1000000 8 ,text-b)
+                  (ekp-last-line-short-penalty 0 1000000 15 ,text-b)
+                  (ekp-last-line-min-ratio 0.1 0.99 8 ,text-a))))
+    (dolist (case cases)
+      (apply #'ekp-tests--assert-dp-cache-parameter-isolated case))))
+
+(ert-deftest ekp-test-dp-cache-identical-signature-hits ()
+  "Structurally equal DP signatures must reuse the same cached result."
+  (ekp-tests--with-clean-state
+   (let* ((ekp-use-c-module nil)
+          (ekp-looseness 1)
+          (text "aaa bbb ccc ddd eee fff ggg hhh iii jjj")
+          (para (ekp--get-para text))
+          (first (ekp-dp-cache text 12))
+          (count (hash-table-count (ekp-para-dp-cache para)))
+          (second (ekp-dp-cache text 12)))
+     (should (eq first second))
+     (should (= count (hash-table-count (ekp-para-dp-cache para)))))))
+
 (ert-deftest ekp-test-para-key-ignores-fontified ()
   "Fontification bookkeeping must not split the paragraph cache."
   (let* ((plain "fontified 键检查内容")
@@ -674,6 +912,43 @@ returned the stale looseness-0 layout for the same (string, width)."
     (should (equal (ekp--para-key plain) (ekp--para-key marked)))
     (should (equal (ekp--para-key faced) (ekp--para-key faced+marked)))
     (should-not (equal (ekp--para-key plain) (ekp--para-key faced)))))
+
+(ert-deftest ekp-test-auto-spacing-signature-keys-para-cache ()
+  "Auto spacing inputs must participate in paragraph cache identity."
+  (ekp-tests--with-clean-state
+   (let* ((text "自动字距段落缓存签名")
+          (first (let ((ekp-default-cws-stretch-pixel 2))
+                   (ekp--get-para text))))
+     (setq ekp--last-para nil)
+     (let ((changed (let ((ekp-default-cws-stretch-pixel 9))
+                      (ekp--get-para text))))
+       (should (= 2 (plist-get (ekp-para-glue-params first) :cws-stretch)))
+       (should (= 9 (plist-get (ekp-para-glue-params changed) :cws-stretch)))
+       (should-not (eq first changed))))))
+
+(ert-deftest ekp-test-auto-spacing-signature-keys-last-para ()
+  "Auto spacing inputs must invalidate the same-string fast path."
+  (ekp-tests--with-clean-state
+   (let* ((text "自动字距最近段落快路径")
+          (first (let ((ekp-default-cws-stretch-pixel 2))
+                   (ekp--get-para text)))
+          (changed (let ((ekp-default-cws-stretch-pixel 9))
+                     (ekp--get-para text))))
+     (should (= 9 (plist-get (ekp-para-glue-params changed) :cws-stretch)))
+     (should-not (eq first changed)))))
+
+(ert-deftest ekp-test-auto-spacing-identical-signature-hits ()
+  "Identical auto spacing signatures must reuse paragraph data."
+  (ekp-tests--with-clean-state
+   (let* ((ekp-default-cws-stretch-pixel 3)
+          (text "自动字距签名相同应命中缓存")
+          (first (ekp--get-para text))
+          (count (hash-table-count ekp--para-cache)))
+     (setq ekp--last-para nil)
+     (let ((table-hit (ekp--get-para text)))
+       (should (eq first table-hit))
+       (should (= count (hash-table-count ekp--para-cache)))
+       (should (eq table-hit (ekp--get-para text)))))))
 
 (ert-deftest ekp-test-global-width-cache-consistent ()
   "The global width cache returns exactly `string-pixel-width'."

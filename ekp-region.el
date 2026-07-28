@@ -41,6 +41,7 @@
 
 (require 'ekp)
 (require 'cl-lib)
+(require 'easymenu)
 
 (defvar ekp-auto-justify-mode)
 
@@ -129,9 +130,20 @@ they suffice.")
 (defvar ekp-region--inhibit nil
   "Non-nil while ekp-region is modifying the buffer itself.")
 
-(defvar-local ekp-region--save-state nil
-  "Spans unjustified for saving: list of (BEG-MARKER END-MARKER WIDTH).
-Set by `ekp-region--before-save', consumed by `ekp-region--after-save'.")
+(defvar-local ekp-region--write-buffer nil
+  "Hidden logical-text buffer used while writing justified content.")
+
+(defvar-local ekp-region--write-source nil
+  "Source buffer for an `ekp-region--write-buffer'.")
+
+(defvar-local ekp-region--previous-filter nil
+  "Substring filter wrapped by the EKP logical-text filter.")
+
+(defvar-local ekp-region--previous-filter-local-p nil
+  "Whether `ekp-region--previous-filter' was buffer-local.")
+
+(defvar-local ekp-region--filter-installed nil
+  "Non-nil while EKP owns `filter-buffer-substring-function'.")
 
 (defmacro ekp-region--preserving-modified (&rest body)
   "Run BODY, keeping the buffer unmodified if it was unmodified.
@@ -358,7 +370,7 @@ idempotent and can re-flow to a new width."
           (atomic-change-group
             ;; Re-flow support: strip previous justification first.
             (when (text-property-not-all beg end 'ekp-justified nil)
-              (ekp-unjustify-region beg end))
+              (ekp-region--unjustify-region beg end))
             (let* ((text (buffer-substring beg end))
                    (justified (ekp-region--justify-string text pixel))
                    (point-offset (and (>= (point) beg) (< (point) end)
@@ -375,40 +387,58 @@ idempotent and can re-flow to a new width."
       (set-marker beg nil)
       (set-marker end nil))))
 
+(defun ekp-region--after-layout-change (&rest _ignored)
+  "Remove integrations after external edits delete the final layout span."
+  (unless (or ekp-region--inhibit
+              ekp-auto-justify-mode
+              (ekp-region--justified-spans))
+    (ekp-region--remove-integrations)))
+
 (defun ekp-region--install-integrations ()
   "Install the buffer-local hooks justified text depends on.
 Idempotent; added by `ekp-justify-region' and `ekp-auto-justify-mode'."
-  ;; Saving a justified buffer must write the logical text.
-  (add-hook 'before-save-hook #'ekp-region--before-save nil t)
-  (add-hook 'after-save-hook #'ekp-region--after-save nil t)
+  ;; Saving writes a logical copy without mutating the display buffer.
+  (add-hook 'write-region-annotate-functions
+            #'ekp-region--write-logical-buffer nil t)
+  (add-hook 'kill-buffer-hook #'ekp-region--discard-write-buffer nil t)
   ;; Isearch searches the logical text.
   (add-hook 'isearch-mode-hook #'ekp-region--isearch-begin nil t)
   (add-hook 'isearch-mode-end-hook #'ekp-region--isearch-end nil t)
+  (add-hook 'after-change-functions #'ekp-region--after-layout-change nil t)
   ;; The kill ring receives the logical text.
-  (setq-local filter-buffer-substring-function
-              #'ekp-region--filter-buffer-substring))
+  (unless ekp-region--filter-installed
+    (setq ekp-region--previous-filter-local-p
+          (local-variable-p 'filter-buffer-substring-function)
+          ekp-region--previous-filter filter-buffer-substring-function
+          ekp-region--filter-installed t)
+    (setq-local filter-buffer-substring-function
+                #'ekp-region--filter-buffer-substring)))
 
 (defun ekp-region--remove-integrations ()
   "Remove the hooks installed by `ekp-region--install-integrations'."
-  (remove-hook 'before-save-hook #'ekp-region--before-save t)
-  (remove-hook 'after-save-hook #'ekp-region--after-save t)
+  (remove-hook 'write-region-annotate-functions
+               #'ekp-region--write-logical-buffer t)
+  (remove-hook 'kill-buffer-hook #'ekp-region--discard-write-buffer t)
+  (ekp-region--discard-write-buffer)
   (remove-hook 'isearch-mode-hook #'ekp-region--isearch-begin t)
   (remove-hook 'isearch-mode-end-hook #'ekp-region--isearch-end t)
-  (when (eq filter-buffer-substring-function
-            #'ekp-region--filter-buffer-substring)
-    (kill-local-variable 'filter-buffer-substring-function)))
+  (remove-hook 'after-change-functions #'ekp-region--after-layout-change t)
+  (when ekp-region--filter-installed
+    (when (eq filter-buffer-substring-function
+              #'ekp-region--filter-buffer-substring)
+      (if ekp-region--previous-filter-local-p
+          (setq-local filter-buffer-substring-function
+                      ekp-region--previous-filter)
+        (kill-local-variable 'filter-buffer-substring-function)))
+    (setq ekp-region--previous-filter nil
+          ekp-region--previous-filter-local-p nil
+          ekp-region--filter-installed nil)))
 
-;;;###autoload
-(defun ekp-unjustify-region (beg end)
+(defun ekp-region--unjustify-region (beg end)
   "Restore the logical text between BEG and END.
 Removes synthesized glue and soft hyphens, replaces soft line breaks
 with the whitespace they swallowed, and re-exposes hidden paragraph
 tails.  Text the user typed into the justified region is preserved."
-  (interactive
-   (progn
-     (barf-if-buffer-read-only)
-     (pcase-let ((`(,beg . ,end) (ekp-region--dwim-bounds)))
-       (list beg end))))
   (let ((end-m (copy-marker (max beg end) t))
         (ekp-region--inhibit t)
         (inhibit-read-only t))
@@ -444,7 +474,21 @@ tails.  Text the user typed into the justified region is preserved."
            (remove-text-properties (min beg end) end-m '(ekp-justified nil))))
       (set-marker end-m nil))))
 
-;;;; Saving: the file always receives the logical text
+;;;###autoload
+(defun ekp-unjustify-region (beg end)
+  "Restore the logical text between BEG and END.
+When the final justified span disappears outside auto mode, remove
+the buffer integrations that no longer have a layout to serve."
+  (interactive
+   (progn
+     (barf-if-buffer-read-only)
+     (pcase-let ((`(,beg . ,end) (ekp-region--dwim-bounds)))
+       (list beg end))))
+  (ekp-region--unjustify-region beg end)
+  (unless (or ekp-auto-justify-mode (ekp-region--justified-spans))
+    (ekp-region--remove-integrations)))
+
+;;;; Saving: write a logical copy, never mutate the display buffer
 
 (defun ekp-region--justified-spans ()
   "Return justified spans of the buffer as a list of (BEG END WIDTH).
@@ -458,38 +502,55 @@ BEG/END are positions; WIDTH is the span's `ekp-justified' value."
         (setq pos next)))
     (nreverse spans)))
 
-(defun ekp-region--before-save ()
-  "Restore the logical text before the buffer is written to disk.
-Saving a justified buffer must never persist soft line breaks, glue
-spaces or break hyphens: they are layout, not content.  The spans are
-remembered (as markers) and re-justified by `ekp-region--after-save',
-so the user never sees the buffer un-justified."
-  (let ((spans (ekp-region--justified-spans)))
-    (when spans
-      ;; The unjustify+rejustify pair is deterministic and cancels out
-      ;; exactly, so keep it off the undo history.
-      (let ((buffer-undo-list t))
-        ;; Marker-ize every span before the first unjustification
-        ;; shifts the positions of the spans after it.
-        (setq ekp-region--save-state
-              (mapcar (pcase-lambda (`(,beg ,end ,width))
-                        (list (copy-marker beg) (copy-marker end t) width))
-                      spans))
-        (pcase-dolist (`(,beg ,end ,_width) ekp-region--save-state)
-          (ekp-unjustify-region beg end))))))
+(defun ekp-region--discard-write-buffer ()
+  "Discard the current buffer's pending logical write buffer."
+  (when (buffer-live-p ekp-region--write-buffer)
+    (with-current-buffer ekp-region--write-buffer
+      (set-buffer-modified-p nil)
+      (let ((kill-buffer-query-functions nil))
+        (kill-buffer))))
+  (setq ekp-region--write-buffer nil))
 
-(defun ekp-region--after-save ()
-  "Re-justify the spans un-done by `ekp-region--before-save'."
-  (when ekp-region--save-state
-    (let ((buffer-undo-list t))
-      (pcase-dolist (`(,beg ,end ,width) ekp-region--save-state)
-        (when (and (marker-position beg) (marker-position end))
-          (ekp-justify-region beg end width))
-        (set-marker beg nil)
-        (set-marker end nil)))
-    (setq ekp-region--save-state nil)
-    ;; The file on disk holds exactly this buffer's logical text.
-    (set-buffer-modified-p nil)))
+(defun ekp-region--finish-write-buffer ()
+  "Dispose the current logical write buffer after a successful write."
+  (let ((source ekp-region--write-source)
+        (write-buffer (current-buffer)))
+    (when (buffer-live-p source)
+      (with-current-buffer source
+        (when (eq ekp-region--write-buffer write-buffer)
+          (setq ekp-region--write-buffer nil))))
+    (set-buffer-modified-p nil)
+    (let ((kill-buffer-query-functions nil))
+      (kill-buffer write-buffer))))
+
+(defun ekp-region--make-write-buffer ()
+  "Return a logical-text copy of the current justified buffer."
+  (ekp-region--discard-write-buffer)
+  (let ((source (current-buffer))
+        (selective selective-display)
+        (multibyte enable-multibyte-characters)
+        (coding buffer-file-coding-system)
+        (write-buffer (generate-new-buffer " *ekp-logical-write*")))
+    (setq ekp-region--write-buffer write-buffer)
+    (with-current-buffer write-buffer
+      (set-buffer-multibyte multibyte)
+      (setq selective-display selective
+            buffer-file-coding-system coding
+            ekp-region--write-source source)
+      (insert-buffer-substring source)
+      (ekp-region--unjustify-region (point-min) (point-max))
+      (set-buffer-modified-p nil)
+      (setq-local write-region-post-annotation-function
+                  #'ekp-region--finish-write-buffer))
+    write-buffer))
+
+(defun ekp-region--write-logical-buffer (start end)
+  "Switch whole-buffer writes to a logical copy.
+START and END are the `write-region-annotate-functions' arguments.
+Region-only writes retain their normal physical-buffer semantics."
+  (when (and (null start) (null end) (ekp-region--justified-spans))
+    (set-buffer (ekp-region--make-write-buffer)))
+  nil)
 
 ;;;; Isearch: search the logical text
 
@@ -511,7 +572,7 @@ the search and restored by `ekp-region--isearch-end'."
                         (list (copy-marker beg) (copy-marker end t) width))
                       spans))
         (pcase-dolist (`(,beg ,end ,_w) ekp-region--isearch-state)
-          (ekp-unjustify-region beg end))))))
+          (ekp-region--unjustify-region beg end))))))
 
 (defun ekp-region--isearch-end ()
   "Restore the justified layout after isearch."
@@ -531,11 +592,10 @@ the search and restored by `ekp-region--isearch-end'."
 Non-justified strings are returned unchanged (same object)."
   (if (cl-some (lambda (prop)
                  (text-property-not-all 0 (length string) prop nil string))
-               '(ekp-glue ekp-soft-break ekp-soft-hyphen
-                 ekp-hidden ekp-justified))
+               ekp--layout-marker-properties)
       (with-temp-buffer
         (insert string)
-        (ekp-unjustify-region (point-min) (point-max))
+        (ekp-region--unjustify-region (point-min) (point-max))
         (buffer-string))
     string))
 
@@ -544,7 +604,15 @@ Non-justified strings are returned unchanged (same object)."
 Killing justified text and yanking it elsewhere must transport the
 words, not the pixel layout of the source window (DELETE as in
 `filter-buffer-substring-function')."
-  (ekp-region--logical-string (buffer-substring--filter beg end delete)))
+  (let ((ekp-region--inhibit t)
+        extracted)
+    (unwind-protect
+        (let ((filter-buffer-substring-function ekp-region--previous-filter))
+          (setq extracted (filter-buffer-substring beg end delete)))
+      (when delete
+        (let ((ekp-region--inhibit nil))
+          (ekp-region--after-layout-change))))
+    (ekp-region--logical-string extracted)))
 
 ;;;###autoload
 (defun ekp-justify-buffer (&optional pixel)
@@ -565,34 +633,59 @@ prefix argument supplies it explicitly."
   (ekp-unjustify-region (point-min) (point-max)))
 
 ;;;###autoload
-(defun ekp-no-break-region (beg end)
+(defun ekp-no-break-region (beg end &optional announce)
   "Mark the region from BEG to END as an unbreakable typesetting atom.
 Justification treats it as one rigid unit: no line break inside, no
 hyphenation, spacing stays literal (inline code, product names,
-numbers with units)."
-  (interactive "r")
-  (add-text-properties beg end '(ekp-no-break t)))
+numbers with units).  This text property lasts only for the current
+buffer session; plain-text saving does not persist it.  ANNOUNCE
+requests interactive feedback."
+  (interactive (ekp-region--interactive-protection-args))
+  (ekp-region--set-protection beg end 'ekp-no-break t "Marked no-break"
+                              announce))
 
 ;;;###autoload
-(defun ekp-allow-break-region (beg end)
-  "Remove `ekp-no-break' marking between BEG and END."
-  (interactive "r")
-  (remove-text-properties beg end '(ekp-no-break nil)))
+(defun ekp-allow-break-region (beg end &optional announce)
+  "Remove session-local `ekp-no-break' marking between BEG and END.
+ANNOUNCE requests interactive feedback."
+  (interactive (ekp-region--interactive-protection-args))
+  (ekp-region--set-protection beg end 'ekp-no-break nil "Cleared no-break"
+                              announce))
 
 ;;;###autoload
-(defun ekp-verbatim-region (beg end)
+(defun ekp-verbatim-region (beg end &optional announce)
   "Protect the paragraphs from BEG to END against justification (code blocks).
 Whole paragraphs carrying the `ekp-verbatim' property pass through
 `ekp-justify-region' and `ekp-auto-justify-mode' untouched.  For an
-unbreakable span inside prose, use `ekp-no-break-region' instead."
-  (interactive "r")
-  (add-text-properties beg end '(ekp-verbatim t)))
+unbreakable span inside prose, use `ekp-no-break-region' instead.
+This text property lasts only for the current buffer session;
+plain-text saving does not persist it.  ANNOUNCE requests interactive
+feedback."
+  (interactive (ekp-region--interactive-protection-args))
+  (ekp-region--set-protection beg end 'ekp-verbatim t "Marked verbatim"
+                              announce))
 
 ;;;###autoload
-(defun ekp-clear-verbatim-region (beg end)
-  "Remove `ekp-verbatim' protection between BEG and END."
-  (interactive "r")
-  (remove-text-properties beg end '(ekp-verbatim nil)))
+(defun ekp-clear-verbatim-region (beg end &optional announce)
+  "Remove session-local `ekp-verbatim' protection between BEG and END.
+ANNOUNCE requests interactive feedback."
+  (interactive (ekp-region--interactive-protection-args))
+  (ekp-region--set-protection beg end 'ekp-verbatim nil "Cleared verbatim"
+                              announce))
+
+(defun ekp-region--interactive-protection-args ()
+  "Return region arguments for an interactive protection command."
+  (barf-if-buffer-read-only)
+  (list (region-beginning) (region-end) t))
+
+(defun ekp-region--set-protection (beg end property enabled label announce)
+  "Set PROPERTY to ENABLED from BEG to END and optionally ANNOUNCE LABEL."
+  (if enabled
+      (add-text-properties beg end (list property t))
+    (remove-text-properties beg end (list property nil)))
+  (when announce
+    (message "EKP: %s on %d characters; current buffer session only"
+             label (- end beg))))
 
 ;;;; Auto-justify minor mode
 
@@ -898,12 +991,33 @@ content and destroy the original whitespace."
   :doc "Keymap for `ekp-auto-justify-mode'."
   "<remap> <fill-paragraph>" #'ekp-refill-paragraph)
 
+(easy-menu-define ekp-auto-justify-mode-menu ekp-auto-justify-mode-map
+  "Menu for `ekp-auto-justify-mode'."
+  '("EKP"
+    ["Justify Region or Paragraph" ekp-justify-region t]
+    ["Unjustify Region or Paragraph" ekp-unjustify-region t]
+    ["Justify Buffer" ekp-justify-buffer t]
+    ["Unjustify Buffer" ekp-unjustify-buffer t]
+    "--"
+    ["Mark Region No-Break" ekp-no-break-region (use-region-p)]
+    ["Clear No-Break Region" ekp-allow-break-region (use-region-p)]
+    ["Mark Region Verbatim" ekp-verbatim-region (use-region-p)]
+    ["Clear Verbatim Region" ekp-clear-verbatim-region (use-region-p)]
+    "--"
+    ["Diagnose Window Fit" ekp-diagnose t]))
+
 ;;;###autoload
 (define-minor-mode ekp-auto-justify-mode
   "Keep the buffer pixel-justified to the window width.
 Re-flows when the window width changes and re-justifies edited
 paragraphs incrementally.  Designed for reading and previewing;
-the buffer text is restored exactly when the mode is turned off."
+the buffer text is restored exactly when the mode is turned off.
+
+The EKP menu exposes justify, unjustify, no-break, verbatim, and
+diagnostic commands.  Manual no-break and verbatim properties last
+only for the current buffer session; use mode faces or
+`ekp-region-skip-predicate' for protection derived from persistent
+document syntax."
   :lighter " EKP"
   :keymap ekp-auto-justify-mode-map
   (if ekp-auto-justify-mode
@@ -958,7 +1072,7 @@ discard the mode silently."
   ;; region.
   (save-restriction
     (widen)
-    (ekp-unjustify-region (point-min) (point-max))))
+    (ekp-region--unjustify-region (point-min) (point-max))))
 
 (provide 'ekp-region)
 

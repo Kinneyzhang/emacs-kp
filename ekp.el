@@ -249,22 +249,11 @@ when non-zero the C module is bypassed automatically."
   "Cache: equal-keyed table, content key → ekp-para struct.")
 
 (defvar ekp--last-para nil
-  "Fast path: (string-object lang width-context para), most recent lookup.
-One justification call resolves the same string object many times;
-this avoids recomputing the full cache key each time.  Invalidated
-by parameter changes, language changes, style-variable changes (see
-the variable watchers below) and `ekp-clear-caches'.")
-
-;; The fast path bypasses `ekp--para-key', so every style variable in
-;; that key must invalidate it on change — otherwise (setq
-;; ekp-alignment 'center) kept returning the paragraph resolved under
-;; the previous style to callers reusing the same string object.
-(dolist (var '(ekp-alignment ekp-ragged-stretch-pixel ekp-protrusion
-               ekp-protrusion-ratios ekp-parshape ekp-first-line-indent))
-  (add-variable-watcher
-   var (lambda (_sym _new op _where)
-         (when (memq op '(set let unlet makunbound))
-           (setq ekp--last-para nil)))))
+  "Fast path for the most recently resolved paragraph.
+The value is (STRING KEY PARA), where KEY is the same complete
+structural key used by `ekp--para-cache'.  One justification call
+resolves the same string object many times; this avoids its repeated
+hash-table lookup without creating a second identity rule.")
 
 (defcustom ekp-para-cache-limit 256
   "Maximum number of cached paragraphs.
@@ -299,6 +288,16 @@ hyphenation; it must not break loading the package."
   (and ekp-lws-ideal-pixel ekp-lws-stretch-pixel ekp-lws-shrink-pixel
        ekp-mws-ideal-pixel ekp-mws-stretch-pixel ekp-mws-shrink-pixel
        ekp-cws-ideal-pixel ekp-cws-stretch-pixel ekp-cws-shrink-pixel))
+
+(defun ekp--spacing-signature ()
+  "Return the spacing inputs that determine paragraph preprocessing."
+  (if (and ekp--params-explicit (ekp--params-set-p))
+      (list ekp-lws-ideal-pixel ekp-lws-stretch-pixel
+            ekp-lws-shrink-pixel ekp-mws-ideal-pixel
+            ekp-mws-stretch-pixel ekp-mws-shrink-pixel
+            ekp-cws-ideal-pixel ekp-cws-stretch-pixel
+            ekp-cws-shrink-pixel)
+    (cons 'auto ekp-default-cws-stretch-pixel)))
 
 (defun ekp--param-apply (lws-i lws-+ lws-- mws-i mws-+ mws-- cws-i cws-+ cws--)
   "Set the nine spacing variables and derived limits (internal).
@@ -390,7 +389,7 @@ Returns (boxes-vector . hyphen-positions-vector)."
               (setq hyphenator
                     (condition-case nil
                         (ekp-hyphen-create ekp-latin-lang)
-                      (error nil))))
+                      (ekp-hyphen-dictionary-not-found nil))))
             (when hyphenator
               (setq parts (ekp-hyphen-boxes hyphenator word))
               (when (> (length left) 0)
@@ -623,11 +622,6 @@ Positions right after HYPHEN-POSITIONS are forced to `nws'."
           ((eq 'mws type) (plist-get params :mws-stretch))
           ((eq 'cws type) (plist-get params :cws-stretch)))))
 
-(defun ekp--para-glue-min (para type)
-  "Return the minimum glue pixel (ideal - shrink) for TYPE in PARA."
-  (- (ekp--para-glue-ideal para type)
-     (ekp--para-glue-shrink para type)))
-
 (defun ekp--para-glue-max (para type)
   "Return the maximum glue pixel (ideal + stretch) for TYPE in PARA."
   (+ (ekp--para-glue-ideal para type)
@@ -719,8 +713,8 @@ therefore must key every measurement and paragraph cache entry."
 The key is a structure compared with `equal', so hash collisions
 cannot alias two different paragraphs.  It covers: characters, text
 properties, detected fonts, the hyphenation language, and the
-effective spacing parameters \(or the symbol `auto' when defaults
-are derived per string)."
+effective spacing signature \(nine explicit values or the auto CJK
+stretch default when the other defaults are derived per string)."
   (let ((latin-font (ekp-latin-font string))
         (cjk-font (ekp-cjk-font string)))
     (list string
@@ -737,13 +731,7 @@ are derived per string)."
           ekp-parshape
           ekp-first-line-indent
           ekp-cjk-no-line-start-extra
-          (if (and ekp--params-explicit (ekp--params-set-p))
-              (list ekp-lws-ideal-pixel ekp-lws-stretch-pixel
-                    ekp-lws-shrink-pixel ekp-mws-ideal-pixel
-                    ekp-mws-stretch-pixel ekp-mws-shrink-pixel
-                    ekp-cws-ideal-pixel ekp-cws-stretch-pixel
-                    ekp-cws-shrink-pixel)
-            'auto))))
+          (ekp--spacing-signature))))
 
 (defun ekp--measure-boxes (boxes uniform-props)
   "Measure pixel widths of BOXES, deduplicating identical boxes.
@@ -999,33 +987,28 @@ Computes ALL data in one pass: text, params, and prefix arrays."
                           :alignment ekp-alignment
                           :extra-stretch (if justify 0
                                            (ekp--ragged-extra-stretch))))
-     :dp-cache (make-hash-table :test 'eql :size 20))))
+     :dp-cache (make-hash-table :test 'equal :size 20))))
 
 (defun ekp--get-para (string)
   "Get or create `ekp-para' struct for STRING.
 This is the main entry point for cached paragraph data."
-  (if (and ekp--last-para
-           (eq (car ekp--last-para) string)
-           (equal (nth 1 ekp--last-para) ekp-latin-lang)
-           (equal (nth 2 ekp--last-para) (ekp--width-context)))
-      (nth 3 ekp--last-para)
-    (unless ekp--para-cache
-      (setq ekp--para-cache (make-hash-table :test 'equal :size 100)))
-    (let* ((key (ekp--para-key string))
-           (para (or (gethash key ekp--para-cache)
-                     (progn
-                       (when (>= (hash-table-count ekp--para-cache)
-                                 ekp-para-cache-limit)
-                         (clrhash ekp--para-cache))
-                       ;; NB: in auto-params mode `ekp--make-para' updates
-                       ;; the spacing variables, which invalidates
-                       ;; `ekp--last-para'; set the fast path afterwards.
-                       (let ((p (ekp--make-para string)))
-                         (puthash key p ekp--para-cache)
-                         p)))))
-      (setq ekp--last-para
-            (list string ekp-latin-lang (ekp--width-context) para))
-      para)))
+  (let ((key (ekp--para-key string)))
+    (if (and ekp--last-para
+             (eq (car ekp--last-para) string)
+             (equal (nth 1 ekp--last-para) key))
+        (nth 2 ekp--last-para)
+      (unless ekp--para-cache
+        (setq ekp--para-cache (make-hash-table :test 'equal :size 100)))
+      (let ((para (or (gethash key ekp--para-cache)
+                      (progn
+                        (when (>= (hash-table-count ekp--para-cache)
+                                  ekp-para-cache-limit)
+                          (clrhash ekp--para-cache))
+                        (let ((new-para (ekp--make-para string)))
+                          (puthash key new-para ekp--para-cache)
+                          new-para)))))
+        (setq ekp--last-para (list string key para))
+        para))))
 
 ;;;###autoload
 (defun ekp-clear-caches ()
@@ -1035,40 +1018,6 @@ Run after font or theme changes that affect glyph widths."
   (setq ekp--para-cache nil)
   (setq ekp--last-para nil)
   (clrhash ekp--box-width-cache))
-
-;;;; Paragraph Accessors
-
-(defun ekp--boxes (string)
-  "Return the boxes of STRING's paragraph."
-  (ekp-para-boxes (ekp--get-para string)))
-
-(defun ekp--boxes-widths (string)
-  "Return the box pixel widths of STRING's paragraph."
-  (ekp-para-boxes-widths (ekp--get-para string)))
-
-(defun ekp--glues-types (string)
-  "Return the glue types of STRING's paragraph."
-  (ekp-para-glues-types (ekp--get-para string)))
-
-(defun ekp--ideal-prefixs (string)
-  "Return the ideal prefix sums of STRING's paragraph."
-  (ekp-para-ideal-prefixs (ekp--get-para string)))
-
-(defun ekp--min-prefixs (string)
-  "Return the minimum prefix sums of STRING's paragraph."
-  (ekp-para-min-prefixs (ekp--get-para string)))
-
-(defun ekp--max-prefixs (string)
-  "Return the maximum prefix sums of STRING's paragraph."
-  (ekp-para-max-prefixs (ekp--get-para string)))
-
-(defun ekp--hyphen-pixel (string)
-  "Return the hyphen pixel width of STRING's paragraph."
-  (ekp-para-hyphen-pixel (ekp--get-para string)))
-
-(defun ekp--hyphen-positions (string)
-  "Return the hyphen positions of STRING's paragraph."
-  (ekp-para-hyphen-positions (ekp--get-para string)))
 
 ;;;; K-P Badness and Demerits
 ;;   demerits = (linepenalty + badness)² + penalty² + extras
@@ -1143,6 +1092,13 @@ Uses binary search for O(log n) lookup."
 
 ;;;; Shared Line Measurement (O(1) via prefix arrays)
 
+(defsubst ekp--line-stripped-space-pixel
+    (raw-pixel start end lead-spaces trail-spaces)
+  "Return edge-space width excluded from RAW-PIXEL for line START..END.
+LEAD-SPACES and TRAIL-SPACES are the paragraph's precomputed run vectors."
+  (min raw-pixel
+       (+ (aref lead-spaces start) (aref trail-spaces end))))
+
 (defun ekp--gaps-between (para i k)
   "Return (latin-gaps mix-gaps cjk-gaps) for PARA inside line I..K.
 Counts glue indices I+1 .. K-1 using precomputed prefix counts."
@@ -1161,8 +1117,10 @@ space-box runs, and adds the hyphen width when the line hyphenates."
   (let* ((ip (ekp-para-ideal-prefixs para))
          (raw (- (aref ip k) (aref ip i)
                  (aref (ekp-para-glue-ideals para) i)))
-         (space-w (min raw (+ (aref (ekp-para-lead-spaces para) i)
-                              (aref (ekp-para-trail-spaces para) k))))
+         (space-w
+          (ekp--line-stripped-space-pixel
+           raw i k (ekp-para-lead-spaces para)
+           (ekp-para-trail-spaces para)))
          (ideal (- raw space-w)))
     (if (ekp--hyphenate-p (ekp-para-hyphen-positions para) (1- k))
         (+ ideal (ekp-para-hyphen-pixel para))
@@ -1182,12 +1140,17 @@ space-box runs, and adds the hyphen width when the line hyphenates."
 ;;   least as bad as the worst regular line.
 
 (defsubst ekp--dp-key (line-pixel)
-  "The dp-cache key for LINE-PIXEL under the current `ekp-looseness'.
-Looseness changes the optimization target for the same paragraph and
-width, so results at different looseness values must not alias
-\(regression: a cached looseness-0 layout used to be returned after
-`ekp-looseness' was changed)."
-  (if (zerop ekp-looseness) line-pixel (cons line-pixel ekp-looseness)))
+  "Return the complete DP cache signature for LINE-PIXEL.
+The paragraph owns width-independent layout data; this key captures
+every remaining runtime input read by the Elisp and C DP engines."
+  (list line-pixel
+        ekp-looseness
+        ekp-line-penalty
+        ekp-hyphen-penalty
+        ekp-adjacent-fitness-penalty
+        ekp-consecutive-hyphen-penalty
+        ekp-last-line-short-penalty
+        ekp-last-line-min-ratio))
 
 (defun ekp--dp-cache-elisp (para line-pixel)
   "Return and cache the dp-result plist for PARA at LINE-PIXEL.
@@ -1261,7 +1224,6 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                (lead-glue-ideal (aref glue-ideals i))
                (lead-glue-min (- lead-glue-ideal (aref glue-shrinks i)))
                (lead-glue-max (+ lead-glue-ideal (aref glue-stretches i)))
-               (lead-space (aref lead-spaces i))
                (saw-allowed nil)
                (k (1+ i)))
           (catch 'break
@@ -1284,8 +1246,9 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                                 hyphen-protrude
                               (aref tail-protrudes k))))
                      (raw-ideal (- (aref ideal-prefixs k) ip-i lead-glue-ideal))
-                     (space-w (min raw-ideal
-                                   (+ lead-space (aref trail-spaces k))))
+                     (space-w
+                      (ekp--line-stripped-space-pixel
+                       raw-ideal i k lead-spaces trail-spaces))
                      (ideal (+ (- raw-ideal space-w) hyph-w))
                      (minw (+ (- (aref min-prefixs k) mn-i lead-glue-min
                                  space-w)
@@ -1495,7 +1458,6 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                (lead-glue-ideal (aref glue-ideals i))
                (lead-glue-min (- lead-glue-ideal (aref glue-shrinks i)))
                (lead-glue-max (+ lead-glue-ideal (aref glue-stretches i)))
-               (lead-space (aref lead-spaces i))
                (saw-allowed nil)
                (k (1+ i)))
           (catch 'break
@@ -1515,8 +1477,9 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                                 hyphen-protrude
                               (aref tail-protrudes k))))
                      (raw-ideal (- (aref ideal-prefixs k) ip-i lead-glue-ideal))
-                     (space-w (min raw-ideal
-                                   (+ lead-space (aref trail-spaces k))))
+                     (space-w
+                      (ekp--line-stripped-space-pixel
+                       raw-ideal i k lead-spaces trail-spaces))
                      (ideal (+ (- raw-ideal space-w) hyph-w))
                      (minw (+ (- (aref min-prefixs k) mn-i lead-glue-min
                                  space-w)
@@ -1751,10 +1714,10 @@ the reconstructed rests overfill the indented line."
 (defun ekp--dp-cache-via-c (para line-pixel)
   "Compute breaks at LINE-PIXEL using the C module and PARA's arrays.
 The C module receives all font-dependent data from Elisp; it only
-runs the pure DP.  Falls back to Elisp when the C call fails."
+runs the pure DP.  A nil result falls back to Elisp; module errors
+propagate because they indicate a broken backend contract."
   (ekp--c-sync-params)
-  (let* ((result (condition-case nil
-                     (ekp-c-break-with-arrays
+  (let* ((result (ekp-c-break-with-arrays
                   (ekp-para-ideal-prefixs para)
                   (ekp-para-min-prefixs para)
                   (ekp-para-max-prefixs para)
@@ -1769,10 +1732,7 @@ runs the pure DP.  Falls back to Elisp when the C call fails."
                   (ekp-para-forbidden-positions para)
                   (ekp-para-tail-protrudes para)
                   (ekp-para-hyphen-protrude para)
-                  (cdr (ekp--line-spec para 0 line-pixel)))
-                   ;; A module-level signal must not escape: the
-                   ;; Elisp engine is the fallback for any C failure.
-                   (error nil)))
+                  (cdr (ekp--line-spec para 0 line-pixel))))
          (c-breaks (car result))
          (c-cost (cdr result)))
     (if (null c-breaks)
@@ -1800,11 +1760,9 @@ Only computes strings that aren't already cached."
                            (mapcar (lambda (ip)
                                      (ekp--prepare-para-for-c (cdr ip) line-pixel))
                                    needs-compute)))
-             ;; nil (whole-batch failure or a signal) falls back to
-             ;; the Elisp engine per paragraph below.
-             (batch-results (condition-case nil
-                                (ekp-c-break-batch batch-input)
-                              (error nil))))
+             ;; A nil whole-batch result falls back per paragraph.
+             ;; Signals propagate as broken backend contracts.
+             (batch-results (ekp-c-break-batch batch-input)))
         (cl-loop for ip in needs-compute
                  for j from 0
                  for idx = (car ip)
@@ -1815,7 +1773,7 @@ Only computes strings that aren't already cached."
                  do (aset results idx
                           (if breaks
                               (ekp--store-c-result para line-pixel breaks cost)
-                            ;; C failed, fallback to Elisp
+                            ;; C returned no result; fallback to Elisp.
                             (ekp--dp-cache-elisp para line-pixel)))))
       (append results nil))))
 
@@ -1993,11 +1951,11 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
                                (raw-ideal (- (aref ip end) (aref ip start)
                                              (aref (ekp-para-glue-ideals para)
                                                    start)))
-                               (space-w (min raw-ideal
-                                             (+ (aref (ekp-para-lead-spaces para)
-                                                      start)
-                                                (aref (ekp-para-trail-spaces para)
-                                                      end)))))
+                               (space-w
+                                (ekp--line-stripped-space-pixel
+                                 raw-ideal start end
+                                 (ekp-para-lead-spaces para)
+                                 (ekp-para-trail-spaces para))))
                           (+ (- (aref mx end) (aref mx start)
                                 (+ (aref (ekp-para-glue-ideals para) start)
                                    (aref (ekp-para-glue-stretches para) start))
@@ -2110,11 +2068,14 @@ leftmost scan aligns them unambiguously."
         (setq i (1+ i))))
     offsets))
 
+(defconst ekp--layout-marker-properties
+  '(ekp-glue ekp-soft-break ekp-soft-hyphen ekp-hidden ekp-justified)
+  "Text properties owned by the lossless render/inversion protocol.")
+
 ;; Text typed next to a marker character must never inherit the
 ;; marker: a self-inserted char inheriting `ekp-glue' would be treated
 ;; as a synthesized space by the next unjustification and deleted.
-(dolist (prop '(ekp-glue ekp-soft-break ekp-soft-hyphen ekp-hidden
-                ekp-justified))
+(dolist (prop ekp--layout-marker-properties)
   (setf (alist-get prop text-property-default-nonsticky) t))
 
 (defun ekp--hide-string (string)
@@ -2197,7 +2158,7 @@ The output is lossless with respect to STRING:
          (breaks (ekp-line-breaks string line-pixel))
          (num (length breaks))
          (lines-glues (ekp-line-glues string line-pixel))
-         (hyphen-positions (ekp--hyphen-positions string))
+         (hyphen-positions (ekp-para-hyphen-positions para))
          (start 0)
          ;; (rendered-text first-box-idx last-box-idx) per visible line
          (lines nil))

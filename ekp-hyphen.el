@@ -48,14 +48,28 @@ LEFT/RIGHT: minimum chars before first / after last break."
 
 ;;; Global State
 
+(define-error 'ekp-hyphen-error "Hyphenation error")
+(define-error 'ekp-hyphen-dictionary-not-found
+  "Hyphenation dictionary not found"
+  'ekp-hyphen-error)
+(define-error 'ekp-hyphen-unsupported-pattern
+  "Dictionary uses unsupported replacement patterns"
+  'ekp-hyphen-error)
+
 (defvar ekp-hyphen--cache (make-hash-table :test 'equal)
   "Cache: dictionary path -> compiled ekp-hyphen.")
+
+(defvar ekp-hyphen--unsupported-cache (make-hash-table :test 'equal)
+  "Cache: dictionary path -> unsupported replacement-pattern count.")
 
 (defvar ekp-hyphen--langs (make-hash-table :test 'equal)
   "Registry: language code -> dictionary file path.")
 
 (defvar ekp-hyphen--langs-short (make-hash-table :test 'equal)
   "Fallback: short code (e.g., \"en\") -> first matching dict path.")
+
+(defconst ekp-hyphen--cache-miss (make-symbol "ekp-hyphen-cache-miss")
+  "Sentinel distinguishing an absent word from a cached nil result.")
 
 ;;; Dictionary Loading
 
@@ -111,14 +125,16 @@ E.g., \"a1bc2\" -> letters=\"abc\", values=(0 1 0 2)."
       (when (> end start)
         (list letters start (cl-subseq values start end))))))
 
-(defun ekp-hyphen--compile (path)
+(defun ekp-hyphen--compile (path &optional language)
   "Compile dictionary at PATH into ekp-hyphen struct.
 Honors the dictionary's LEFTHYPHENMIN / RIGHTHYPHENMIN declarations
 \(minimum characters kept before/after any break — e.g. en_US
 declares 2/3, so \"quick-ly\" is not a valid break); absent
-declarations default to 2/2."
+declarations default to 2/2.
+Signal `ekp-hyphen-unsupported-pattern' for replacement patterns;
+LANGUAGE identifies the dictionary in that condition."
   (let ((patterns (make-hash-table :test 'equal))
-        (maxlen 0) (left 2) (right 2))
+        (maxlen 0) (left 2) (right 2) (alternative-count 0))
     (with-temp-buffer
       (insert-file-contents path)
       (forward-line 1)  ; skip encoding line
@@ -127,7 +143,7 @@ declarations default to 2/2."
                                    (point) (line-end-position))))
                (skip (or (string-empty-p line)
                          (string-match-p "^[%#]\\|HYPHENMIN" line)
-                         (string-match-p "/" line))))  ; skip alt patterns
+                         (string-match-p "/" line))))
           (cond
            ((string-match "^\\(LEFT\\|RIGHT\\)HYPHENMIN[ \t]*\\([0-9]+\\)"
                           line)
@@ -135,6 +151,9 @@ declarations default to 2/2."
               (if (equal (match-string 1 line) "LEFT")
                   (setq left n)
                 (setq right n))))
+           ((and (not (string-match-p "^[%#]" line))
+                 (string-match-p "/" line))
+            (cl-incf alternative-count))
            (skip nil)
            (t
             ;; Handle ^^XX hex escapes
@@ -147,6 +166,9 @@ declarations default to 2/2."
               (puthash (car parsed) (cdr parsed) patterns)
               (setq maxlen (max maxlen (length (car parsed))))))))
         (forward-line 1)))
+    (when (> alternative-count 0)
+      (signal 'ekp-hyphen-unsupported-pattern
+              (list (or language path) path alternative-count)))
     (ekp-hyphen--create :patterns patterns
                         :cache (make-hash-table :test 'equal)
                         :maxlen maxlen
@@ -182,9 +204,11 @@ declarations default to 2/2."
 (defun ekp-hyphen--positions (h word)
   "Return cached break positions for WORD using hyphenator H."
   (let* ((key (downcase word))
-         (cache (ekp-hyphen-cache h)))
-    (or (gethash key cache)
-        (puthash key (ekp-hyphen--compute h word) cache))))
+         (cache (ekp-hyphen-cache h))
+         (cached (gethash key cache ekp-hyphen--cache-miss)))
+    (if (eq cached ekp-hyphen--cache-miss)
+        (puthash key (ekp-hyphen--compute h word) cache)
+      cached)))
 
 ;;; Public API
 
@@ -194,10 +218,19 @@ LEFT/RIGHT override the minimum characters kept before/after breaks;
 by default the dictionary's own LEFTHYPHENMIN/RIGHTHYPHENMIN apply
 \(2/2 when it declares none)."
   (let ((path (or (and lang (ekp-hyphen--resolve-lang lang)) file)))
-    (unless path (error "No dictionary for: %s" lang))
+    (unless path
+      (signal 'ekp-hyphen-dictionary-not-found (list lang)))
+    (when-let ((count (gethash path ekp-hyphen--unsupported-cache)))
+      (signal 'ekp-hyphen-unsupported-pattern
+              (list (or lang path) path count)))
     (let ((h (or (gethash path ekp-hyphen--cache)
-                 (puthash path (ekp-hyphen--compile path)
-                          ekp-hyphen--cache))))
+                 (condition-case err
+                     (puthash path (ekp-hyphen--compile path lang)
+                              ekp-hyphen--cache)
+                   (ekp-hyphen-unsupported-pattern
+                    (puthash path (nth 3 err)
+                             ekp-hyphen--unsupported-cache)
+                    (signal (car err) (cdr err)))))))
       (if (or left right)
           (ekp-hyphen--create :patterns (ekp-hyphen-patterns h)
                               :cache (ekp-hyphen-cache h)
@@ -215,13 +248,16 @@ by default the dictionary's own LEFTHYPHENMIN/RIGHTHYPHENMIN apply
 
 (defun ekp-hyphen-inserted (h word &optional hyphen)
   "Return WORD with HYPHEN inserted at H's break points."
-  (let ((hyphen (or hyphen "-")) (result word) (off 0))
-    (dolist (pos (ekp-hyphen-positions h word))
-      (setq result (concat (substring result 0 (+ pos off))
-                           hyphen
-                           (substring result (+ pos off)))
-            off (+ off (length hyphen))))
-    result))
+  (let ((positions (ekp-hyphen-positions h word)))
+    (if (null positions)
+        word
+      (let ((hyphen (or hyphen "-")) (start 0) parts)
+        (dolist (pos positions)
+          (push (substring word start pos) parts)
+          (push hyphen parts)
+          (setq start pos))
+        (push (substring word start) parts)
+        (apply #'concat (nreverse parts))))))
 
 (defun ekp-hyphen-boxes (h word)
   "Split WORD into syllables at H's break points."

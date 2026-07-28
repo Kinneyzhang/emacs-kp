@@ -109,7 +109,7 @@ themes, remappings and text-scale.  Reports PASS or FAIL."
       r)))
 
 (defun ekp-gui-verify--case (name setup)
-  "Run one matrix case NAME with buffer SETUP; return a report line."
+  "Run one matrix case NAME with buffer SETUP; return its result plist."
   ;; Leftover debounce timers from the previous case must not fire
   ;; into this case's fresh buffer.
   (dolist (fn (list #'ekp-region--reflow
@@ -129,12 +129,37 @@ themes, remappings and text-scale.  Reports PASS or FAIL."
     (ekp-region--reflow (current-buffer) (ekp-region--effective-width))
     (redisplay t)
     (let ((r (ekp-gui-verify--scan (current-buffer))))
-      (prog1 (format "%-22s body=%4d target=%4d widest=%4d over=%d/%d  %s"
-                     name (plist-get r :body) (plist-get r :target)
-                     (plist-get r :widest) (plist-get r :over)
-                     (plist-get r :lines)
-                     (if (plist-get r :pass) "PASS" "FAIL"))
+      (prog1 (append (list :name name) r)
         (ekp-auto-justify-mode -1)))))
+
+(defun ekp-gui-verify--format-result (result)
+  "Format one matrix RESULT plist as a report line."
+  (format "%-22s body=%4d target=%4d widest=%4d over=%d/%d  %s"
+          (plist-get result :name)
+          (plist-get result :body)
+          (plist-get result :target)
+          (plist-get result :widest)
+          (plist-get result :over)
+          (plist-get result :lines)
+          (if (plist-get result :pass) "PASS" "FAIL")))
+
+(defun ekp-gui-verify--report (results)
+  "Report matrix RESULTS and return their formatted table.
+In batch mode, terminate with status 1 when any result fails."
+  (let ((table (mapconcat #'ekp-gui-verify--format-result results "\n"))
+        (passed t))
+    (dolist (result results)
+      (unless (plist-get result :pass)
+        (setq passed nil)))
+    (if noninteractive
+        (princ (concat table "\n"))
+      (with-current-buffer (get-buffer-create "*ekp-gui-verify*")
+        (erase-buffer)
+        (insert table "\n")
+        (display-buffer (current-buffer))))
+    (when (and noninteractive (not passed))
+      (kill-emacs 1))
+    table))
 
 ;;;###autoload
 (defun ekp-gui-verify-matrix ()
@@ -181,14 +206,7 @@ session prefer `ekp-gui-verify'."
     (push (ekp-gui-verify--case "narrow + scale +2"
                                 (lambda () (text-scale-set 2)))
           results)
-    (let ((table (string-join (nreverse results) "\n")))
-      (if noninteractive
-          (princ (concat table "\n"))
-        (with-current-buffer (get-buffer-create "*ekp-gui-verify*")
-          (erase-buffer)
-          (insert table "\n")
-          (display-buffer (current-buffer))))
-      table)))
+    (ekp-gui-verify--report (nreverse results))))
 
 (provide 'ekp-gui-verify)
 

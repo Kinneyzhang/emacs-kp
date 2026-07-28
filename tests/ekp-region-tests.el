@@ -339,6 +339,90 @@ keeps the buffer justified, and leaves it unmodified."
             (kill-buffer)))
       (delete-file file))))
 
+(ert-deftest ekp-region-test-failed-save-preserves-layout ()
+  "A filesystem save failure must not leave the buffer unformatted."
+  (let* ((dir (make-temp-file "ekp-save-fail-" t))
+         (file (expand-file-name "file.txt" dir))
+         (text "保存失败以后屏幕仍然保持排版状态 and remains editable")
+         (make-backup-files nil)
+         (create-lockfiles nil))
+    (unwind-protect
+        (with-current-buffer (find-file-noselect file)
+          (setq-local require-final-newline nil)
+          (insert text)
+          (ekp-justify-region (point-min) (point-max) 20)
+          (let ((layout (buffer-substring (point-min) (point-max))))
+            (delete-directory dir t)
+            (cl-letf (((symbol-function 'y-or-n-p)
+                       (lambda (&rest _) nil)))
+              (should-error (save-buffer)))
+            (should (equal-including-properties
+                     (buffer-substring (point-min) (point-max)) layout))
+            (should (get-text-property (point-min) 'ekp-justified))
+            (should (buffer-modified-p)))
+          (let ((kill-buffer-query-functions nil))
+            (set-buffer-modified-p nil)
+            (kill-buffer)))
+      (when (file-directory-p dir)
+        (delete-directory dir t)))))
+
+(ert-deftest ekp-region-test-interrupted-save-preserves-layout ()
+  "A quit during writing must not leave the buffer unformatted."
+  (let* ((file (make-temp-file "ekp-save-quit-"))
+         (text "保存中断以后屏幕排版状态必须原样保留 with logical text")
+         (make-backup-files nil)
+         (create-lockfiles nil))
+    (unwind-protect
+        (with-current-buffer (find-file-noselect file)
+          (setq-local require-final-newline nil)
+          (insert text)
+          (ekp-justify-region (point-min) (point-max) 20)
+          (let ((layout (buffer-substring (point-min) (point-max))))
+            (cl-letf (((symbol-function 'write-region)
+                       (lambda (&rest _) (signal 'quit nil))))
+              (should (condition-case nil
+                          (progn (save-buffer) nil)
+                        (quit t))))
+            (should (equal-including-properties
+                     (buffer-substring (point-min) (point-max)) layout))
+            (should (buffer-modified-p)))
+          (let ((kill-buffer-query-functions nil))
+            (set-buffer-modified-p nil)
+            (kill-buffer)))
+      (delete-file file))))
+
+(ert-deftest ekp-region-test-encoding-save-failure-is-retryable ()
+  "An encoding failure must preserve layout and allow a clean retry."
+  (let* ((file (make-temp-file "ekp-save-encoding-"))
+         (text "编码失败以后仍然保持排版，重试写入 logical text")
+         (make-backup-files nil)
+         (create-lockfiles nil))
+    (unwind-protect
+        (with-current-buffer (find-file-noselect file)
+          (setq-local require-final-newline nil)
+          (insert text)
+          (ekp-justify-region (point-min) (point-max) 20)
+          (let ((layout (buffer-substring (point-min) (point-max))))
+            (set-buffer-file-coding-system 'us-ascii-unix)
+            (cl-letf (((symbol-function 'select-safe-coding-system)
+                       (lambda (&rest _) (error "Forced encoding failure"))))
+              (should-error (save-buffer)))
+            (should (equal-including-properties
+                     (buffer-substring (point-min) (point-max)) layout))
+            (should (buffer-modified-p))
+            (set-buffer-file-coding-system 'utf-8-unix)
+            (save-buffer)
+            (should (equal-including-properties
+                     (buffer-substring (point-min) (point-max)) layout))
+            (should-not (buffer-live-p ekp-region--write-buffer))
+            (should (equal (with-temp-buffer
+                             (insert-file-contents file)
+                             (buffer-string))
+                           text)))
+          (let ((kill-buffer-query-functions nil))
+            (kill-buffer)))
+      (delete-file file))))
+
 (ert-deftest ekp-region-test-justify-preserves-unmodified ()
   "Pure re-layout must not flip `buffer-modified-p'."
   (let* ((file (make-temp-file "ekp-mod-test"))
@@ -403,6 +487,77 @@ they must not travel with a kill/yank."
       (should (equal (filter-buffer-substring (point-min) (point-max))
                      text)))))
 
+(ert-deftest ekp-region-test-copy-filter-composes-and-restores ()
+  "EKP must preserve an existing buffer-local substring filter."
+  (let ((text "组合复制过滤器必须保留 logical text and prefix"))
+    (ekp-region-test--with-text text
+      (let ((prior (lambda (beg end &optional delete)
+                     (let ((text (buffer-substring beg end)))
+                       (when delete (delete-region beg end))
+                       (concat "PRE:" text)))))
+        (setq-local filter-buffer-substring-function prior)
+        (ekp-justify-region (point-min) (point-max) 20)
+        (should (equal (filter-buffer-substring (point-min) (point-max))
+                       (concat "PRE:" text)))
+        (ekp-unjustify-region (point-min) (point-max))
+        (should (local-variable-p 'filter-buffer-substring-function))
+        (should (eq filter-buffer-substring-function prior))))))
+
+(ert-deftest ekp-region-test-kill-filter-composes-delete ()
+  "Composed filtering must preserve DELETE and prior-filter semantics."
+  (let ((text "组合 kill 过滤器删除源文本但返回 logical text"))
+    (ekp-region-test--with-text text
+      (let ((prior (lambda (beg end &optional delete)
+                     (let ((text (buffer-substring beg end)))
+                       (when delete (delete-region beg end))
+                       (concat "PRE:" text)))))
+        (setq-local filter-buffer-substring-function prior)
+        (ekp-justify-region (point-min) (point-max) 20)
+        (should (equal (filter-buffer-substring
+                        (point-min) (point-max) t)
+                       (concat "PRE:" text)))
+        (should (= (point-min) (point-max)))
+        (should (eq filter-buffer-substring-function prior))))))
+
+(ert-deftest ekp-region-test-restores-inherited-copy-filter ()
+  "Final unjustify must reveal an inherited substring filter again."
+  (let ((prior (lambda (beg end &optional delete)
+                 (prog1 (buffer-substring beg end)
+                   (when delete (delete-region beg end))))))
+    (let ((filter-buffer-substring-function prior))
+      (ekp-region-test--with-text "继承 filter 恢复检查内容"
+        (ekp-justify-region (point-min) (point-max) 20)
+        (ekp-unjustify-region (point-min) (point-max))
+        (should-not (local-variable-p 'filter-buffer-substring-function))
+        (should (eq filter-buffer-substring-function prior))))))
+
+(ert-deftest ekp-region-test-mode-disable-restores-copy-filter ()
+  "Disabling auto mode must restore the previous local copy filter."
+  (let ((prior (lambda (beg end &optional delete)
+                 (prog1 (buffer-substring beg end)
+                   (when delete (delete-region beg end))))))
+    (ekp-region-test--with-text "关闭 mode 恢复已有 copy filter"
+      (setq-local filter-buffer-substring-function prior)
+      (cl-letf (((symbol-function 'ekp-region--window-pixel)
+                 (lambda (&optional _) 20)))
+        (ekp-auto-justify-mode 1)
+        (ekp-auto-justify-mode -1))
+      (should (local-variable-p 'filter-buffer-substring-function))
+      (should (eq filter-buffer-substring-function prior)))))
+
+(ert-deftest ekp-region-test-final-unjustify-removes-integrations ()
+  "Removing the final layout span must remove unused integrations."
+  (ekp-region-test--with-text "最后一个排版区间移除后清理集成 hooks"
+    (ekp-justify-region (point-min) (point-max) 20)
+    (should (memq #'ekp-region--write-logical-buffer
+                  write-region-annotate-functions))
+    (should (memq #'ekp-region--isearch-begin isearch-mode-hook))
+    (ekp-unjustify-region (point-min) (point-max))
+    (should-not (local-variable-p 'filter-buffer-substring-function))
+    (should-not (memq #'ekp-region--write-logical-buffer
+                      write-region-annotate-functions))
+    (should-not (memq #'ekp-region--isearch-begin isearch-mode-hook))))
+
 (ert-deftest ekp-region-test-isearch-sees-logical-text ()
   "The isearch hooks expose the logical text, then restore the layout."
   (let ((text "跨行搜索的目标短语必须能找到 internationalization word"))
@@ -442,6 +597,80 @@ they must not travel with a kill/yank."
                   :type 'buffer-read-only)))
 
 ;;;; Commands and mode integration
+
+(ert-deftest ekp-region-test-no-break-public-commands ()
+  "Interactive no-break commands affect the public formatter and report scope."
+  (ekp-region-test--with-text "prefix AA BB suffix words"
+    (let (messages)
+      (set-mark 8)
+      (goto-char 13)
+      (activate-mark)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) messages))))
+        (call-interactively #'ekp-no-break-region))
+      (should (eq (get-text-property 8 'ekp-no-break) t))
+      (ekp-justify-region (point-min) (point-max) 4)
+      (should (string-match-p "AA BB" (buffer-string)))
+      (ekp-unjustify-region (point-min) (point-max))
+      (set-mark 8)
+      (goto-char 13)
+      (activate-mark)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) messages))))
+        (call-interactively #'ekp-allow-break-region))
+      (should-not (get-text-property 8 'ekp-no-break))
+      (should (= (length messages) 2))
+      (should (cl-every
+               (lambda (text)
+                 (string-match-p "current buffer session" text))
+               messages)))))
+
+(ert-deftest ekp-region-test-verbatim-public-commands ()
+  "Interactive verbatim commands protect the real region formatter."
+  (ekp-region-test--with-text
+      "literal block stays exactly here\nordinary prose wraps here"
+    (goto-char (point-min))
+    (let ((first-end (line-end-position)) messages)
+      (set-mark (point-min))
+      (goto-char first-end)
+      (activate-mark)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) messages))))
+        (call-interactively #'ekp-verbatim-region))
+      (ekp-justify-region (point-min) (point-max) 8)
+      (should (equal (buffer-substring-no-properties
+                      (point-min) (line-end-position))
+                     "literal block stays exactly here"))
+      (ekp-unjustify-region (point-min) (point-max))
+      (set-mark (point-min))
+      (goto-char first-end)
+      (activate-mark)
+      (cl-letf (((symbol-function 'message)
+                 (lambda (format-string &rest args)
+                   (push (apply #'format format-string args) messages))))
+        (call-interactively #'ekp-clear-verbatim-region))
+      (ekp-justify-region (point-min) first-end 8)
+      (should (get-text-property (point-min) 'ekp-justified))
+      (should (= (length messages) 2))
+      (should (cl-every
+               (lambda (text)
+                 (string-match-p "current buffer session" text))
+               messages)))))
+
+(ert-deftest ekp-region-test-protection-workflows-discoverable ()
+  "Mode help and menu expose the existing protection workflows."
+  (should (string-match-p
+           "current buffer session"
+           (documentation #'ekp-auto-justify-mode)))
+  (let ((menu (lookup-key ekp-auto-justify-mode-map [menu-bar ekp])))
+    (should (keymapp menu))
+    (should (where-is-internal
+             #'ekp-no-break-region ekp-auto-justify-mode-map))
+    (should (where-is-internal
+             #'ekp-verbatim-region ekp-auto-justify-mode-map))))
 
 (ert-deftest ekp-region-test-justify-buffer-roundtrip ()
   "ekp-justify-buffer / ekp-unjustify-buffer cover the whole buffer."

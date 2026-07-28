@@ -4,5 +4,4 @@ archive
 *.dll
 *.o
 *.elc
-.phrase/
 AGENTS.md

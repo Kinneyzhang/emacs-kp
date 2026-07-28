@@ -20,8 +20,10 @@ jobs:
         # stable; snapshot is advisory (allowed to fail)
         emacs-version: ['29.1', '30.1', 'snapshot']
     steps:
-      - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: purcell/setup-emacs@bdc64dc730ae1fcba200bfd52cb1b4cf6159cbe5 # v8.0
         with:
           version: ${{ matrix.emacs-version }}
       - name: Byte-compile (warnings are errors)
@@ -31,28 +33,32 @@ jobs:
             -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
       - name: Run ERT suite (C-module tests auto-skip)
         run: tests/run-tests.sh emacs
+      - name: Run ERT suite in permuted order
+        if: matrix.emacs-version == '30.1'
+        env:
+          EKP_TEST_SEED: '20260728'
+        run: tests/run-tests.sh emacs --random-order
 
   lint:
     name: package-lint + checkdoc
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: purcell/setup-emacs@bdc64dc730ae1fcba200bfd52cb1b4cf6159cbe5 # v8.0
         with:
           version: '30.1'
-      - name: Install package-lint
-        run: |
-          emacs -Q --batch \
-            --eval "(require 'package)" \
-            --eval "(add-to-list 'package-archives '(\"melpa\" . \"https://melpa.org/packages/\") t)" \
-            --eval "(package-initialize)" \
-            --eval "(package-refresh-contents)" \
-            --eval "(package-install 'package-lint)"
+      - name: Check out pinned package-lint
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: purcell/package-lint
+          ref: 35996f478d81e51dae4fa30d051f741895d07399
+          path: .ci/package-lint
+          persist-credentials: false
       - name: package-lint
         run: |
-          emacs -Q --batch \
-            --eval "(require 'package)" \
-            --eval "(package-initialize)" \
+          emacs -Q --batch -L .ci/package-lint \
             --eval "(require 'package-lint)" \
             --eval "(setq package-lint-main-file \"ekp.el\")" \
             -f package-lint-batch-and-exit \
@@ -65,12 +71,20 @@ jobs:
                       (checkdoc-file f))" \
             2>&1 | tee checkdoc.log
           test ! -s checkdoc.log
+      - name: Release invariants
+        run: tests/check-release.sh
+      - name: Dictionary manifest and pinned source
+        run: |
+          tests/check-dictionaries.sh
+          dictionaries/update.sh check
 
   test-c-module:
     name: full suite + C parity (apt Emacs)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install Emacs
         run: sudo apt-get update && sudo apt-get install -y emacs-nox
       - name: Ensure emacs-module.h is findable
@@ -92,7 +106,9 @@ jobs:
     name: C module under ASan/UBSan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install Emacs
         run: sudo apt-get update && sudo apt-get install -y emacs-nox gcc
       - name: Ensure emacs-module.h is findable
@@ -104,7 +120,7 @@ jobs:
             sudo install -m 644 "$HDR" /usr/local/include/
           fi
       - name: Build C module with sanitizers
-        run: make -C ekp_c DEBUG=1
+        run: make -C ekp_c PROFILE=sanitize
       - name: Property fuzz under ASan/UBSan
         # Emacs itself is not ASan-instrumented: preload the runtime and
         # skip leak checking (the Emacs process "leaks" by design).
@@ -117,8 +133,10 @@ jobs:
     name: macOS (dylib build + full suite)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: purcell/setup-emacs@master
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: purcell/setup-emacs@bdc64dc730ae1fcba200bfd52cb1b4cf6159cbe5 # v8.0
         with:
           version: '30.1'
       - name: Build C module
@@ -127,3 +145,30 @@ jobs:
         run: tests/run-tests.sh emacs
       - name: Property fuzz (300 cases, C vs elisp parity)
         run: emacs -Q --batch -L . -l tests/ekp-fuzz.el
+
+  test-windows:
+    name: Windows Elisp baseline (Emacs 30.1)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install Emacs 30.1
+        shell: pwsh
+        run: choco install emacs --version=30.1.0 --yes --no-progress
+      - name: Byte-compile (warnings are errors)
+        shell: pwsh
+        run: >
+          emacs -Q --batch -L .
+          --eval "(setq byte-compile-error-on-warn t)"
+          -f batch-byte-compile
+          ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
+      - name: Run ERT suite (C-module tests auto-skip)
+        shell: pwsh
+        run: >
+          emacs -Q --batch -L . -L tests
+          -l tests/ekp-tests.el
+          -l tests/ekp-region-tests.el
+          -l tests/ekp-gui-tests.el
+          -l tests/ekp-c-tests.el
+          -f ert-run-tests-batch-and-exit

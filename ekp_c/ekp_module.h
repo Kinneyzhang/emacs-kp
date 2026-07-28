@@ -27,7 +27,7 @@
 
 /* Version */
 #define EKP_VERSION_MAJOR 1
-#define EKP_VERSION_MINOR 5
+#define EKP_VERSION_MINOR 6
 
 /* Limits */
 #define EKP_THREAD_POOL_MAX 64
@@ -41,7 +41,7 @@
 typedef struct {
     int32_t *breaks;        /* break positions */
     size_t break_count;
-    int32_t *rest_pixels;   /* remaining space per line */
+    int64_t *rest_pixels;   /* remaining space per line */
     double total_cost;
 } ekp_result_t;
 

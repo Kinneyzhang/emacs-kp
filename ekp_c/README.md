@@ -1,6 +1,6 @@
 # EKP C Dynamic Module
 
-C implementation of the Knuth-Plass DP for emacs-kp (module version 1.5).
+C implementation of the Knuth-Plass DP for emacs-kp (module version 1.6).
 
 The division of labor: **Elisp owns all font-dependent data**
 (tokenization, pixel measurement, glue values, prefix sums); the C
@@ -30,7 +30,7 @@ tasks.
 
 ```bash
 cd ekp_c
-make            # → ekp.dylib (macOS) / ekp.so (Linux) / ekp.dll (Windows)
+make PROFILE=portable # default → ekp.dylib/.so/.dll
 ```
 
 Requirements: C11 compiler, Emacs module headers, pthreads.
@@ -38,16 +38,24 @@ Windows builds need MinGW-w64 (for pthreads) and
 `make EMACS_ROOT=<path to your Emacs installation>`.
 
 ```bash
-make DEBUG=1    # Debug build with ASan/UBSan
+make PROFILE=native   # local CPU + LTO; benchmark-only
+make PROFILE=debug    # -O0 with debug symbols
+make PROFILE=sanitize # ASan/UBSan with frame pointers
 make clean
-make info
+make info              # includes the selected profile and final flags
 ```
+
+`portable` is the release and CI default and contains no
+`-march=native`/LTO flags. An unknown profile is a make error. From Emacs,
+`M-x ekp-c-module-build` prompts for the same profile names and starts make
+with a direct argv plus `default-directory`; whitespace and shell
+metacharacters in the checkout path are not interpreted.
 
 ## API (as used by ekp.el)
 
 ```elisp
 (ekp-c-init)             ; init global state
-(ekp-c-version)          ; => "1.5" — checked by ekp-c-module-load
+(ekp-c-version)          ; => "1.6" — checked by ekp-c-module-load
 (ekp-c-thread-count)     ; worker count (created lazily on first batch)
 (ekp-c-cleanup)
 
@@ -83,9 +91,15 @@ a second pass permitting emergency single-box breaks, so overlong
 unbreakable tokens can never make the result empty.  Badness saturates
 at 10000 exactly like the Elisp side.
 
-Failure behavior: any allocation failure or bad argument makes the
-call return nil, and ekp.el falls back to the Elisp engine — the C
-module never silently degrades to a subtly different layout.
+Failure behavior: the full schema is checked before extraction. Malformed
+direct API arguments signal `ekp-c-invalid-input`; allocation failure or an
+unavailable DP result returns nil. `ekp.el` falls back only for nil. A module
+signal propagates because it means the enabled backend contract is broken;
+the dispatcher never hides it or silently produces a different layout.
+
+Every public pixel/position integer must fit signed 32-bit range. The DP
+uses 64-bit intermediates for sums and differences, so valid extreme inputs
+cannot overflow when line width and protrusion are combined.
 
 ## Performance
 

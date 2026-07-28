@@ -17,10 +17,17 @@ $EMACS -Q --batch -L . \
 tests/run-tests.sh $EMACS
 
 # Build the C module (required for the parity tests and fuzz)
-make -C ekp_c              # add DEBUG=1 for ASan/UBSan
+make -C ekp_c PROFILE=portable
 
 # Property fuzz: 300 random cases, asserts C and Elisp agree byte-for-byte
 $EMACS -Q --batch -L . -l tests/ekp-fuzz.el
+
+# Check release/CI/version invariants
+tests/check-release.sh
+
+# Check dictionary inventory and pinned upstream bytes
+tests/check-dictionaries.sh
+dictionaries/update.sh check
 ```
 
 ## Ground rules
@@ -52,6 +59,12 @@ $EMACS -Q --batch -L . -l tests/ekp-fuzz.el
 Conventional Commits (`feat:`, `fix:`, `perf:`, `refactor!:`,
 `docs:`, `test:`, `chore:`).  Explain the reasoning in the body, not
 just the change.
+
+## Releases
+
+Follow [Docs/RELEASING.md](Docs/RELEASING.md).  In particular, action
+dependencies stay pinned to full commit SHAs, released artifacts are
+immutable, and every artifact gets a SHA-256 checksum.
 
 ## License
 

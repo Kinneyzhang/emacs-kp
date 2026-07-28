@@ -4,6 +4,9 @@ This document describes the internal architecture, algorithms and APIs of
 `emacs-kp`, as implemented.  It is intended for contributors and advanced
 users.
 
+Current repository health and prioritized follow-up work are recorded in
+the [2026-07-28 system audit](./Docs/REPOSITORY_AUDIT_20260728.md).
+
 ## 1. Pipeline Overview
 
 A justification call flows through five stages:
@@ -55,17 +58,26 @@ Everything the DP and renderer need, computed once per paragraph:
 | `lead-spaces` | `lead-spaces[i]` = width of the space-box run starting at box i; index 0 forced to 0 (first-line indentation is kept) |
 | `trail-spaces` | `trail-spaces[k]` = width of the space-box run ending at box k−1 |
 | `glue-params` | plist snapshot of the nine spacing values at creation time |
-| `dp-cache` | hash: line-width → dp-result plist |
+| `dp-cache` | equal-keyed hash: complete DP signature → dp-result plist |
 
 The paragraph cache (`ekp--para-cache`) is keyed with `equal` on a
 structured key — string content, printed text-property intervals,
 detected fonts, the hyphenation language (`ekp-latin-lang`), and
-either the nine explicit spacing values or the symbol `auto`.
+either the nine explicit spacing values or the automatic CJK stretch
+default. The other automatic values are derived from font measurement,
+which is already represented by the font and display-context fields.
 Structured keys make hash collisions harmless (they were possible with
 the previous `sxhash`-integer scheme).  The cache is flushed when it
 exceeds `ekp-para-cache-limit`.  A one-entry fast path
-(`ekp--last-para`, checked by string `eq` + language) covers the many
-same-string lookups inside one justification call.
+(`ekp--last-para`) bypasses only the hash lookup: it compares the same
+complete structural key before reuse. In-place changes to layout-relevant
+text properties therefore miss both paths and match a fresh paragraph.
+
+The DP signature is separate from the paragraph key.  It contains line
+width, looseness, and all six runtime cost parameters; therefore a
+parameter change selects a new result without flushing width-independent
+paragraph data.  Structural `equal` comparison also lets non-zero
+looseness signatures hit the cache.
 
 ### dp-result
 
@@ -88,6 +100,8 @@ computed for ideal, min and max in O(1).  Space-box runs at the line
 edges are excluded because the renderer strips them; the DP and the
 renderer therefore agree exactly, and every justified line renders at
 precisely the target width (`ekp-test-justify-line-width-invariant`).
+`ekp--line-stripped-space-pixel` owns this exclusion rule for the 1D/loose
+DP, C-result reconstruction, and renderer.
 
 ## 4. The Knuth-Plass DP
 
@@ -164,6 +178,27 @@ original itself, so no character is ever dropped.  `ekp-region.el`
 inverts these four structurally (`ekp-unjustify-region`) — exact even
 after the justified text was edited — and builds
 `ekp-justify-region` / `ekp-auto-justify-mode` on top.
+`ekp--layout-marker-properties` owns the complete renderer/region marker
+vocabulary and its non-inheritance contract.
+
+Saving is a non-mutating serialization boundary.
+`ekp-region--write-logical-buffer` runs first in the buffer-local
+`write-region-annotate-functions`, switches whole-buffer writes to a hidden
+logical copy, and leaves the display buffer untouched. Subsequent annotation
+functions and coding conversion operate on that copy. A successful write
+disposes it immediately; a failed write keeps at most one copy, which the
+next write or integration teardown replaces. Region-only `write-region`
+calls intentionally retain Emacs's physical-buffer semantics; the logical
+serialization boundary is the whole-buffer save path.
+
+Copy filtering has explicit single-slot ownership. EKP records whether the
+previous `filter-buffer-substring-function` was local, temporarily restores
+that value, and invokes the public `filter-buffer-substring` dispatcher to
+preserve its transform and DELETE behavior. EKP then structurally removes
+layout markers from the returned string. DELETE lifecycle cleanup runs after
+the temporary binding is unwound, so removing the final justified span
+outside auto mode restores that exact local value or reveals the inherited
+value, and removes the save/search/change hooks.
 
 ### 5.1 Break permissions, alignment, protrusion, shapes
 
@@ -193,7 +228,7 @@ after the justified text was edited — and builds
   (position × line-count) DP and bypass C.  Indents render as leading
   `ekp-glue' spacers.
 
-C module 1.5: `ekp-c-break-with-arrays' takes 15 args
+C module 1.6: `ekp-c-break-with-arrays' takes 15 args
 (…, forbidden-positions, tail-protrudes, hyphen-protrude,
 first-line-width); batch vectors have 15 elements;
 `ekp-c-set-penalties' takes 4–7.
@@ -208,6 +243,13 @@ reality check (60-paragraph, 26 k-char article, region layer
 included): ≈ 73 ms per width change cold, less on revisit;
 incremental single-paragraph re-justify after an edit ≈ 17 ms.
 
+Adversarial source-mode builders are measured separately by
+`ekp-bench-adversarial-builders`.  From 1,000 to 8,000 characters, the
+fragment-based tokenizer grew 6.3× and dense insertion 7.7× (near the
+expected linear 8× input growth).  At 8,000 characters they took 1.100 s and
+0.013 s, versus 3.133 s and 0.945 s before the change.  The hyphen-position
+cache uses an explicit miss sentinel so a legitimate nil result is reusable.
+
 ## 6. Looseness
 
 `ekp-looseness` ≠ 0 switches to `ekp--dp-run-loose`, a full
@@ -219,7 +261,7 @@ engines never disagree.
 
 ## 7. C Module Integration
 
-The C module (`ekp_c/`, version 1.5) runs only stage ④.  Elisp remains
+The C module (`ekp_c/`, version 1.6) runs only stage ④.  Elisp remains
 the source of truth for all font-dependent data.
 
 - `ekp-c-break-with-arrays` (15 args): the para's prefix arrays, glue
@@ -239,12 +281,14 @@ the source of truth for all font-dependent data.
   `ekp-c-module-required-version` and falls back to Elisp, preventing
   arity mismatches after upgrades.
 
-Any C failure — a NULL result, an allocation failure, or a bad
-argument — falls back to the Elisp engine; the Elisp bridge also
-wraps the calls in `condition-case`.  The module never silently
-produces a different layout on partial failure.  The two engines are
-verified byte-identical by `ekp-test-c-parity-simple` /
-`ekp-test-c-parity-files` and the 300-case property fuzz.
+An unavailable module, an allocation/no-result nil, or an incompatible
+module version falls back to the Elisp engine.  Invalid direct API input
+signals `ekp-c-invalid-input`, and any signal from an enabled backend
+propagates through the public formatter; the dispatcher does not catch and
+hide it.  The module never silently produces a different layout on partial
+failure.  The two engines are verified byte-identical by
+`ekp-test-c-parity-simple` / `ekp-test-c-parity-files` and the 300-case
+property fuzz.
 
 ### Future direction: a paragraph-handle API
 
@@ -267,7 +311,7 @@ become a bottleneck.
 
 ## 8. Hyphenation (ekp-hyphen.el)
 
-Liang's pattern algorithm, Pyphen-compatible:
+Liang's ordinary pattern algorithm:
 
 - `dictionaries/hyph_*.dic` are compiled to a pattern hash on first
   use and cached per path.  Files may be UTF-8 or ISO-8859 (Emacs
@@ -275,6 +319,16 @@ Liang's pattern algorithm, Pyphen-compatible:
 - `ekp-hyphen-create LANG` resolves exact codes, then progressively
   shorter prefixes (`"de_CH" → "de"`).
 - Margins default to 2 characters on each side of a break.
+- A slash in a non-comment pattern is fail-closed.  Libhyphen replacement
+  rules change the visible text and width only when their break wins; EKP's
+  current fixed-width boxes cannot represent that honestly.  The compiler
+  counts the rules and signals `ekp-hyphen-unsupported-pattern`, and the
+  public formatter propagates it.
+- `dictionaries/MANIFEST.tsv` pins 49 inventory entries to one LibreOffice
+  commit (plus one explicitly identified legacy Basque byte), their SHA-256,
+  syntax flag, and license evidence.  `tests/check-dictionaries.sh` is the
+  offline gate; `dictionaries/update.sh check` verifies normalized bytes
+  against the upstream commit on macOS and Linux.
 
 Word boxes are matched against
 `^[left-punct]* (latin-word) [right-punct]*$` so that punctuation-
@@ -284,11 +338,33 @@ punctuation stays glued to the first/last syllable box.
 ## 9. Testing & Benchmarks
 
 ```bash
-tests/run-tests.sh [emacs]        # 36 ERT tests, batch-safe
+tests/run-tests.sh [emacs]        # batch-safe ERT suite
+tests/run-tests.sh [emacs] --random-order
+tests/run-tests-isolated.sh [emacs] # each ERT in a fresh process
+tests/check-dictionaries.sh           # offline inventory/checksum gate
+dictionaries/update.sh check          # verify pinned upstream bytes
+make -C ekp_c PROFILE=portable      # release-portable default
+make -C ekp_c PROFILE=native        # local benchmark only
+make -C ekp_c PROFILE=debug         # symbols, no optimization
+make -C ekp_c PROFILE=sanitize      # ASan + UBSan
 emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' -l tests/ekp-bench.el
 emacs -Q --batch -L . --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
       -l tests/ekp-bench.el
 ```
+
+Set `EKP_TEST_SEED` to reproduce or vary the permuted-order run. Test
+fixtures dynamically restore all EKP configuration they isolate; tests that
+exercise dispatch must use the public formatter rather than only an internal
+eligibility predicate.
+
+The GUI matrix is loaded explicitly from `tests/ekp-gui-verify.el`. It
+returns status 1 after printing the table when any row fails; the ERT suite
+contains a forced-failure control for this boundary.
+
+`M-x ekp-c-module-build` uses the same four profile names and invokes make
+as an argv process in `ekp_c/`; it never constructs a shell `cd` command.
+Release/CI artifacts use `portable`. Use `native` only for measurements on
+the machine that will run the module.
 
 Key invariants under test: rendered line width == target (pixel-exact
 justification), no content loss at any width, brute-force cross-checks

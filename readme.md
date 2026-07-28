@@ -1,6 +1,6 @@
 # Emacs-KP: Knuth-Plass Line Breaking for Emacs
 
-[中文文档](./readme_zh.md) | [Developer Guide](./DEVELOPER.md)
+[中文文档](./readme_zh.md) | [Developer Guide](./DEVELOPER.md) | [Repository Audit](./Docs/REPOSITORY_AUDIT_20260728.md)
 
 Emacs-kp implements the Knuth-Plass optimal line breaking algorithm with
 full support for CJK (Chinese, Japanese, Korean) and Latin mixed text
@@ -13,8 +13,8 @@ typesetting, entirely inside Emacs.
 - **CJK support** — every CJK character is a breakable box; kinsoku rules
   keep punctuation attached (`，。` never start a line, `「《` never end
   one); dedicated inter-CJK and CJK↔Latin spacing.
-- **Hyphenation** — Frank Liang's algorithm (the TeX algorithm) with 70+
-  Hunspell pattern dictionaries bundled.
+- **Hyphenation** — Frank Liang's algorithm (the TeX algorithm) with 49
+  checksum-pinned Hunspell pattern dictionaries bundled.
 - **Pixel-accurate justification** — every justified line renders at
   exactly the requested pixel width, using `display (space :width ...)`
   properties; works with variable-width fonts.
@@ -64,18 +64,21 @@ preserved.
 ### C module (recommended for long texts)
 
 ```bash
-cd ekp_c && make        # requires C11 compiler, produces ekp.dylib/.so/.dll
+cd ekp_c && make PROFILE=portable # default; produces ekp.dylib/.so/.dll
 ```
 
 ```elisp
-(ekp-c-module-load)     ; prints "ekp-c module loaded (version 1.4, N threads)"
+(ekp-c-module-load)     ; prints "ekp-c module loaded (version 1.6, N threads)"
+(ekp-c-module-build)    ; prompts for portable/native/debug/sanitize
 ```
 
 Once loaded (and since `ekp-use-c-module` defaults to `t`), all
 justification calls automatically use the C engine.  The Elisp and C
-engines produce **identical output**; Elisp is the always-available
-fallback.  If the module on disk is older than the Elisp code expects,
-loading refuses with a message asking you to rebuild.
+engines produce **identical output**; Elisp is the always-available path
+when no module is enabled or C returns no result. An enabled module signal
+is surfaced as a backend contract failure. If the module on disk is older
+than the Elisp code expects, loading refuses with a message asking you to
+rebuild.
 
 ## Interactive Use (buffer & region)
 
@@ -101,16 +104,21 @@ loading refuses with a message asking you to rebuild.
   after edits re-justifies only the touched paragraphs
   (`ekp-auto-justify-edit-delay`), so unchanged paragraphs hit the
   paragraph cache.  Turning the mode off restores the buffer exactly.
+  While active, the standard **EKP** menu exposes formatting, protection,
+  and window-fit diagnostic commands; `C-h m` describes the same workflow.
 
 The buffer is treated as a live document, not just a canvas:
 
 - **Saving** writes the *logical* text — soft line breaks, glue
   spaces and break hyphens never reach disk; the on-screen buffer
-  stays justified.
+  stays justified even if writing fails or is interrupted.
+  This guarantee applies to whole-buffer saves; an explicit region-only
+  `write-region` writes the selected physical buffer representation.
 - **Searching** (isearch) sees the logical text, so CJK phrases and
   hyphenated words are found across the layout.
 - **Copying** puts the logical text on the kill ring, so pasted text
-  carries words, not pixel spacing.
+  carries words, not pixel spacing. Existing mode/user substring filters
+  remain active and are restored when the final layout span is removed.
 - Merely enabling the mode never marks the buffer modified (no stray
   lock files or auto-saves), and `undo` is not fought by the re-flow
   timer.
@@ -145,6 +153,13 @@ in Org and Markdown buffers when you have not configured your own.
   (`M-x ekp-no-break-region`) become rigid atoms — never broken,
   never hyphenated, spacing kept literal — ideal for inline code,
   product names, or numbers with units.
+
+Manual properties are deliberately **current-buffer-session only**:
+plain-text saving and reopening do not persist them. Use
+`M-x ekp-allow-break-region` / `ekp-clear-verbatim-region` to remove them.
+For protection derived from persistent document syntax, use mode faces or
+the buffer-local `ekp-region-skip-predicate` (the Org/Markdown presets do
+this automatically).
 
 ## Typography
 
@@ -185,11 +200,19 @@ not renderable (text cannot start before the line origin).
 (setq ekp-latin-lang "de_DE")   ; default "en_US"
 ```
 
-Any `dictionaries/hyph_<lang>.dic` works; short codes like `"de"`
-resolve to the first matching dictionary.  Each dictionary's own
+Short codes like `"de"` resolve to the first matching dictionary.  Each
+supported dictionary's own
 `LEFTHYPHENMIN` / `RIGHTHYPHENMIN` are honored (English keeps ≥2
 letters before and ≥3 after a break); pass explicit margins to
 `ekp-hyphen-create` to override.
+
+EKP supports ordinary Liang patterns.  It fails closed with
+`ekp-hyphen-unsupported-pattern` for `eo`, `ca`, `hu_HU`, and `sq_AL`
+because those files contain slash/replacement rules that conditionally
+rewrite glyphs at a chosen break. Treating them as ordinary positions would
+produce linguistically wrong text and incorrect DP widths.  The exact
+inventory, SHA-256 checksums, pinned source paths, and license evidence live
+in `dictionaries/MANIFEST.tsv` and `dictionaries/LICENSES.md`.
 
 ### Spacing parameters
 
@@ -227,16 +250,23 @@ Each class has an ideal width, a maximum stretch and a maximum shrink:
 | `ekp-last-line-short-penalty`   | 50      | Cost multiplier for a too-short last line |
 | `ekp-looseness`                 | 0       | Target line count offset: +1 = one line more than optimal, −1 = one fewer |
 
-All parameters take effect with both engines: the Elisp side syncs them
-to the C module before every call.  `ekp-looseness` is handled by a
-dedicated Elisp path (the C module is bypassed automatically while it
-is non-zero).
+Both engines implement these parameters: before an actual C computation,
+the Elisp side synchronizes their current values.  The DP cache signature
+includes every parameter in the table, so changes take effect on the next
+call without manually clearing caches.
+`ekp-looseness` is part of the cache key and uses a dedicated Elisp path
+(the C module is bypassed automatically while it is non-zero).
 
 ### Caching
 
 Tokenization, measurement, and DP results are cached per paragraph;
 box widths are additionally cached session-wide, so a glyph shared
 across paragraphs is measured only once.
+Both explicit spacing values and the automatic
+`ekp-default-cws-stretch-pixel` input participate in paragraph cache
+identity. The same complete structural key also governs the same-string
+fast path, so adding or removing layout properties such as `ekp-no-break`
+takes effect immediately on an already cached string object.
 
 - `ekp-para-cache-limit` (default 256): max cached paragraphs; the
   cache is flushed when the limit is reached.
@@ -267,8 +297,9 @@ the point.)
   reserves the truncation-indicator column in windows without
   fringes, so justified lines fit the real display.  If lines ever
   look truncated or short in an exotic setup, run `M-x ekp-diagnose`
-  in that buffer — it reports whether measurement matches rendering
-  (and `M-x ekp-gui-verify` runs a full fit check).
+  in that buffer — it reports whether measurement matches rendering.
+  The full fit matrix is a developer tool in `tests/ekp-gui-verify.el`;
+  load that file before invoking `M-x ekp-gui-verify`.
 - One font is assumed per Latin/CJK script per paragraph when computing
   spacing defaults; mixed-font paragraphs work but spacing defaults come
   from the first font found.
@@ -295,11 +326,20 @@ block, an inline no-break atom and NBSP-joined numbers.
 ## Testing
 
 ```bash
-tests/run-tests.sh /path/to/emacs     # 67 ERT tests, all batch-safe
+tests/run-tests.sh /path/to/emacs     # batch-safe ERT suite
+
+# Full interactive GUI fit matrix
+emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \
+  -l /path/to/emacs-kp/tests/ekp-gui-verify.el \
+  -f ekp-gui-verify-matrix
 ```
+
+The matrix prints every row and exits with status 1 if any fit check fails,
+so the same command can gate local release automation. The verifier is a
+developer tool under `tests/`; it is not loaded by `(require 'ekp-region)`.
 
 ## Credits
 
 - **Core algorithm**: ["Breaking Paragraphs into Lines"](https://gwern.net/doc/design/typography/tex/1981-knuth.pdf) by Donald E. Knuth and Michael F. Plass (1981)
 - **Hyphenation**: Frank Liang's algorithm, adapted from [Pyphen](https://github.com/Kozea/Pyphen)
-- **Dictionaries**: hyphenation patterns from the [LibreOffice dictionaries](https://github.com/LibreOffice/dictionaries) (GPL/LGPL/MPL; see each `dictionaries/README_hyph_*.txt`)
+- **Dictionaries**: hyphenation patterns from the [LibreOffice dictionaries](https://github.com/LibreOffice/dictionaries); see `dictionaries/MANIFEST.tsv`, `dictionaries/LICENSES.md`, and the bundled per-dictionary notices for exact source, checksum, and license evidence.
