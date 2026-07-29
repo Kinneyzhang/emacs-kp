@@ -44,6 +44,9 @@
 - `task015` 已完成终局清理与门禁：删除九个死 accessor 和依赖私有
   substring-filter API 的调用；最终独立代码审查 `APPROVE`、架构审查
   `CLEAR`，全部仓库内 issue/task 均已闭环。
+- `task017` 已将当前编辑器集成模块直接改名为 `ekp-buffer.el`；
+  下文的 `ekp-region.el` 与 `ekp-region-*` 仍保留为审计基线的历史
+  证据，不代表当前加载入口。
 - 下文保留 `main@29cef97` 的原始证据与判断，不把历史问题改写成从未发生。
 
 ## 结论先行

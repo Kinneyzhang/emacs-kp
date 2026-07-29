@@ -153,52 +153,127 @@ optimality.  Both engines implement the identical strategy.
 - Last lines are ragged-right (ideal glues + trailing filler);
   single-box lines get a trailing filler clamped at ≥ 0.
 
-`ekp--pixel-justify` then strips leading space boxes (except on the
-first line — indentation) and trailing space boxes, and appends a
-hyphen — propertized like the word it breaks — where a line ends at a
-hyphenation point.  Stripped widths are *not* redistributed: the DP
-already excluded them (§3).
+`ekp-layout-plan` is the representation boundary between layout and
+rendering.  It combines the paragraph boxes/source offsets, DP breaks,
+per-line glue targets, indentation, stripped edges, and discretionary
+hyphen decisions into `ekp-layout-plan`, `ekp-layout-line`, and
+`ekp-layout-gap` records.  The plan contains no buffer positions or display
+mechanism.  `ekp-render-layout-string` consumes it for the public string API;
+the buffer integration can consume the same decisions without re-running or
+reinterpreting the KP algorithm.
 
-Glues become `(space :width (N))` display properties, so justification
-is pixel-exact in GUI Emacs and column-exact in batch/tty.
+The two consumers deliberately have different representation rights.
 
-The output is **lossless**: boxes are located in the source string
-(`ekp--box-offsets`), and every synthesized or hidden piece records the
-original text it stands for —
+#### String renderer
 
-| property          | on                    | value / meaning                |
-|-------------------|-----------------------|--------------------------------|
-| `ekp-glue`        | synthesized glue space| original text it replaced      |
-| `ekp-soft-break`  | inserted `\n`         | whitespace swallowed at break  |
-| `ekp-soft-hyphen` | inserted hyphen       | marker only                    |
-| `ekp-hidden`      | paragraph-edge text   | kept verbatim, `display ""`    |
+`ekp-render-layout-string` preserves the public string API.  It strips
+leading/trailing space boxes, synthesizes display spaces and visual
+newlines, and appends a propertized discretionary hyphen where selected.
+The returned string remains lossless through four private markers:
 
-Zero-width glue with a non-empty original renders as the hidden
-original itself, so no character is ever dropped.  `ekp-region.el`
-inverts these four structurally (`ekp-unjustify-region`) — exact even
-after the justified text was edited — and builds
-`ekp-justify-region` / `ekp-auto-justify-mode` on top.
-`ekp--layout-marker-properties` owns the complete renderer/region marker
-vocabulary and its non-inheritance contract.
+| property          | on                     | value / meaning               |
+|-------------------|------------------------|-------------------------------|
+| `ekp-glue`        | synthesized glue space | original text it replaced     |
+| `ekp-soft-break`  | synthesized `\n`       | swallowed boundary whitespace |
+| `ekp-soft-hyphen` | synthesized hyphen     | marker only                   |
+| `ekp-hidden`      | paragraph-edge text    | source retained, display empty|
 
-Saving is a non-mutating serialization boundary.
-`ekp-region--write-logical-buffer` runs first in the buffer-local
-`write-region-annotate-functions`, switches whole-buffer writes to a hidden
-logical copy, and leaves the display buffer untouched. Subsequent annotation
-functions and coding conversion operate on that copy. A successful write
-disposes it immediately; a failed write keeps at most one copy, which the
-next write or integration teardown replaces. Region-only `write-region`
-calls intentionally retain Emacs's physical-buffer semantics; the logical
-serialization boundary is the whole-buffer save path.
+This physical representation exists only in the returned string.  It is
+kept for API compatibility and is not installed into a source buffer.
+`ekp--layout-marker-properties` owns its marker vocabulary and
+non-inheritance contract.
 
-Copy filtering has explicit single-slot ownership. EKP records whether the
-previous `filter-buffer-substring-function` was local, temporarily restores
-that value, and invokes the public `filter-buffer-substring` dispatcher to
-preserve its transform and DELETE behavior. EKP then structurally removes
-layout markers from the returned string. DELETE lifecycle cleanup runs after
-the temporary binding is unwound, so removing the final justified span
-outside auto mode restores that exact local value or reveals the inherited
-value, and removes the save/search/change hooks.
+#### Buffer renderer
+
+`ekp-buffer.el` keeps the buffer's character sequence untouched and
+projects the same plan with text properties on existing source characters:
+
+- source ASCII spaces:
+  `((space-width FACTOR) (min-width ((TARGET-PIXELS))))`;
+- zero-source CJK/mixed glue: `min-width` on the preceding complete
+  grapheme, targeting its natural advance plus glue;
+- indentation: `line-prefix`;
+- a source-whitespace break: the first boundary character displays as
+  newline and the rest as empty;
+- a CJK or discretionary-hyphen break: a replacing display string
+  reproduces the existing complete grapheme, appends the optional hyphen,
+  then a visual newline.
+
+`ekp-buffer--display` and `ekp-buffer--line-prefix` record exact ownership.
+Removal clears the public property only when its value is still identical
+to EKP's owner value, so a later foreign change is not erased.  Paragraphs
+with foreign `display`, `line-prefix`, `wrap-prefix`, `composition`, or
+`invisible` ownership stay verbatim.  Exact shrink of tabs/non-ASCII
+whitespace is also refused because `space-width` affects ASCII spaces only.
+
+All installation/removal runs inside `with-silent-modifications`, and owned
+properties are nonsticky.  Buffer characters, point/mark, modified state,
+undo, character-modified tick, and external change hooks therefore remain
+source-owned. Reprojection restores the mark marker without calling
+`set-mark`, then restores `mark-active` independently; an inactive mark
+cannot become a region as a layout side effect. No EKP buffer path creates
+an overlay.
+
+Saving, ordinary search, syntax, and direct Elisp character APIs need no
+logical-text adapter: the real buffer is already logical.  Copy filtering
+remains necessary because `buffer-substring` intentionally preserves text
+properties. EKP composes with the previous
+`filter-buffer-substring-function`, then removes only its projection
+metadata from the copied string.
+
+#### Live flow
+
+Live editing uses the ordinary whole-text Knuth-Plass plan without giving
+editing state to the core planner:
+
+1. Live state owns the last committed hard-line source, normal
+   `ekp-layout-plan`, semantic signatures, projected spans, and stable break
+   anchors at the narrowest-window authoritative width.
+2. The first real change opens one edit transaction. It snapshots that
+   committed state, then removes EKP properties only from the smallest
+   projected span range containing the edit. Span objects and unaffected
+   anchors remain registered.
+3. Further changes inside the dirty island use native soft wrapping and do
+   no whole-hard-line planning. If the logical source returns exactly to the
+   snapshot, EKP restores the saved owned-property runs and marker offsets
+   directly; the state, plan, signatures, and spans retain object identity.
+4. Crossing a native visual-row boundary is a commit. EKP computes or reuses
+   one whole-hard-line plan, derives every completed semantic row, and
+   publishes their changed suffix silently as one command-loop transition.
+   The new current row remains natural.
+5. The other commits are a hard newline/paragraph completion, the next real
+   edit outside the dirty island, explicit refill, and width/font/face/theme
+   or layout-context change. Point motion is never a commit, even across hard
+   paragraphs; there is no live `post-command-hook`.
+6. Stable line signatures minimize property writes at a commit, while the
+   16-entry buffer-local LRU reuses recent text/context plans. Neither
+   mechanism decides when layout is allowed to change; the transaction owns
+   that policy.
+7. IME preedit, foreign display ownership, unsupported shrink, oversized
+   hard lines, stale generations, or publication errors fail closed to
+   native display. A partial projection is rolled back and the original
+   error is surfaced.
+
+Native wrapping is a state-machine precondition, not a user preference the
+mode can merely hope is enabled. On activation, the mode snapshots the
+values and local-binding ownership of `truncate-lines` and
+`truncate-partial-width-windows`, then makes both buffer-local and nil.
+Teardown restores local values or removes the temporary bindings so global
+ownership resumes. This prevents Emacs's default 50-column partial-window
+threshold from silently turning a narrow split into horizontal scrolling.
+
+This state model needs no live lookahead, push/pull convergence, per-key
+whole-line planner, or idle formatter. A real edit after point motion may
+commit the previous active hard line, including when narrowing makes that
+line inaccessible; point motion itself remains a strict no-op.
+
+No edit-idle whole-paragraph formatter exists. Resize/background work is
+generation-owned. Large buffers are processed visible-first in hard-
+paragraph chunks; a single hard paragraph above
+`ekp-auto-justify-paragraph-limit` remains natural during automatic work
+and requires explicit `ekp-refill-paragraph` for an unbounded quality pass.
+Because text properties are buffer-wide, the narrowest live window supplies
+the one authoritative width.
 
 ### 5.1 Break permissions, alignment, protrusion, shapes
 
@@ -403,11 +478,11 @@ ekp.el            Core: para struct, caching, DP (1D + looseness),
 ekp-utils.el      Tokenizer (boxes, kinsoku), font detection with
                   batch/tty fallbacks, C module loading
 ekp-hyphen.el     Liang hyphenation + dictionary registry
-ekp-region.el     Buffer/region commands, ekp-auto-justify-mode, and
-                  editor integration (save, isearch, kill-ring, undo)
+ekp-buffer.el     Text-property-only buffer/region projection, synchronous
+                  live flow, window lifecycle, copy filtering, diagnostics
 ekp_c/            C dynamic module (see ekp_c/README.md)
 dictionaries/     Hunspell hyphenation patterns (from LibreOffice)
-tests/            ekp-tests.el, ekp-region-tests.el (ERT),
+tests/            ekp-tests.el, ekp-buffer-tests.el (ERT),
                   ekp-fuzz.el (parity fuzz), ekp-bench.el,
                   ekp-demo.el, ekp-showcase.el, sample texts,
                   run-tests.sh

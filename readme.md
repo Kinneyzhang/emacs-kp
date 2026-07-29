@@ -15,9 +15,14 @@ typesetting, entirely inside Emacs.
   one); dedicated inter-CJK and CJK↔Latin spacing.
 - **Hyphenation** — Frank Liang's algorithm (the TeX algorithm) with 49
   checksum-pinned Hunspell pattern dictionaries bundled.
-- **Pixel-accurate justification** — every justified line renders at
-  exactly the requested pixel width, using `display (space :width ...)`
-  properties; works with variable-width fonts.
+- **Pixel-accurate justification** — one semantic layout plan drives both
+  renderers.  The string API uses pixel spaces; buffer layout combines
+  `space-width` with absolute-pixel `min-width`, so it works with
+  variable-width fonts without inserting layout characters.
+- **Clean editable buffers** — buffer commands create no overlays and add
+  no glue spaces, soft newlines, or discretionary hyphens to the character
+  stream.  `buffer-string`, `char-after`, search, syntax, save, and ordinary
+  Elisp text consumers see the source characters.
 - **Text properties preserved** — faces, colors and other properties
   survive justification; inserted hyphens inherit the face of the word
   they break.
@@ -40,7 +45,7 @@ Clone the repository and add it to your `load-path` (the
 ```elisp
 (add-to-list 'load-path "/path/to/emacs-kp")
 (require 'ekp)
-(require 'ekp-region)   ; buffer/region commands
+(require 'ekp-buffer)   ; buffer/region commands
 ```
 
 Byte-compiling is strongly recommended — the Elisp engine is about
@@ -82,48 +87,77 @@ rebuild.
 
 ## Interactive Use (buffer & region)
 
-`ekp-region.el` turns the string API into buffer-level commands:
+`ekp-buffer.el` turns the string API into buffer-level commands:
 
 ```elisp
-(require 'ekp-region)
+(require 'ekp-buffer)
 ```
 
 - `M-x ekp-justify-region` — justify the region to the window text
   width (with a numeric prefix argument, to that many pixels).  With
   no active region, it justifies the paragraph at point.
 - `M-x ekp-justify-buffer` — justify the whole buffer.
-- `M-x ekp-unjustify-region` / `ekp-unjustify-buffer` — restore the
-  original text **exactly**, including collapsed whitespace runs.
-  Justification is lossless: every synthesized space, soft line break,
-  and soft hyphen carries the original text it replaced, so restoring
-  is a structural transform that also works after you edited the
-  justified text.
-- `M-x ekp-auto-justify-mode` — keep the whole buffer justified to the
-  window width.  Re-flows (debounced by
-  `ekp-auto-justify-resize-delay`) when the window width changes, and
-  after edits re-justifies only the touched paragraphs
-  (`ekp-auto-justify-edit-delay`), so unchanged paragraphs hit the
-  paragraph cache.  Turning the mode off restores the buffer exactly.
+- `M-x ekp-unjustify-region` / `ekp-unjustify-buffer` — remove EKP's
+  display projection.  The source text does not need restoration because
+  buffer layout never replaced it.
+- `M-x ekp-auto-justify-mode` — keep completed hard paragraphs justified
+  while ordinary typing remains stable. The active hard line has a committed
+  projection plus one local edit transaction. Typing within the same native
+  visual row does no whole-line planning and leaves unaffected projected rows
+  untouched. Editing a projected middle row naturalizes only that row's dirty
+  island, so later break anchors stay in place and native wrapping handles
+  local word migration. When input naturally crosses into the next visual
+  row, EKP runs or reuses one complete `ekp-layout-plan` and atomically
+  publishes all completed rows; the new row remains natural. Deleting and
+  reinserting the same source restores the saved projection exactly,
+  including text properties.
+  Point motion never plans or writes layout properties, even when point
+  leaves the paragraph. Global commits happen only at a visual-row crossing,
+  hard newline/paragraph completion, the next real edit elsewhere, explicit
+  refill, or a width/font/layout-context change. There is no edit-idle
+  whole-paragraph snap. Window resize re-flow is debounced by
+  `ekp-auto-justify-resize-delay`.
+  The mode temporarily disables both explicit line truncation and Emacs's
+  narrow partial-window truncation, so a side-by-side editing window still
+  soft-wraps normally. Disabling the mode restores the prior buffer-local
+  or global ownership of both settings.
+  A leading or trailing space/tab on the active line is visible in the
+  same input turn; deleting a following glyph does not hide that source
+  whitespace. Reprojection also preserves an inactive mark as inactive, so
+  width changes do not create an accidental selection.
   While active, the standard **EKP** menu exposes formatting, protection,
   and window-fit diagnostic commands; `C-h m` describes the same workflow.
 
-The buffer is treated as a live document, not just a canvas:
+The projection uses text properties on existing source graphemes only:
 
-- **Saving** writes the *logical* text — soft line breaks, glue
-  spaces and break hyphens never reach disk; the on-screen buffer
-  stays justified even if writing fails or is interrupted.
-  This guarantee applies to whole-buffer saves; an explicit region-only
-  `write-region` writes the selected physical buffer representation.
-- **Searching** (isearch) sees the logical text, so CJK phrases and
-  hyphenated words are found across the layout.
-- **Copying** puts the logical text on the kill ring, so pasted text
-  carries words, not pixel spacing. Existing mode/user substring filters
-  remain active and are restored when the final layout span is removed.
-- Merely enabling the mode never marks the buffer modified (no stray
-  lock files or auto-saves), and `undo` is not fought by the re-flow
-  timer.
+- Existing ASCII spaces receive
+  `((space-width FACTOR) (min-width ((TARGET-PIXELS))))`.
+- A CJK or mixed gap with no source space adds `min-width` to the preceding
+  complete grapheme; the target is its natural advance plus the glue.
+- `line-prefix` supplies indentation.  A break or discretionary hyphen is
+  a replacing display string on an existing complete grapheme.
+- EKP never creates an overlay.  It also never steals a foreign replacing
+  `display`, `line-prefix`, `wrap-prefix`, `composition`, or `invisible`
+  owner; that hard paragraph stays natural and `M-x ekp-diagnose` reports
+  the conflict.
 
-`ekp-region-margin-pixel` (default 2) is subtracted from the window
+Consequently:
+
+- **Elisp APIs and saving** see the original character sequence.  Visual
+  spaces, newlines, and hyphens cannot reach disk or syntax/search logic.
+  `buffer-substring` can still carry the EKP display properties because it
+  preserves text properties; `buffer-substring-no-properties` is the plain
+  source string.
+- **Searching** (including isearch) operates directly on source text, so a
+  word remains one word across a visual discretionary break.
+- **Copying and killing** strip EKP-owned projection properties while
+  composing with any existing substring filter.  Pasted text contains only
+  the logical content and its non-EKP properties.
+- Projection updates run inside `with-silent-modifications`: enabling,
+  editing, resizing, and disabling layout do not create layout-only undo
+  entries, modified-state changes, or character-modified ticks.
+
+`ekp-buffer-margin-pixel` (default 2) is subtracted from the window
 width as a rounding safety margin.
 
 Large buffers (over `ekp-auto-justify-lazy-threshold` characters,
@@ -131,6 +165,13 @@ default 20 000) re-flow visible-first: the portion on screen updates
 synchronously and the rest follows in idle background chunks, with a
 per-tick time budget (`ekp-auto-justify-tick-budget`) and priority
 for whatever you scroll to.
+
+Automatic planning is also bounded per hard paragraph.
+`ekp-auto-justify-paragraph-limit` defaults to 2 048 characters.  A longer
+single paragraph stays naturally wrapped and fully editable instead of
+blocking input in an unbounded Knuth-Plass pass; `M-x ekp-diagnose` reports
+the reason.  Run `M-x ekp-refill-paragraph` when you explicitly want the
+unbounded full-quality pass for that paragraph.
 
 Mode presets for verbatim protection — one call each:
 
@@ -146,8 +187,8 @@ in Org and Markdown buffers when you have not configured your own.
 
 - Block level: paragraphs carrying the `ekp-verbatim` text property
   (`M-x ekp-verbatim-region`), wearing a face listed in
-  `ekp-region-skip-faces` (e.g. `org-block`, `markdown-code-face`), or
-  matched by the buffer-local function `ekp-region-skip-predicate`
+  `ekp-buffer-skip-faces` (e.g. `org-block`, `markdown-code-face`), or
+  matched by the buffer-local function `ekp-buffer-skip-predicate`
   pass through completely untouched.
 - Inline level: spans carrying `ekp-no-break`
   (`M-x ekp-no-break-region`) become rigid atoms — never broken,
@@ -158,7 +199,7 @@ Manual properties are deliberately **current-buffer-session only**:
 plain-text saving and reopening do not persist them. Use
 `M-x ekp-allow-break-region` / `ekp-clear-verbatim-region` to remove them.
 For protection derived from persistent document syntax, use mode faces or
-the buffer-local `ekp-region-skip-predicate` (the Org/Markdown presets do
+the buffer-local `ekp-buffer-skip-predicate` (the Org/Markdown presets do
 this automatically).
 
 ## Typography
@@ -292,6 +333,16 @@ the point.)
 
 ## Known Limitations
 
+- Text properties are buffer-wide, so one buffer cannot carry independent
+  plans for windows of different widths.  EKP uses the narrowest live
+  window as the authoritative width; wider windows can show unused space
+  but never overflow.
+- EKP-owned layout properties are visible to APIs that explicitly inspect
+  text properties.  The character stream is clean; copy/kill removes the
+  owned projection metadata.
+- Tabs and non-ASCII whitespace cannot be shrunk with `space-width`.  If an
+  exact plan would require that operation, EKP leaves the affected hard
+  paragraph natural and reports the conflict.
 - Measurement follows the current buffer's face remappings
   (`text-scale-mode`, themes, `ekp-org-setup`-style tweaks) and
   reserves the truncation-indicator column in windows without
@@ -336,7 +387,7 @@ emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \
 
 The matrix prints every row and exits with status 1 if any fit check fails,
 so the same command can gate local release automation. The verifier is a
-developer tool under `tests/`; it is not loaded by `(require 'ekp-region)`.
+developer tool under `tests/`; it is not loaded by `(require 'ekp-buffer)`.
 
 ## Credits
 

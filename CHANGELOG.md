@@ -8,6 +8,20 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- C-backed core layout and complete resize/reflow now reuse prepared
+  paragraph, DP, and gap geometry and avoid duplicate projection
+  publication. The four-round same-machine gate records p95 values of
+  27.687 ms and 27.487 ms respectively, with exact frozen-C/Elisp parity.
+- Reprojecting a buffer now preserves the mark marker and `mark-active`
+  independently. Showcase width keys and resize reflow no longer turn an
+  old inactive mark into a highlighted region.
+- The unfinished live line now keeps its source-edge whitespace natural.
+  A leading/trailing space or tab appears in the same input turn, and
+  whitespace exposed by backspace is no longer hidden by `display ""`
+  until another glyph arrives.
+- Enabling or disabling a theme, or changing a frame's default font, now
+  invalidates live plan history and reflows every active auto-justify
+  buffer with the new glyph metrics.
 - Changing any Knuth-Plass cost parameter now selects a correctly keyed
   DP/render result immediately; cached paragraphs no longer require
   `ekp-clear-caches`. Structurally equal non-zero-looseness signatures now
@@ -15,14 +29,21 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 - Changing `ekp-default-cws-stretch-pixel` in automatic spacing mode now
   invalidates both paragraph-cache lookup paths immediately. Unchanged
   spacing signatures still reuse the cached paragraph.
-- Saving justified buffers now writes from a logical-text copy instead of
-  temporarily unformatting the display buffer. Filesystem, encoding, and
-  interruption failures therefore leave the visible layout intact and
-  retryable.
+- Buffer layout no longer rewrites the source character stream. Saving,
+  region writes, direct Elisp reads, syntax, and search therefore operate
+  on logical text without a temporary serialization copy.
+- Live editing now separates committed projection from a local dirty edit
+  transaction. Same-row typing performs no whole-hard-line planning,
+  middle-row edits preserve unaffected break anchors, and exact source
+  reversal restores the saved projection `equal-including-properties`.
+- Point-only motion no longer changes live state or projection anywhere,
+  including after leaving the active hard paragraph. Structural commits are
+  owned by visual-row crossing, hard completion, the next real edit
+  elsewhere, explicit refill, and width/font/layout-context changes.
 - Kill/copy integration now composes with and restores an existing
-  `filter-buffer-substring-function`, including DELETE operations. Removing
-  the final layout span outside auto mode also removes unused save/search/
-  copy integrations.
+  `filter-buffer-substring-function`, including DELETE operations, and
+  strips only EKP-owned projection properties from copied text. Removing
+  the final layout span outside auto mode restores the exact prior filter.
 - Dictionary syntax no longer degrades silently: files containing
   libhyphen replacement/slash patterns fail with an explicit condition
   because the fixed-width DP cannot model their conditional rewrites.
@@ -32,6 +53,41 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The core now exposes semantic `ekp-layout-plan`, `ekp-layout-line`, and
+  `ekp-layout-gap` records. The compatible string renderer and the buffer
+  renderer consume the same break, glue, indentation, and discretionary-
+  hyphen decisions.
+- Buffer/region layout is now a pure text-property projection on existing
+  source characters: ASCII spaces combine `space-width` and absolute-pixel
+  `min-width`; zero-source CJK/mixed glue uses `min-width` on a complete
+  grapheme; indentation uses `line-prefix`; and visual breaks/hyphens use
+  replacing display strings. EKP creates no overlay and inserts no layout
+  character into a buffer.
+- Auto-justify now uses stable hard-line transactions. A dirty island stays
+  native between commit events, so ordinary keys neither run DP nor rewrite
+  unrelated properties. Native visual-row crossing atomically republishes
+  every completed row from the unchanged whole-hard-line core plan; the new
+  row remains natural. A buffer-local 16-entry LRU reuses recent
+  text/context plans, and common-prefix signatures minimize writes at
+  commits. IME and resize publication remain generation-checked; no
+  edit-idle or cursor-motion formatter exists.
+- Auto-justify now owns its native soft-wrap precondition. It temporarily
+  disables `truncate-lines` and narrow partial-window truncation, including
+  Emacs's default sub-50-column behavior, then restores the prior values and
+  buffer-local ownership on teardown.
+- One buffer uses the narrowest displayed window as its authoritative
+  width. Foreign replacing display owners and unsupported non-ASCII
+  whitespace shrink keep only the affected hard paragraph natural and are
+  reported by `ekp-diagnose`.
+- Automatic work bounds a single hard paragraph with
+  `ekp-auto-justify-paragraph-limit` (default 2,048 characters). Longer
+  paragraphs remain naturally editable; `ekp-refill-paragraph` is the
+  explicit unbounded quality pass.
+- **Breaking:** the editor integration module is now `ekp-buffer.el` and
+  provides `ekp-buffer`; replace `(require 'ekp-region)` with
+  `(require 'ekp-buffer)`. Module-owned configuration names now use the
+  `ekp-buffer-` prefix. Public commands whose names describe an actual
+  region or buffer operand are unchanged.
 - The bundled dictionary inventory is now 49 reproducible entries with a
   pinned LibreOffice commit, per-file SHA-256/source/license manifest, and a
   portable verifier/exporter. Sanskrit was removed because the pinned
@@ -44,6 +100,21 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Tests
 
+- ERT now covers source/tick/undo invariants, exact ASCII and CJK glue
+  projection, display-only static breaks and hyphens, zero-projection
+  underfilled input, whole-hard-line semantic-prefix selection, non-frozen
+  earlier breaks, common-prefix differential writes, plan-cache reuse,
+  point-motion projection stability, stable dirty transactions, exact
+  reversible restoration, atomic visual-row commits, hard-paragraph
+  completion, IME/stale generations, foreign ownership,
+  narrowest-window policy, inactive/active mark preservation, immediate
+  edge whitespace, consecutive spaces, newline/yank/real-undo paths, and
+  the oversized-paragraph guard.
+  GUI probes verify pixel widths. Reviewed temporal recordings verify
+  width-key selection and immediate edge-whitespace states, plus stable
+  middle-row edits, exact reversible restoration, atomic visual-row
+  commits, zero-work point motion, public yank/undo, resize commits, and
+  hard-paragraph completion without delayed snap or overlays.
 - ERT fixtures now restore every mutable EKP option they isolate. The
   parshape C-bypass regression drives the public formatter, and reusable
   permuted-order plus per-test fresh-process runners prevent alphabetical
@@ -57,6 +128,14 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Performance
 
+- The live-path benchmark records append, historical-plan reuse,
+  point-motion, and hard-boundary latency with plan/cache counters.
+  At the synthetic 80-pixel width, same-row editing and point motion perform
+  zero planning; point-motion p99 is 0.017 ms on C and 0.015 ms on Elisp.
+  Across 291 appends, only 15 visual-row crossings invoke the planner.
+  Those structural commits still exceed the 16 ms p99 frame budget on both
+  backends and are tracked as `issue018`/`task030`; no stale reuse, debounce,
+  skipped publication, or global GC workaround hides the miss.
 - Tokenization now accumulates fragments and joins once per emitted box;
   dense hyphen insertion likewise joins original word slices once.  On the
   1,000–8,000-character adversarial benchmark, the 8,000-character cases

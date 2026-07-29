@@ -30,7 +30,7 @@ jobs:
         run: |
           emacs -Q --batch -L . \
             --eval '(setq byte-compile-error-on-warn t)' \
-            -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
+            -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el ekp-buffer.el
       - name: Run ERT suite (C-module tests auto-skip)
         run: tests/run-tests.sh emacs
       - name: Run ERT suite in permuted order
@@ -62,12 +62,12 @@ jobs:
             --eval "(require 'package-lint)" \
             --eval "(setq package-lint-main-file \"ekp.el\")" \
             -f package-lint-batch-and-exit \
-            ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
+            ekp.el ekp-utils.el ekp-hyphen.el ekp-buffer.el
       - name: checkdoc
         run: |
           emacs -Q --batch \
             --eval "(setq sentence-end-double-space t)" \
-            --eval "(dolist (f '(\"ekp.el\" \"ekp-utils.el\" \"ekp-hyphen.el\" \"ekp-region.el\"))
+            --eval "(dolist (f '(\"ekp.el\" \"ekp-utils.el\" \"ekp-hyphen.el\" \"ekp-buffer.el\"))
                       (checkdoc-file f))" \
             2>&1 | tee checkdoc.log
           test ! -s checkdoc.log
@@ -162,13 +162,13 @@ jobs:
           emacs -Q --batch -L .
           --eval "(setq byte-compile-error-on-warn t)"
           -f batch-byte-compile
-          ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
+          ekp.el ekp-utils.el ekp-hyphen.el ekp-buffer.el
       - name: Run ERT suite (C-module tests auto-skip)
         shell: pwsh
         run: >
           emacs -Q --batch -L . -L tests
           -l tests/ekp-tests.el
-          -l tests/ekp-region-tests.el
+          -l tests/ekp-buffer-tests.el
           -l tests/ekp-gui-tests.el
           -l tests/ekp-c-tests.el
           -f ert-run-tests-batch-and-exit

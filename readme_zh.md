@@ -14,8 +14,12 @@ Emacs-kp 在 Emacs 内部完整实现了 Knuth-Plass 最优断行算法,支持�
   独立可调。
 - **连字符断词** — Frank Liang 算法(TeX 同款),内置 49 份带固定来源
   与 SHA-256 的 Hunspell pattern 词典。
-- **像素级两端对齐** — 每一行渲染宽度精确等于目标像素宽度(通过
-  `display (space :width ...)` 属性实现),支持变宽字体。
+- **像素级两端对齐** — 一份语义 layout plan 同时驱动字符串与 buffer
+  渲染器。字符串 API 使用像素空格;buffer 组合 `space-width` 与绝对
+  像素 `min-width`,不插入排版字符也能支持变宽字体。
+- **干净且可编辑的 buffer** — buffer 命令不创建 overlay,也不会向字符流
+  加入 glue 空格、软换行或断词连字符。`buffer-string`、`char-after`、
+  搜索、语法、保存及普通 Elisp 文本 API 看到的都是源字符。
 - **文本属性保留** — face、颜色等属性完整保留;断词插入的连字符继承所
   在单词的样式。
 - **困难输入不丢内容** — 超长不可断 token(URL、窄栏长词)退化为紧急
@@ -35,7 +39,7 @@ Emacs-kp 在 Emacs 内部完整实现了 Knuth-Plass 最优断行算法,支持�
 ```elisp
 (add-to-list 'load-path "/path/to/emacs-kp")
 (require 'ekp)
-(require 'ekp-region)   ; buffer/region 命令
+(require 'ekp-buffer)   ; buffer/region 命令
 ```
 
 强烈建议字节编译——编译后 Elisp 引擎约快 10 倍。
@@ -72,46 +76,74 @@ Elisp。已启用模块若 signal,则作为后端契约错误直接呈现。若�
 
 ## 交互使用(buffer 与 region)
 
-`ekp-region.el` 把字符串 API 变成 buffer 级命令:
+`ekp-buffer.el` 把字符串 API 变成 buffer 级命令:
 
 ```elisp
-(require 'ekp-region)
+(require 'ekp-buffer)
 ```
 
 - `M-x ekp-justify-region` — 把选区排版到窗口文本宽度(数字前缀参数
   可指定像素宽)。没有激活选区时,排版光标所在段落。
 - `M-x ekp-justify-buffer` — 排版整个 buffer。
-- `M-x ekp-unjustify-region` / `ekp-unjustify-buffer` — **精确**还原
-  原文,包括被折叠的连续空格。排版是无损的:每个合成空隙、软换行、
-  软连字符都携带它所替换的原文,还原是纯结构变换,即使排版后又编辑
-  过也能正确还原。
-- `M-x ekp-auto-justify-mode` — 让整个 buffer 保持按窗口宽度排版。
-  窗口宽度变化时自动重排(防抖延迟 `ekp-auto-justify-resize-delay`);
-  编辑后只重排被改动的段落(空闲延迟 `ekp-auto-justify-edit-delay`),
-  未变段落直接命中段落缓存。关闭 mode 时 buffer 精确恢复原状。
+- `M-x ekp-unjustify-region` / `ekp-unjustify-buffer` — 移除 EKP 的
+  显示投影。buffer 排版从未替换源文本,因此不需要“还原字符”。
+- `M-x ekp-auto-justify-mode` — 让已完成硬段落保持按窗口宽度排版,
+  同时让普通输入保持稳定。活动硬行由“已提交投影 + 一个局部编辑事务”
+  组成。同一原生视觉行内输入时,不会规划整条硬行,也不会改写无关的已
+  投影行。编辑中间已投影行时,只让该行的真实脏岛恢复自然;后续断行锚点
+  保持不动,局部单词迁移交给 Emacs 原生软折行。输入自然跨入下一视觉行
+  时,EKP 才调用或复用一次完整 `ekp-layout-plan`,并原子发布所有已完成
+  行;新行继续自然显示。删除后插回完全相同的源文本会立即逐属性恢复保存
+  的完整投影。
+  仅移动 point 永远不会规划或写布局属性,即使 point 离开段落也是如此。
+  全局提交只发生在视觉行跨越、硬换行/段落完成、下一次真实编辑发生在
+  别处、显式 refill,或宽度/字体/布局上下文变化时。不存在编辑后空闲触发
+  的整段跳变。窗口尺寸变化仍通过
+  `ekp-auto-justify-resize-delay` 防抖。
+  mode 启用期间会临时关闭显式行截断以及 Emacs 的窄分栏窗口截断,
+  因此左右分栏再窄也会正常软折行;关闭 mode 时会精确恢复这两个变量
+  原来的 buffer-local 或全局所有权。
+  活动行首尾输入一个空格或 tab 会在同一次输入中立即可见;删除其后的
+  字符也不会把该源空白隐藏。重投影还会分别保持 mark 位置与
+  `mark-active`,因此改变宽度不会把旧 mark 变成意外选区。
   mode 激活时,标准 **EKP** 菜单提供排版、保护与窗口适配诊断命令;
   `C-h m` 也会说明同一套流程。
 
-buffer 被当作活的文档,而不只是画布:
+投影只使用现有源字素上的文本属性:
 
-- **保存**时写入的是**逻辑文本**——软换行、glue 空格、断词连字符属于
-  排版而非内容,不会落盘;即使写盘失败或中断,屏幕 buffer 也保持排版态。
-  该保证适用于整 buffer 保存;显式只写局部的 `write-region` 会写入所选
-  区域当前的物理 buffer 表示。
-- **搜索**(isearch)看到的是逻辑文本,中文短语与被断词的英文单词
-  都能跨排版找到。
-- **复制**放进 kill ring 的是逻辑文本,粘贴出去的是文字而非像素间距;
-  已有 mode/user substring filter 会继续生效,最后一个排版区间移除后
-  精确恢复。
-- 仅仅开启 mode 不会把 buffer 标记为已修改(不产生锁文件或 auto-save),
-  重排定时器也不再与 `undo` 打架。
+- 源 ASCII 空格使用
+  `((space-width FACTOR) (min-width ((TARGET-PIXELS))))`。
+- 没有源空格的 CJK/混排间距,把 `min-width` 加到前一个完整字素上,
+  目标值为“字素自然 advance + glue”。
+- 缩进使用 `line-prefix`;视觉断行与断词连字符使用挂在现有完整字素上的
+  replacing display string。
+- EKP 绝不创建 overlay,也不抢占外部的 replacing `display`、
+  `line-prefix`、`wrap-prefix`、`composition` 或 `invisible`。有冲突
+  的硬段落保持自然显示,`M-x ekp-diagnose` 会报告原因。
 
-`ekp-region-margin-pixel`(默认 2)是从窗口宽度中扣除的取整安全边距。
+因此:
+
+- **Elisp API 与保存**直接看到原始字符序列,视觉空格、换行和连字符不可能
+  进入磁盘、语法或搜索逻辑。`buffer-substring` 会保留文本属性,所以可能
+  携带 EKP 的显示属性;`buffer-substring-no-properties` 是纯源字符串。
+- **搜索**(包括 isearch)直接搜索源文本,一个拉丁单词不会因为视觉断词而
+  变成两个词。
+- **复制/剪切**会在组合已有 substring filter 的同时移除 EKP 自有投影
+  属性;粘贴内容只包含逻辑文本及非 EKP 属性。
+- 投影更新包在 `with-silent-modifications` 中:启用、编辑、缩放及关闭
+  排版不会制造仅由布局引起的 undo 条目、modified 状态或字符修改 tick。
+
+`ekp-buffer-margin-pixel`(默认 2)是从窗口宽度中扣除的取整安全边距。
 
 大 buffer(超过 `ekp-auto-justify-lazy-threshold` 字符,默认 2 万)
 自动改为可视优先重排:屏幕内的部分同步完成,其余在空闲时后台分块
 补齐,每个时间片有时间预算(`ekp-auto-justify-tick-budget`),并优先
 处理你滚动到的区域。
+
+自动规划还按硬段落设有上限。`ekp-auto-justify-paragraph-limit` 默认
+2 048 字符。更长的单个硬段落保持自然折行与完整可编辑性,避免一次无界
+Knuth-Plass 计算阻塞输入;`M-x ekp-diagnose` 会报告这一原因。确实需要
+对该段执行无上限完整质量排版时,显式运行 `M-x ekp-refill-paragraph`。
 
 各 mode 的 verbatim 保护预设——各一行:
 
@@ -126,9 +158,9 @@ buffer 被当作活的文档,而不只是画布:
 ### 保护代码块与 verbatim 文本
 
 - 段落级:携带 `ekp-verbatim` 文本属性(`M-x ekp-verbatim-region`)、
-  face 在 `ekp-region-skip-faces` 列表中(如 `org-block`、
+  face 在 `ekp-buffer-skip-faces` 列表中(如 `org-block`、
   `markdown-code-face`)、或被 buffer-local 的
-  `ekp-region-skip-predicate` 判定的段落**原样跳过**,一个字节都不动。
+  `ekp-buffer-skip-predicate` 判定的段落**原样跳过**,一个字节都不动。
 - 行内级:带 `ekp-no-break` 属性的区间(`M-x ekp-no-break-region`)
   成为刚性原子——不断行、不断词、空格保持字面宽度——适合行内代码、
   产品名、数字加单位。
@@ -136,7 +168,7 @@ buffer 被当作活的文档,而不只是画布:
 手动属性明确只在**当前 buffer 会话**有效:普通文本保存与重新打开不会
 恢复它们。使用 `M-x ekp-allow-break-region` /
 `ekp-clear-verbatim-region` 清除。需要从持久文档语法派生保护时,使用
-mode face 或 buffer-local 的 `ekp-region-skip-predicate`(Org/Markdown
+mode face 或 buffer-local 的 `ekp-buffer-skip-predicate`(Org/Markdown
 预设会自动这样做)。
 
 ## 排版特性
@@ -250,6 +282,13 @@ Silicon 测得;方法见 DEVELOPER_ZH.md:
 
 ## 已知限制
 
+- 文本属性属于 buffer,不能为同一 buffer 在不同宽度窗口保存两套 plan。
+  EKP 以显示该 buffer 的最窄活动窗口为权威宽度;较宽窗口可能右侧留白,
+  但不会溢出。
+- 显式检查文本属性的 Elisp API 能看到 EKP 自有布局属性;干净保证针对
+  字符流。复制/剪切会移除这些投影元数据。
+- `space-width` 不能缩窄 tab 或非 ASCII 空白。若精确 plan 要求这种操作,
+  EKP 会让受影响硬段落保持自然显示并报告冲突。
 - 测量会跟随当前 buffer 的 face 重映射(`text-scale-mode`、主题等),
   并在无 fringe 的窗口里为截断指示符预留一列,排版行贴合真实显示。
   若在特殊配置下仍出现截断或偏短,在该 buffer 里执行
@@ -287,7 +326,7 @@ emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \
 
 矩阵会打印全部行；任一贴合检查失败时以状态码 1 退出，因此同一命令可
 作为本地发布门禁。验证器是 `tests/` 下的开发工具，
-`(require 'ekp-region)` 不会加载它。
+`(require 'ekp-buffer)` 不会加载它。
 
 ## 致谢
 

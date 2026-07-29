@@ -750,6 +750,92 @@ module is bypassed automatically (it has no looseness support)."
   (dolist (property ekp--layout-marker-properties)
     (should (eq (alist-get property text-property-default-nonsticky) t))))
 
+(ert-deftest ekp-test-layout-plan-maps-source-gaps-and-breaks ()
+  "The semantic plan must retain source offsets for every visual decision."
+  (ekp-tests--with-clean-state
+   (let* ((text "中文 Latin mixed paragraph with enough words to wrap")
+          (plan (ekp-layout-plan text 24))
+          (lines (ekp-layout-plan-lines plan))
+          (last-end 0))
+     (should (ekp-layout-plan-p plan))
+     (should (equal (ekp-layout-plan-string plan) text))
+     (should (= (ekp-layout-plan-line-pixel plan) 24))
+     (should (> (length lines) 1))
+     (dotimes (i (length lines))
+       (let ((line (aref lines i)))
+         (should (<= last-end (ekp-layout-line-source-start line)))
+         (should (< (ekp-layout-line-source-start line)
+                    (ekp-layout-line-source-end line)))
+         (dolist (gap (append (ekp-layout-line-gaps line) nil))
+           (should (memq (ekp-layout-gap-kind gap) '(lws mws cws nws)))
+           (should (<= (ekp-layout-gap-source-start gap)
+                       (ekp-layout-gap-source-end gap)))
+           (should (>= (ekp-layout-gap-target-pixel gap) 0)))
+         (when (< i (1- (length lines)))
+           (should (memq (ekp-layout-line-break-kind line)
+                         '(space cjk hyphen))))
+         (setq last-end (ekp-layout-line-source-end line)))))))
+
+(ert-deftest ekp-test-layout-plan-resolves-paragraph-once ()
+  "One plan must not rebuild the same paragraph cache key downstream."
+  (ekp-tests--with-clean-state
+   (let ((calls 0)
+         (get-para (symbol-function 'ekp--get-para)))
+     (cl-letf (((symbol-function 'ekp--get-para)
+                (lambda (string)
+                  (setq calls (1+ calls))
+                  (funcall get-para string))))
+       (ekp-layout-plan
+        "A mixed 中文 paragraph should resolve one cached paragraph object."
+        24))
+     (should (= calls 1)))))
+
+(ert-deftest ekp-test-layout-plan-omits-zero-source-zero-width-gaps ()
+  "The projection plan must omit gaps that cannot install a property."
+  (ekp-tests--with-clean-state
+   (let ((plan (ekp-layout-plan
+                "中文 mixed paragraph keeps natural gaps off the hot path."
+                480)))
+     (cl-loop
+      for line across (ekp-layout-plan-lines plan)
+      do
+      (cl-loop
+       for gap across (ekp-layout-line-gaps line)
+       do
+       (should
+        (or (< (ekp-layout-gap-source-start gap)
+               (ekp-layout-gap-source-end gap))
+            (> (ekp-layout-gap-target-pixel gap) 0))))))))
+
+(ert-deftest ekp-test-layout-plan-records-discretionary-hyphen ()
+  "A chosen Latin discretionary break must be explicit in the core plan."
+  (ekp-tests--with-clean-state
+   (let* ((plan (ekp-layout-plan
+                 "extraordinary hyphenation demonstration paragraph" 15))
+          (line (seq-find
+                 (lambda (candidate)
+                   (eq (ekp-layout-line-break-kind candidate) 'hyphen))
+                 (append (ekp-layout-plan-lines plan) nil))))
+     (should line)
+     (should (ekp-layout-line-hyphen-p line))
+     (should (= (ekp-layout-line-break-source-start line)
+                (ekp-layout-line-break-source-end line))))))
+
+(ert-deftest ekp-test-public-string-renderer-consumes-layout-plan ()
+  "The public formatter must render the shared semantic plan."
+  (ekp-tests--with-clean-state
+   (let ((calls 0)
+         (original (symbol-function 'ekp-layout-plan)))
+     (cl-letf (((symbol-function 'ekp-layout-plan)
+                (lambda (string width)
+                  (cl-incf calls)
+                  (funcall original string width))))
+       (should (stringp
+                (ekp-pixel-justify
+                 "Shared plans keep the string and buffer renderers aligned"
+                 24)))
+       (should (> calls 0))))))
+
 (ert-deftest ekp-test-gaps-between-brute-force ()
   "`ekp--gaps-between' must equal naive counting."
   (ekp-tests--with-clean-state

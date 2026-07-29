@@ -136,46 +136,106 @@ penalty/flagged 断点),主流程无 `q`/looseness(见 §6),相邻松紧惩
   ≥ 0。
 - 末行右侧不齐(理想 glue + 尾部填充);单盒行的尾部填充钳制 ≥ 0。
 
-`ekp--pixel-justify` 随后剥离行首空格盒(首行除外——缩进)与行尾空格
-盒,在断词处附加连字符(继承所断单词的文本属性)。剥离的宽度**不再**
-重新分配:DP 已经排除了它们(§3)。
+`ekp-layout-plan` 是布局决策与渲染方式之间的表示边界。它把段落盒子
+及其原文 offset、DP 断点、逐行 glue 目标、缩进、边缘剥离和可选断词
+决策组合成 `ekp-layout-plan`、`ekp-layout-line` 和 `ekp-layout-gap`
+记录。plan 不包含 buffer 位置或具体显示机制。
+`ekp-render-layout-string` 用它服务现有字符串 API;buffer 集成可复用
+完全相同的决策,无需重新运行或重新解释 KP 算法。
 
-Glue 渲染为 `(space :width (N))` display 属性,GUI 下像素级精确,
-batch/tty 下按字符列精确。
+两个消费方拥有不同且明确的表示权限。
 
-渲染输出是**无损**的:先用 `ekp--box-offsets` 在原串中定位每个盒子,
-然后每一处合成/隐藏内容都记录它所对应的原文——
+#### 字符串渲染器
 
-| 属性              | 位置            | 值 / 含义                  |
-|-------------------|-----------------|----------------------------|
-| `ekp-glue`        | 合成的 glue 空格| 它所替换的原文             |
-| `ekp-soft-break`  | 插入的 `\n`     | 断点处被吞掉的空白         |
-| `ekp-soft-hyphen` | 插入的连字符    | 仅作标记                   |
-| `ekp-hidden`      | 段落边缘文本    | 原样保留,`display ""` 隐藏|
+`ekp-render-layout-string` 保持公开字符串 API 兼容。它剥离首尾空格
+盒、合成 display 空格与视觉换行,并在选中断词点附加继承样式的连字符。
+返回字符串通过四类私有标记保持无损:
 
-零宽 glue 若对应非空原文,直接渲染为隐藏的原文本身,因此任何字符都
-不会丢失。`ekp-region.el` 对这四类标记做纯结构逆变换
-(`ekp-unjustify-region`)——即使排版后又被编辑过也能精确还原——并在
-其上实现 `ekp-justify-region` / `ekp-auto-justify-mode`。
-`ekp--layout-marker-properties` 统一拥有 renderer/region 的完整标记
-词汇表及其不向新输入继承的契约。
+| 属性              | 位置             | 值 / 含义                 |
+|-------------------|------------------|---------------------------|
+| `ekp-glue`        | 合成的 glue 空格 | 它所替换的原文            |
+| `ekp-soft-break`  | 合成的 `\n`      | 断点处吞掉的边界空白      |
+| `ekp-soft-hyphen` | 合成的连字符     | 仅作标记                  |
+| `ekp-hidden`      | 段落边缘文本     | 保留源文本、显示为空      |
 
-保存是非修改式序列化边界。buffer-local
-`write-region-annotate-functions` 中最先运行
-`ekp-region--write-logical-buffer`,把整 buffer 写入切换到隐藏的逻辑
-副本,显示 buffer 始终不变;后续 annotation 与编码转换继续处理该副本。
-成功写入立即销毁副本;失败时每个源 buffer 最多保留一份,下次写入或
-integration teardown 会替换并清理它。只写局部的 `write-region`
-有意保留 Emacs 的物理 buffer 语义;逻辑序列化边界只覆盖整 buffer
-保存路径。
+这份物理表示只存在于返回字符串中,用于兼容既有 API,绝不会安装到源
+buffer。`ekp--layout-marker-properties` 统一拥有其标记词汇表与不继承
+契约。
 
-复制过滤有明确的单槽 owner。EKP 记录原
-`filter-buffer-substring-function` 是否为 buffer-local,临时恢复该值
-并调用公开的 `filter-buffer-substring` dispatcher,以保留转换与
-DELETE 语义,再从返回字符串中结构化移除 EKP 布局标记。DELETE 的
-lifecycle 清理在临时绑定解除后执行;auto mode 外最后一个排版区间
-消失时,会恢复原 local 值或重新暴露继承值,同时移除
-save/search/change hooks。
+#### Buffer 渲染器
+
+`ekp-buffer.el` 保持 buffer 字符序列不变,只在现有源字符上用文本属性
+投影同一份 plan:
+
+- 源 ASCII 空格:
+  `((space-width FACTOR) (min-width ((TARGET-PIXELS))))`;
+- 无源空格的 CJK/混排 glue:把 `min-width` 加在前一个完整字素上,
+  目标为其自然 advance 加 glue;
+- 缩进:`line-prefix`;
+- 源空白断点:第一个边界字符显示成换行,其余显示为空;
+- CJK 或拉丁断词断点:replacing display string 重现已有完整字素,
+  接上可选连字符和视觉换行。
+
+`ekp-buffer--display` 与 `ekp-buffer--line-prefix` 记录精确 owner。
+移除时只有公开属性的值仍与 EKP owner 值相同时才清除,因此后来的外部
+修改不会被误删。带外部 `display`、`line-prefix`、`wrap-prefix`、
+`composition` 或 `invisible` owner 的段落保持 verbatim。若精确排版
+要求缩窄 tab/非 ASCII 空白也会拒绝,因为 `space-width` 只影响 ASCII
+空格。
+
+所有安装/移除都在 `with-silent-modifications` 内完成,自有属性设为
+nonsticky。因此 buffer 字符、point/mark、modified 状态、undo、字符
+修改 tick 与外部 change hook 仍完全由源编辑拥有。任何 EKP buffer
+路径都不会创建 overlay。重投影直接恢复 mark marker,不会调用会激活
+选区的 `set-mark`,随后独立恢复 `mark-active`;因此布局不能把旧 mark
+变成选区。
+
+保存、普通搜索、语法和直接 Elisp 字符 API 不再需要逻辑文本 adapter:
+真实 buffer 本来就是逻辑文本。复制过滤仍有必要,因为
+`buffer-substring` 按设计保留文本属性。EKP 先组合原有
+`filter-buffer-substring-function`,再只移除自己在复制字符串中的投影
+元数据。
+
+#### 实时流式排版
+
+实时编辑直接消费正常的整段 Knuth-Plass plan,不会把编辑状态交给
+核心规划器:
+
+1. live state 按最窄窗口权威宽度持有最后一次提交的硬行源文本、正常
+   `ekp-layout-plan`、语义签名、投影 span 与稳定断行锚点。
+2. 第一次真实变更打开一个编辑事务。事务先快照提交态,再只移除包含该
+   编辑的最小投影 span 范围中的 EKP 属性;span 对象与无关锚点仍保持
+   注册。
+3. 脏岛内的后续变更交给原生软折行,不规划整条硬行。若逻辑源文本精确
+   回到快照,EKP 直接恢复保存的自有属性区间与 marker 偏移;state、plan、
+   signatures 和 spans 都保持对象身份。
+4. 跨过原生视觉行边界才提交。EKP 计算或复用一次整条硬行 plan,得到
+   全部已完成语义行,并在同一个 command-loop 转换中静默发布真正变化的
+   后缀;新的当前行保持自然。
+5. 其他提交事件只有硬换行/段落完成、下一次真实编辑发生在脏岛之外、
+   显式 refill,以及宽度/字体/face/主题或布局上下文变化。point 移动永远
+   不是提交,即使跨越硬段落也一样;live 路径没有 `post-command-hook`。
+6. 稳定行签名只负责在提交时减少属性写入,buffer-local 16 项 LRU 只负责
+   复用近期文本/上下文 plan。何时允许布局变化由事务控制,不是二者控制。
+7. IME preedit、外部显示所有权、不支持的收缩、超长硬行、过期
+   generation 或发布错误都会 fail closed 到原生显示。半成品投影会
+   回滚,原始错误继续向外报告。
+
+原生软折行是状态机的前提,不能只希望用户碰巧开启它。mode 启用时先
+保存 `truncate-lines` 和 `truncate-partial-width-windows` 的值与
+buffer-local 所有权,再把二者设为 buffer-local `nil`;teardown 时恢复
+原局部值,或移除临时局部绑定让全局值重新接管。这样 Emacs 默认的
+50 列分栏阈值就不会悄悄把窄分栏变成横向滚动。
+
+这个状态模型不需要 live lookahead、push/pull 收敛、逐键整行规划器或
+idle formatter。point 移动本身严格零副作用;之后若在别处发生真实编辑,
+则允许提交先前活动硬行,即使 narrowing 让该行已不在可访问区内。
+
+不存在编辑空闲后整段 formatter。resize/后台工作都带 generation。
+大 buffer 按可见优先的硬段落 chunk 处理;单个硬段落超过
+`ekp-auto-justify-paragraph-limit` 时,自动路径保持自然显示,只有显式
+`ekp-refill-paragraph` 才执行无界完整质量 pass。文本属性属于 buffer,
+所以以最窄活动窗口作为唯一权威宽度。
 
 ### 5.1 断行许可、对齐、悬挂、段形
 
@@ -346,11 +406,11 @@ ekp.el            核心:para 结构、缓存、DP(1D + looseness)、
 ekp-utils.el      分词器(盒子、避头尾)、带 batch/tty 回退的字体
                   检测、C 模块加载
 ekp-hyphen.el     Liang 断词 + 词典注册
-ekp-region.el     buffer/region 命令、ekp-auto-justify-mode,以及
-                  编辑器集成(保存、isearch、kill-ring、undo)
+ekp-buffer.el     纯文本属性 buffer/region 投影、同步实时流动、窗口
+                  lifecycle、复制过滤与诊断
 ekp_c/            C 动态模块(见 ekp_c/README.md)
 dictionaries/     Hunspell 断词模式(来自 LibreOffice)
-tests/            ekp-tests.el、ekp-region-tests.el(ERT)、
+tests/            ekp-tests.el、ekp-buffer-tests.el(ERT)、
                   ekp-fuzz.el(一致性 fuzz)、ekp-bench.el、
                   ekp-demo.el、ekp-showcase.el、示例文本、run-tests.sh
 ```

@@ -22,7 +22,7 @@
 ;;; Code:
 
 (require 'ekp)
-(require 'ekp-region)
+(require 'ekp-buffer)
 
 (defvar ekp-showcase-min-width 140)
 (defvar ekp-showcase-max-width 1200)

@@ -158,8 +158,8 @@ A line ending in punctuation lets part of that glyph hang past the
 flush edge, per `ekp-protrusion-ratios' — CLREQ line-end punctuation
 squeeze and microtype-style hanging periods/hyphens in one mechanism.
 Left-edge protrusion is not implemented: Emacs cannot render text
-before the line origin.  When enabled, reserve the protrusion width
-in the layout (see `ekp-region-protrusion-reserve')."
+before the line origin.  Buffer integration reserves the protrusion
+width in its layout when enabled."
   :type 'boolean
   :group 'ekp)
 
@@ -241,9 +241,26 @@ when non-zero the C module is bypassed automatically."
   ;; Lazily memoized (START . END) offsets of each box in the source
   ;; string (render-time lossless payloads); content-invariant.
   (box-offsets-memo nil)
+  ;; Natural pixel width of each source gap (indexed by right box).
+  ;; Width-independent projection geometry is measured once per paragraph.
+  (gap-naturals-memo nil)
   ;; Glue params snapshot at para creation time (plist)
   glue-params
   (dp-cache nil :type hash-table))
+
+(cl-defstruct (ekp-layout-gap (:constructor ekp-layout-gap--create))
+  "One planned glue between two source boxes."
+  kind left-box right-box source-start source-end natural-pixel target-pixel)
+
+(cl-defstruct (ekp-layout-line (:constructor ekp-layout-line--create))
+  "One display line in an `ekp-layout-plan'."
+  index box-start box-end source-start source-end glues gaps
+  leading-pixel trailing-pixel hyphen-p break-kind
+  break-source-start break-source-end signature)
+
+(cl-defstruct (ekp-layout-plan (:constructor ekp-layout-plan--create))
+  "Semantic KP layout independent of any output representation."
+  string line-pixel boxes offsets lines)
 
 (defvar ekp--para-cache nil
   "Cache: equal-keyed table, content key → ekp-para struct.")
@@ -605,14 +622,6 @@ Positions right after HYPHEN-POSITIONS are forced to `nws'."
           ((eq 'lws type) (plist-get params :lws-ideal))
           ((eq 'mws type) (plist-get params :mws-ideal))
           ((eq 'cws type) (plist-get params :cws-ideal)))))
-
-(defun ekp--para-glue-shrink (para type)
-  "Get shrink amount for TYPE using PARA's stored glue params."
-  (let ((params (ekp-para-glue-params para)))
-    (cond ((or (null type) (eq 'nws type)) 0)
-          ((eq 'lws type) (plist-get params :lws-shrink))
-          ((eq 'mws type) (plist-get params :mws-shrink))
-          ((eq 'cws type) (plist-get params :cws-shrink)))))
 
 (defun ekp--para-glue-stretch (para type)
   "Get stretch amount for TYPE using PARA's stored glue params."
@@ -1647,21 +1656,22 @@ HYPHEN-COUNT)."
                          ekp-consecutive-hyphen-penalty
                          (float ekp-last-line-short-penalty)
                          (if (eq ekp-alignment 'justify)
-                             0
+                           0
                            (ekp--ragged-extra-stretch)))))
+
+(defun ekp--dp-cache-para (para line-pixel)
+  "Return PARA's DP result at LINE-PIXEL, computing it when absent."
+  (or (ekp--dp-get-cached para line-pixel)
+      (if (ekp--c-available-p)
+          (ekp--dp-cache-via-c para line-pixel)
+        (ekp--dp-cache-elisp para line-pixel))))
 
 (defun ekp-dp-cache (string line-pixel)
   "Compute optimal line breaks for STRING at LINE-PIXEL width.
 Uses Knuth-Plass dynamic programming with demerits.
 If `ekp-use-c-module' is non-nil and the C module is available (and
 `ekp-looseness' is 0), the C module computes the DP."
-  (let* ((para (ekp--get-para string))
-         (cached (ekp--dp-get-cached para line-pixel)))
-    (cond
-     (cached cached)
-     ((ekp--c-available-p)
-      (ekp--dp-cache-via-c para line-pixel))
-     (t (ekp--dp-cache-elisp para line-pixel)))))
+  (ekp--dp-cache-para (ekp--get-para string) line-pixel))
 
 (defun ekp--lines-data-from-breaks (para line-pixel breaks)
   "Compute (RESTS . GAPS) lists for BREAKS of PARA at LINE-PIXEL.
@@ -1912,18 +1922,15 @@ deficit) spread across GAPS-LIST using PARA's stored glue params."
                          para glues-types distribution stretch-p)))
       (append '(0) glue-pixels '(0)))))
 
-(defun ekp-line-glues (string line-pixel)
-  "Compute glue pixels for each line after breaking STRING at LINE-PIXEL.
-Returns vector of vectors, each inner vector is glue pixels for one line.
-Each line's glues: [0 glue1 glue2 ... trailing-space]."
-  (let* ((para (ekp--get-para string))
-         (boxes-num (length (ekp-para-boxes para)))
+(defun ekp--line-glues-from-data (para line-pixel dp)
+  "Compute glue vectors from prepared PARA at LINE-PIXEL using DP.
+Each line's glues are [0 glue1 glue2 ... trailing-space]."
+  (let* ((boxes-num (length (ekp-para-boxes para)))
          (glues-types (ekp-para-glues-types para))
          (alignment (or (plist-get (ekp-para-glue-params para) :alignment)
                         'justify))
          (ragged (not (eq alignment 'justify)))
          (hyphen-positions (ekp-para-hyphen-positions para))
-         (dp (ekp-dp-data string line-pixel))
          (breaks (plist-get dp :breaks))
          (lines-rests (plist-get dp :rests))
          (lines-gaps (plist-get dp :gaps))
@@ -2011,6 +2018,13 @@ Each line's glues: [0 glue1 glue2 ... trailing-space]."
         (setq start end)))
     line-glues))
 
+(defun ekp-line-glues (string line-pixel)
+  "Compute glue pixels for each line after breaking STRING at LINE-PIXEL.
+Returns a vector of per-line glue vectors."
+  (let ((para (ekp--get-para string)))
+    (ekp--line-glues-from-data
+     para line-pixel (ekp--dp-cache-para para line-pixel))))
+
 ;;;; Rendering
 
 (defun ekp--box-space-p (box)
@@ -2068,6 +2082,144 @@ leftmost scan aligns them unambiguously."
         (setq i (1+ i))))
     offsets))
 
+(defun ekp--gap-natural-pixels (para offsets)
+  "Return memoized natural gap widths for PARA at OFFSETS."
+  (or (ekp-para-gap-naturals-memo para)
+      (let* ((string (ekp-para-string para))
+             (boxes (ekp-para-boxes para))
+             (naturals (make-vector (length boxes) 0)))
+        (cl-loop
+         for right from 1 below (length boxes)
+         for left = (1- right)
+         for start = (cdr (aref offsets left))
+         for end = (car (aref offsets right))
+         for source = (if (< start end)
+                          (substring string start end)
+                        (car (last (string-glyph-split
+                                    (aref boxes left)))))
+         do (aset naturals right (ekp--measured-width source)))
+        (setf (ekp-para-gap-naturals-memo para) naturals))))
+
+(defun ekp--layout-line-gaps
+    (para offsets naturals box-start box-end glues)
+  "Build semantic gaps for one line of PARA.
+OFFSETS maps source boxes and NATURALS their measured gap widths.
+BOX-START and BOX-END delimit the kept boxes; GLUES contains the
+corresponding leading/interior/trailing pixel widths."
+  (let ((types (ekp-para-glues-types para))
+        (glue-index 1)
+        gaps)
+    (cl-loop for right from (1+ box-start) below box-end do
+             (let* ((left (1- right))
+                    (source-start (cdr (aref offsets left)))
+                    (source-end (car (aref offsets right)))
+                    (natural (aref naturals right))
+                    (target (aref glues glue-index)))
+               (when (or (< source-start source-end)
+                         (> target 0))
+                 (push (ekp-layout-gap--create
+                        :kind (aref types right)
+                        :left-box left
+                        :right-box right
+                        :source-start source-start
+                        :source-end source-end
+                        :natural-pixel natural
+                        :target-pixel target)
+                       gaps))
+               (setq glue-index (1+ glue-index))))
+    (vconcat (nreverse gaps))))
+
+(defun ekp--layout-line-signature (line)
+  "Return the stable layout signature for LINE."
+  (list (ekp-layout-line-source-start line)
+        (ekp-layout-line-source-end line)
+        (ekp-layout-line-break-kind line)
+        (append (ekp-layout-line-glues line) nil)))
+
+(defun ekp--layout-break-kind (string line next-line)
+  "Classify the visual break from LINE to NEXT-LINE in STRING."
+  (cond
+   ((ekp-layout-line-hyphen-p line) 'hyphen)
+   ((string-blank-p
+     (substring string
+                (ekp-layout-line-source-end line)
+                (ekp-layout-line-source-start next-line)))
+    'space)
+   (t 'cjk)))
+
+(defun ekp--finalize-layout-breaks (string lines)
+  "Add source break ranges, kinds, and signatures to LINES for STRING."
+  (dotimes (i (length lines))
+    (let* ((line (aref lines i))
+           (next (and (< i (1- (length lines))) (aref lines (1+ i))))
+           (start (ekp-layout-line-source-end line))
+           (end (if next (ekp-layout-line-source-start next) start)))
+      (setf (ekp-layout-line-break-source-start line) start
+            (ekp-layout-line-break-source-end line) end
+            (ekp-layout-line-break-kind line)
+            (and next (ekp--layout-break-kind string line next))
+            (ekp-layout-line-signature line)
+            (ekp--layout-line-signature line))))
+  lines)
+
+(defun ekp--make-layout-line
+    (para offsets naturals index start end line-glues last-line-p)
+  "Build one semantic layout line from PARA's DP slice START through END.
+OFFSETS maps boxes to source positions and NATURALS stores gap widths.
+INDEX is the line number, and LINE-GLUES holds its pixel widths.
+LAST-LINE-P suppresses a terminal discretionary hyphen."
+  (let* ((boxes (ekp-para-boxes para))
+         (stripped (ekp--strip-line-spaces
+                    (cl-subseq boxes start end) line-glues
+                    (> index 0) t))
+         (kept (nth 0 stripped))
+         (glues (vconcat (nth 1 stripped)))
+         (box-start (+ start (nth 2 stripped)))
+         (box-end (+ box-start (length kept)))
+         (hyphen-p (and (not last-line-p)
+                        (ekp--hyphenate-p
+                         (ekp-para-hyphen-positions para) (1- end)))))
+    (when kept
+      (ekp-layout-line--create
+       :index index :box-start box-start :box-end box-end
+       :source-start (car (aref offsets box-start))
+       :source-end (cdr (aref offsets (1- box-end)))
+       :glues glues
+       :gaps (ekp--layout-line-gaps
+              para offsets naturals box-start box-end glues)
+       :leading-pixel (aref glues 0)
+       :trailing-pixel (aref glues (1- (length glues)))
+       :hyphen-p hyphen-p))))
+
+(defun ekp-layout-plan (string line-pixel)
+  "Return a semantic KP layout plan for STRING at LINE-PIXEL.
+The plan records source offsets, glue targets, breaks, indentation,
+and discretionary hyphens without choosing a string or buffer display
+representation."
+  (let* ((para (ekp--get-para string))
+         (boxes (ekp-para-boxes para))
+         (offsets (or (ekp-para-box-offsets-memo para)
+                      (setf (ekp-para-box-offsets-memo para)
+                            (ekp--box-offsets string (append boxes nil)))))
+         (naturals (ekp--gap-natural-pixels para offsets))
+         (dp (ekp--dp-cache-para para line-pixel))
+         (breaks (plist-get dp :breaks))
+         (line-glues (ekp--line-glues-from-data para line-pixel dp))
+         (start 0)
+         lines)
+    (dotimes (i (length breaks))
+      (let* ((end (nth i breaks))
+             (line (ekp--make-layout-line
+                    para offsets naturals i start end (aref line-glues i)
+                    (= i (1- (length breaks))))))
+        (when line (push line lines))
+        (setq start end)))
+    (setq lines (ekp--finalize-layout-breaks
+                 string (vconcat (nreverse lines))))
+    (ekp-layout-plan--create
+     :string string :line-pixel line-pixel
+     :boxes boxes :offsets offsets :lines lines)))
+
 (defconst ekp--layout-marker-properties
   '(ekp-glue ekp-soft-break ekp-soft-hyphen ekp-hidden ekp-justified)
   "Text properties owned by the lossless render/inversion protocol.")
@@ -2121,6 +2273,57 @@ The `ekp-soft-hyphen' property marks it as synthesized, so
                     (text-properties-at (1- (length box)) box))))
     (apply #'propertize "-" 'ekp-soft-hyphen t props)))
 
+(defun ekp--render-layout-line-string (plan line)
+  "Render LINE from PLAN using the reversible string marker protocol."
+  (let* ((string (ekp-layout-plan-string plan))
+         (boxes (ekp-layout-plan-boxes plan))
+         (offsets (ekp-layout-plan-offsets plan))
+         (start (ekp-layout-line-box-start line))
+         (end (ekp-layout-line-box-end line))
+         (glues (ekp-layout-line-glues line))
+         parts)
+    (cl-loop for box-index from start below end
+             for glue-index from 0 do
+             (push (ekp--render-glue
+                    (aref glues glue-index)
+                    (if (= box-index start) ""
+                      (substring string
+                                 (cdr (aref offsets (1- box-index)))
+                                 (car (aref offsets box-index)))))
+                   parts)
+             (push (aref boxes box-index) parts))
+    (when (ekp-layout-line-hyphen-p line)
+      (push (ekp--hyphen-for-box (aref boxes (1- end))) parts))
+    (push (ekp--render-glue (aref glues (1- (length glues))) "") parts)
+    (apply #'concat (nreverse parts))))
+
+(defun ekp-render-layout-string (plan)
+  "Render PLAN as the public reversible justified string."
+  (let* ((string (ekp-layout-plan-string plan))
+         (lines (ekp-layout-plan-lines plan)))
+    (if (= (length lines) 0)
+        (ekp--hide-string string)
+      (let ((parts (list (ekp--hide-string
+                          (substring string 0
+                                     (ekp-layout-line-source-start
+                                      (aref lines 0)))))))
+        (dotimes (i (length lines))
+          (let ((line (aref lines i)))
+            (when (> i 0)
+              (let ((prev (aref lines (1- i))))
+                (push (propertize
+                       "\n" 'ekp-soft-break
+                       (substring string
+                                  (ekp-layout-line-source-end prev)
+                                  (ekp-layout-line-source-start line)))
+                      parts)))
+            (push (ekp--render-layout-line-string plan line) parts)))
+        (let ((last (aref lines (1- (length lines)))))
+          (push (ekp--hide-string
+                 (substring string (ekp-layout-line-source-end last)))
+                parts))
+        (apply #'concat (nreverse parts))))))
+
 (defun ekp--pixel-justify (string line-pixel)
   "Justify single-paragraph STRING to LINE-PIXEL, with render caching.
 The rendered string for a (paragraph, width) pair is deterministic,
@@ -2150,85 +2353,7 @@ The output is lossless with respect to STRING:
   survives as zero-display `ekp-hidden' text,
 - break hyphens carry `ekp-soft-hyphen'.
 `ekp-unjustify-region' inverts all four structurally."
-  (let* ((para (ekp--get-para string))
-         (boxes (append (ekp-para-boxes para) nil))
-         (offsets (or (ekp-para-box-offsets-memo para)
-                      (setf (ekp-para-box-offsets-memo para)
-                            (ekp--box-offsets string boxes))))
-         (breaks (ekp-line-breaks string line-pixel))
-         (num (length breaks))
-         (lines-glues (ekp-line-glues string line-pixel))
-         (hyphen-positions (ekp-para-hyphen-positions para))
-         (start 0)
-         ;; (rendered-text first-box-idx last-box-idx) per visible line
-         (lines nil))
-    (dotimes (i num)
-      (let* ((end (nth i breaks))
-             (line-boxes (cl-subseq boxes start end))
-             (glue-pixels (append (aref lines-glues i) nil))
-             ;; Strip space boxes:
-             ;; - First line (i=0): keep leading spaces (indentation)
-             ;; - Other lines: strip leading spaces (break artifacts)
-             ;; - All lines: strip trailing spaces
-             (is-first-line (= i 0))
-             (stripped (ekp--strip-line-spaces line-boxes glue-pixels
-                                               (not is-first-line)
-                                               t))
-             (kept (nth 0 stripped))
-             (kept-glues (nth 1 stripped))
-             (first-idx (+ start (nth 2 stripped)))
-             ;; Check if last box of this line needs hyphen
-             (need-hyphen
-              (and (< i (1- num))  ; not last line
-                   (ekp--hyphenate-p hyphen-positions (1- end)))))
-        (when kept
-          (let ((parts nil) (idx first-idx) (glues kept-glues) (n 0))
-            (dolist (box kept)
-              (push (ekp--render-glue
-                     (pop glues)
-                     (if (> idx first-idx)
-                         (substring string
-                                    (cdr (aref offsets (1- idx)))
-                                    (car (aref offsets idx)))
-                       ;; leading glue of a line is always 0px and
-                       ;; replaces nothing; edge text is handled by
-                       ;; soft breaks / hidden runs below
-                       ""))
-                    parts)
-              (push box parts)
-              (setq idx (1+ idx) n (1+ n)))
-            (when need-hyphen
-              (push (ekp--hyphen-for-box (car (last kept))) parts))
-            ;; trailing filler glue (synthesized, replaces nothing)
-            (push (ekp--render-glue (car glues) "") parts)
-            (push (list (apply #'concat (nreverse parts))
-                        first-idx (+ first-idx n -1))
-                  lines)))
-        (setq start end)))
-    (setq lines (nreverse lines))
-    (if (null lines)
-        ;; Defensive: no visible box at all (blank paragraphs are
-        ;; filtered before this function).
-        (ekp--hide-string string)
-      (let* ((first-line (car lines))
-             (last-line (car (last lines)))
-             (parts (list (ekp--hide-string
-                           (substring string 0
-                                      (car (aref offsets (nth 1 first-line)))))))
-             (prev nil))
-        (dolist (line lines)
-          (when prev
-            (push (propertize "\n" 'ekp-soft-break
-                              (substring string
-                                         (cdr (aref offsets (nth 2 prev)))
-                                         (car (aref offsets (nth 1 line)))))
-                  parts))
-          (push (nth 0 line) parts)
-          (setq prev line))
-        (push (ekp--hide-string
-               (substring string (cdr (aref offsets (nth 2 last-line)))))
-              parts)
-        (apply #'concat (nreverse parts))))))
+  (ekp-render-layout-string (ekp-layout-plan string line-pixel)))
 
 (defun ekp--validate-width (line-pixel)
   "Signal a user error unless LINE-PIXEL is a positive integer."

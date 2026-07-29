@@ -11,7 +11,7 @@ EMACS=emacs   # or /path/to/Emacs
 # Byte-compile with warnings as errors (CI does this)
 $EMACS -Q --batch -L . \
   --eval '(setq byte-compile-error-on-warn t)' \
-  -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el ekp-region.el
+  -f batch-byte-compile ekp.el ekp-utils.el ekp-hyphen.el ekp-buffer.el
 
 # Run the ERT suite (C-module tests auto-skip if not built)
 tests/run-tests.sh $EMACS
@@ -36,21 +36,23 @@ dictionaries/update.sh check
   to the demerits or line-metric formulas must touch both
   `ekp--dp-run-1d` (Elisp) and `dp_process_position` (`ekp_c/ekp_kp.c`),
   and the fuzz suite must stay at 300/300.
-- **The layout is lossless.** The renderer's marker properties
-  (`ekp-glue`, `ekp-soft-break`, `ekp-soft-hyphen`, `ekp-hidden`) must
-  round-trip exactly through `ekp-unjustify-region`.
+- **The two renderers have different rights.** The string renderer's
+  physical marker vocabulary (`ekp-glue`, `ekp-soft-break`,
+  `ekp-soft-hyphen`, `ekp-hidden`) stays lossless and compatible. The
+  buffer renderer must create no overlay or source character and may use
+  only EKP-owned text properties on existing characters.
 - Any C-module API change bumps `EKP_VERSION_MINOR` and the matching
   `ekp-c-module-required-version`, and rebuilds the module.
 - New behavior needs an ERT test.  Buffer-level behavior (save,
   isearch, undo, kill/yank, mode interactions) goes in
-  `tests/ekp-region-tests.el`.
+  `tests/ekp-buffer-tests.el`.
 
 ## Style
 
 - `lexical-binding: t` everywhere; keep byte-compilation warning-free.
 - `checkdoc` clean (CI enforces it): imperative docstring first lines,
   arguments mentioned in uppercase, two spaces after a sentence.
-- `package-lint` clean: the `ekp-` / `ekp-region-` namespaces, proper
+- `package-lint` clean: the `ekp-` / `ekp-buffer-` namespaces, proper
   autoload cookies on interactive entry points.
 - Match the surrounding code; keep comments about *why*, not *what*.
 

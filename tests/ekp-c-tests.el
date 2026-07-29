@@ -11,6 +11,10 @@
 (require 'cl-lib)
 (require 'ekp)
 
+(declare-function ekp-c-break-batch "ext:ekp")
+(declare-function ekp-c-break-with-arrays "ext:ekp")
+(declare-function ekp-c-set-penalties "ext:ekp")
+
 (defun ekp-c-tests--available ()
   "Return non-nil when a compatible C module can be loaded."
   (or ekp-c-module-loaded
