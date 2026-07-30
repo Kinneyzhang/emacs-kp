@@ -2,27 +2,36 @@
 
 ## issue018 [ ] Unique live appends miss the frame budget at very narrow widths
 
-- **Status:** Re-profiled after `task031`; `task030` is unblocked.
-- **Summary:** Stable transactions removed per-key whole-hard-line planning.
-  The synthetic 80-pixel workload now performs zero planning on ordinary
-  same-row edits, but structural row-crossing commits still make append p99
-  exceed the 16 ms frame budget.
+- **Status:** Exact incremental implementation verified; the locked
+  source-instrumented gate remains open.
+- **Summary:** Stable transactions removed per-key whole-hard-line planning,
+  and task030 now incrementally extends paragraph preparation, Elisp DP
+  state, and layout lines only at structural row crossings. Byte-compiled
+  production paths are within the 16 ms frame budget; the deliberately
+  source-loaded, fully instrumented evaluator still exceeds it.
 - **Environment:** Emacs 30.2 on macOS, C backend 1.6, benchmark width
   fixed at 80 px, `gc-cons-threshold` bound to
   `most-positive-fixnum` so mutator work is measured without GC pauses.
 - **Repro:**
-  1. Load the C backend.
-  2. Run `tests/ekp-buffer-live-bench.el` with GC excluded.
-  3. Inspect the `append` row.
+  1. For the production-shaped check, byte-compile the four production
+     Elisp files into a temporary package root, put that root first on
+     `load-path`, and run `tests/ekp-buffer-live-bench.el` once with the C
+     module loaded and once with `ekp-use-c-module` nil.
+  2. Confirm `ekp--dp-run-1d` is byte code and inspect the `append` and
+     `hard-boundary` rows.
+  3. For the locked source/instrumentation matrix, run
+     `tests/run-live-commit-evaluator.sh` and inspect
+     `.omx/goals/performance/narrow-live-commit/latest-report.json`.
 - **Expected vs Actual:**
   - Expected: live append p99 remains below the 16 ms interaction budget,
     including narrow windows.
-  - Actual: the final task031 GC-excluded runs record only 15 permitted
-    structural plans across 291 appends. C measures median 2.177 ms and p99
-    51.170 ms; Elisp measures median 2.176 ms and p99 187.499 ms. Same-row
-    cache-revisit work records zero plans (C p99 1.627 ms; Elisp p99
-    1.502 ms), while point motion records zero plan/cache calls (C p99
-    0.017 ms; Elisp p99 0.015 ms).
+  - Actual production path: three repeated byte-compiled public-command runs
+    measure append p99 at 1.158–1.326 ms for C and 1.429–1.438 ms for pure
+    Elisp. Hard-boundary p99 is 1.251–1.363 ms and 1.457–1.470 ms.
+  - Actual locked evaluator: four interleaved source-instrumented rounds
+    measure C at 25.490/25.785 ms p95/p99 and Elisp at
+    43.860/47.578 ms. These improve 77.78/78.37% and 92.54/92.03% over the
+    frozen baseline but still miss the absolute 16 ms stress target.
 - **Investigation:**
   - The task029 point-motion change is not the cause. Navigation is now a
     zero-work path and does not enter planning or projection publication.
@@ -38,6 +47,15 @@
     the current performance claim.
   - Both backends still miss p99 at structural boundaries, so task030 must
     evaluate both rather than optimize only the C wrapper.
+  - The frozen C wrapper measured only 2.615/2.655 ms p95/p99 and the
+    candidate 0.697/0.701 ms. Paragraph preparation, DP state reconstruction,
+    plan construction, and publication owned the end-to-end cost.
+  - Byte compilation removes most of the remaining pure-Elisp interpreter
+    and closure overhead. This explains why the production path passes while
+    the frozen source-instrumented stress gate remains red; neither result is
+    substituted for the other.
+  - Rust is not selected. It would use the same `emacs_env` ABI and cannot
+    remove Elisp-owned font measurement, transaction, or projection work.
 - **Required Outcome:**
   - Diagnose and reduce unique-state narrow-width append planning cost
     without changing KP output semantics, the core DP contract, C ABI, or
@@ -47,13 +65,19 @@
     invalidation.
   - Preserve the task029 invariant that point-only motion performs zero
     plan, cache, and text-property work.
-- **Fix:** Deferred to `task030`; the prerequisite correctness replacement
-  is complete. Optimize only the surviving structural-commit path.
-- **Verification:** Future work must use a reproducible width matrix,
-  profiler evidence, result-equivalence tests, default-GC and GC-excluded
-  runs, and GUI input evidence.
-- **User Confirmation:** Not applicable until a performance change is
-  implemented.
+- **Fix:** `task030` retains exact prepared paragraph/context data, extends
+  property-free append tails from the last complete-word boundary, resumes
+  pure-Elisp DP from a safe reachable state, reuses common layout lines, and
+  reconstructs only the live dirty source island. Unsupported contexts take
+  the unchanged full path. C int32 validation now performs one extraction.
+- **Verification:** Exact baseline/C/Elisp hashes and append-chain
+  equivalence pass across 64/80/96/128/160 px, 2/4/8/16-row fixtures,
+  default/excluded GC, unsafe fallbacks, and randomized chains. Normal and
+  random-order ERT pass 199/199; 300 fuzz cases, warning-clean production/C
+  compilation, 9/9 C tests, release checks, and reviewed temporal GUI
+  evidence pass.
+- **User Confirmation:** Pending; the formal source-instrumented performance
+  target also remains open.
 - **Resolved At:** Unresolved.
 - **Resolved By:** Pending.
 - **Commit:** Pending.

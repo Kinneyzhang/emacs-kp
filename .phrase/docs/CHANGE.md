@@ -78,6 +78,10 @@
   27.687/27.487 ms with exact layout parity (`task032` complete;
   `issue020` awaits user confirmation):
   `.phrase/phases/phase-kp-overhaul-20260726/change_c_resize_latency_20260729.md`
+- 2026-07-30 implement exact incremental live-append preparation, DP, and
+  projection reuse (`task030` implementation verified; locked
+  source-instrumented 16 ms gate and `issue018` remain open):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_narrow_live_append_latency_20260730.md`
 
 ## phase-doc-improvement-20260125
 - See `.phrase/phases/phase-doc-improvement-20260125/change_log.md`

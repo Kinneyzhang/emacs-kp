@@ -790,6 +790,85 @@ module is bypassed automatically (it has no looseness support)."
         24))
      (should (= calls 1)))))
 
+(defun ekp-test--exact-append-plan (plan text width)
+  "Return PLAN extended to TEXT after proving fresh parity at WIDTH."
+  (let ((incremental (ekp-layout-plan-append plan text width)))
+    (should incremental)
+    (let ((actual (ekp-render-layout-string incremental)))
+      (ekp-clear-caches)
+      (should
+       (equal-including-properties
+        actual
+        (ekp-render-layout-string
+         (ekp-layout-plan text width)))))
+    incremental))
+
+(ert-deftest ekp-test-layout-plan-append-matches-fresh-plan ()
+  "Incremental plain-text appends must equal a fresh global plan."
+  (ekp-tests--with-clean-state
+   (dolist (use-c (if (ekp-tests--c-available) '(nil t) '(nil)))
+     (let* ((ekp-use-c-module use-c)
+            (width 24)
+            (text "alpha beta gamma changes responsive")
+            (plan (ekp-layout-plan text width)))
+       (dolist (suffix '("ly" " " "a" " 中文" " mixed" " continuation"))
+         (setq text (concat text suffix)
+               plan (ekp-test--exact-append-plan plan text width)))))))
+
+(ert-deftest ekp-test-layout-plan-append-varied-chains-match-fresh ()
+  "Diverse character-by-character append chains retain exact parity."
+  (ekp-tests--with-clean-state
+   (dolist (use-c (if (ekp-tests--c-available) '(nil t) '(nil)))
+     (dolist (case '((justify nil 18 "ly  中文，punctuation.")
+                     (justify 4 27 "extraordinary-hyphenation")
+                     (ragged-right nil 21 " mixed 拉丁 alpha beta")
+                     (center nil 31 "  repeated  spaces 文末")))
+       (let* ((ekp-use-c-module use-c)
+              (ekp-alignment (nth 0 case))
+              (ekp-first-line-indent (nth 1 case))
+              (width (nth 2 case))
+              (text "alpha beta gamma")
+              (plan (ekp-layout-plan text width)))
+         (dolist (character (string-to-list (nth 3 case)))
+           (setq text (concat text (char-to-string character))
+                 plan (ekp-test--exact-append-plan
+                       plan text width))))))))
+
+(ert-deftest ekp-test-layout-plan-append-recomputes-dirty-boundary ()
+  "The first retokenized boundary must not retain stale break metadata."
+  (ekp-tests--with-clean-state
+   (dolist (use-c (if (ekp-tests--c-available) '(nil t) '(nil)))
+     (let* ((ekp-use-c-module use-c)
+            (text "alpha beta  g-o。ycfrnqcc。( (")
+            (width 12)
+            (plan (ekp-layout-plan text width)))
+       (ekp-test--exact-append-plan plan (concat text "l") width)))))
+
+(ert-deftest ekp-test-layout-plan-append-rejects-unsafe-contexts ()
+  "The append path rejects properties and non-1D layout contexts."
+  (ekp-tests--with-clean-state
+   (let* ((text "alpha beta gamma")
+          (plan (ekp-layout-plan text 24))
+          (plain (concat text " delta"))
+          (styled (copy-sequence plain)))
+     (add-text-properties 0 5 '(face bold) styled)
+     (should-not (ekp-layout-plan-append plan styled 24))
+     (should-not
+      (ekp-layout-plan-append plan (concat text "\nnext") 24))
+     (should-not
+      (ekp-layout-plan-append plan (concat text "\ttail") 24))
+     (should-not (ekp-layout-plan-append plan plain 25))
+     (let ((ekp-looseness 1))
+       (should-not (ekp-layout-plan-append plan plain 24)))
+     (let ((ekp-parshape '((0 . 24))))
+       (should-not (ekp-layout-plan-append plan plain 24)))
+     (let ((ekp-first-line-indent 4))
+       (should-not (ekp-layout-plan-append plan plain 24)))
+     (let ((ekp-alignment 'center))
+       (should-not (ekp-layout-plan-append plan plain 24)))
+     (let ((ekp-latin-lang "de_DE"))
+       (should-not (ekp-layout-plan-append plan plain 24))))))
+
 (ert-deftest ekp-test-layout-plan-omits-zero-source-zero-width-gaps ()
   "The projection plan must omit gaps that cannot install a property."
   (ekp-tests--with-clean-state

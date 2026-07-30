@@ -146,6 +146,10 @@ command and is not limited by this value."
   '(ekp-justified ekp-buffer--display ekp-buffer--line-prefix)
   "Text properties that identify EKP's buffer projection.")
 
+(defconst ekp-buffer--non-ascii-whitespace-regexp
+  "[\t\n\r\v\f\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]"
+  "Unicode whitespace that cannot use the ASCII-space projection path.")
+
 (dolist (property ekp-buffer--owned-properties)
   (setf (alist-get property text-property-default-nonsticky) t))
 
@@ -279,25 +283,26 @@ The narrowest live window wins because text properties are buffer-wide."
            (setq position (1+ position)))
          (= position end))))
 
-(defun ekp-buffer--unsupported-gap-p (gap base)
-  "Return non-nil when GAP cannot be projected at BASE."
-  (let ((start (+ base (ekp-layout-gap-source-start gap)))
-        (end (+ base (ekp-layout-gap-source-end gap))))
-    (and (< start end)
-         (not (ekp-buffer--ascii-space-range-p start end))
-         (< (ekp-layout-gap-target-pixel gap)
-            (ekp-layout-gap-natural-pixel gap)))))
-
-(defun ekp-buffer--unsupported-gap (plan base)
-  "Return the first gap in PLAN that cannot be projected at BASE."
-  (catch 'unsupported
-    (cl-loop
-     for line across (ekp-layout-plan-lines plan)
-     do
-     (cl-loop
-      for gap across (ekp-layout-line-gaps line)
-      when (ekp-buffer--unsupported-gap-p gap base)
-      do (throw 'unsupported gap)))))
+(defun ekp-buffer--unsupported-gap (plan _base)
+  "Return the first gap in PLAN that cannot be projected."
+  (let ((string (ekp-layout-plan-string plan)))
+    (when (string-match-p ekp-buffer--non-ascii-whitespace-regexp string)
+      (catch 'unsupported
+        (cl-loop
+         for line across (ekp-layout-plan-lines plan)
+         do
+         (cl-loop
+          for gap across (ekp-layout-line-gaps line)
+          for start = (ekp-layout-gap-source-start gap)
+          for end = (ekp-layout-gap-source-end gap)
+          when (and (< start end)
+                    (< (ekp-layout-gap-target-pixel gap)
+                       (ekp-layout-gap-natural-pixel gap)))
+          do
+          (while (and (< start end) (= (aref string start) ?\s))
+            (setq start (1+ start)))
+          (when (< start end)
+            (throw 'unsupported gap))))))))
 
 (defun ekp-buffer--record-conflict (beg end reason)
   "Record that BEG through END stayed verbatim because of REASON."
@@ -1078,6 +1083,21 @@ LINE-END lets insertion at the hard-line end belong to its last span."
   "Return BEG through END with EKP projection properties removed."
   (ekp-buffer--strip-owned-from-string (buffer-substring beg end)))
 
+(defun ekp-buffer--current-live-source ()
+  "Return the current logical source by replacing only the dirty island."
+  (let* ((state ekp-buffer--live-state)
+         (edit ekp-buffer--live-edit)
+         (source (ekp-buffer--live-state-source state))
+         (start (ekp-buffer--live-edit-dirty-start edit))
+         (finish (ekp-buffer--live-edit-dirty-finish edit))
+         (dirty-beg
+          (marker-position (ekp-buffer--live-edit-dirty-beg edit)))
+         (dirty-end
+          (marker-position (ekp-buffer--live-edit-dirty-end edit))))
+    (concat (substring source 0 start)
+            (buffer-substring dirty-beg dirty-end)
+            (substring source finish))))
+
 (defun ekp-buffer--live-context (width)
   "Return non-text layout context for a live plan at WIDTH."
   (list (ekp--dp-key width)
@@ -1121,13 +1141,26 @@ LINE-END lets insertion at the hard-line end belong to its last span."
     (setcdr (nthcdr 15 ekp-buffer--live-plan-cache) nil))
   plan)
 
+(defun ekp-buffer--live-append-plan (key text width)
+  "Extend the committed live plan for KEY to TEXT at WIDTH."
+  (let ((old-key (and ekp-buffer--live-state
+                      (ekp-buffer--live-state-key
+                       ekp-buffer--live-state)))
+        (old-plan (and ekp-buffer--live-state
+                       (ekp-buffer--live-state-plan
+                        ekp-buffer--live-state))))
+    (when (and old-key old-plan
+               (equal (cadr key) (cadr old-key)))
+      (ekp-layout-plan-append old-plan text width))))
+
 (defun ekp-buffer--live-plan-entry (text width)
   "Return the cache entry for TEXT at WIDTH."
   (let ((key (list text (ekp-buffer--live-context width))))
     (cons key
           (or (ekp-buffer--live-cache-get key)
               (ekp-buffer--live-cache-put
-               key (ekp-layout-plan text width))))))
+               key (or (ekp-buffer--live-append-plan key text width)
+                       (ekp-layout-plan text width)))))))
 
 (defun ekp-buffer--single-line-live-p (text width)
   "Return non-nil if TEXT is conservatively known to fit WIDTH."
@@ -1415,7 +1448,11 @@ Keep BOUNDARY's semantic row natural unless COMPLETE is non-nil."
                                  ekp-buffer--live-edit)))
                           (point))
                       end)))
-           (text (and beg end (ekp-buffer--logical-substring beg end))))
+           (text
+            (and beg end
+                 (if ekp-buffer--live-edit
+                     (ekp-buffer--current-live-source)
+                   (ekp-buffer--logical-substring beg end)))))
       (when (and beg end width text)
         (condition-case err
             (ekp-buffer--publish-semantic-prefix
@@ -1443,25 +1480,31 @@ Keep BOUNDARY's semantic row natural unless COMPLETE is non-nil."
         (dolist (range (ekp-buffer--paragraph-ranges old-start active-beg))
           (ekp-buffer--layout-paragraph
            (car range) (cdr range) ekp-buffer--auto-width))))
+    (ekp-buffer--release-live-edit)
     (ekp-buffer--activate-live-paragraph active-beg active-end)
-    (ekp-buffer--publish-live-prefix end)
-    (ekp-buffer--release-live-edit)))
+    (ekp-buffer--publish-live-prefix end)))
 
-(defun ekp-buffer--baseline-logical-source ()
-  "Return the current transaction baseline without EKP projection."
-  (ekp-buffer--strip-owned-from-string
-   (copy-sequence
-    (ekp-buffer--live-edit-baseline-source ekp-buffer--live-edit))))
+(defun ekp-buffer--baseline-logical-source (&optional start finish)
+  "Return the transaction baseline without EKP projection.
+When START and FINISH are non-nil, copy only that source interval."
+  (let ((source (ekp-buffer--live-edit-baseline-source
+                 ekp-buffer--live-edit)))
+    (ekp-buffer--strip-owned-from-string
+     (if start
+         (substring source start finish)
+       (copy-sequence source)))))
 
 (defun ekp-buffer--live-baseline-restored-p ()
   "Return non-nil when source and foreign properties match the baseline."
-  (let* ((state ekp-buffer--live-state)
-         (beg (marker-position (ekp-buffer--live-state-beg state)))
-         (end (marker-position (ekp-buffer--live-state-end state))))
+  (let* ((edit ekp-buffer--live-edit)
+         (beg (marker-position (ekp-buffer--live-edit-dirty-beg edit)))
+         (end (marker-position (ekp-buffer--live-edit-dirty-end edit)))
+         (start (ekp-buffer--live-edit-dirty-start edit))
+         (finish (ekp-buffer--live-edit-dirty-finish edit)))
     (and beg end
          (equal-including-properties
-          (ekp-buffer--logical-substring beg end)
-          (ekp-buffer--baseline-logical-source)))))
+          (buffer-substring beg end)
+          (ekp-buffer--baseline-logical-source start finish)))))
 
 (defun ekp-buffer--baseline-owned-properties (position)
   "Return EKP-owned properties at baseline string POSITION."

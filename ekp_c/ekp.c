@@ -47,18 +47,12 @@ static bool lisp_predicate(emacs_env *env, const char *name, emacs_value value)
 
 static bool i32_value_p(emacs_env *env, emacs_value value)
 {
-    if (!lisp_predicate(env, "integerp", value))
+    intmax_t integer = env->extract_integer(env, value);
+    if (env->non_local_exit_check(env) != emacs_funcall_exit_return) {
+        env->non_local_exit_clear(env);
         return false;
-
-    emacs_value min = env->make_integer(env, INT32_MIN);
-    emacs_value max = env->make_integer(env, INT32_MAX);
-    bool at_least_min = env->is_not_nil(
-        env, env->funcall(
-            env, env->intern(env, ">="), 2, (emacs_value[]){value, min}));
-    bool at_most_max = env->is_not_nil(
-        env, env->funcall(
-            env, env->intern(env, "<="), 2, (emacs_value[]){value, max}));
-    return at_least_min && at_most_max;
+    }
+    return integer >= INT32_MIN && integer <= INT32_MAX;
 }
 
 static bool finite_number_p(emacs_env *env, emacs_value value)

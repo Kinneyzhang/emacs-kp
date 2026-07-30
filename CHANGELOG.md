@@ -128,14 +128,17 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Performance
 
-- The live-path benchmark records append, historical-plan reuse,
-  point-motion, and hard-boundary latency with plan/cache counters.
-  At the synthetic 80-pixel width, same-row editing and point motion perform
-  zero planning; point-motion p99 is 0.017 ms on C and 0.015 ms on Elisp.
-  Across 291 appends, only 15 visual-row crossings invoke the planner.
-  Those structural commits still exceed the 16 ms p99 frame budget on both
-  backends and are tracked as `issue018`/`task030`; no stale reuse, debounce,
-  skipped publication, or global GC workaround hides the miss.
+- Live structural commits now extend prepared paragraph data from the last
+  complete-word boundary, resume pure-Elisp DP from a safe retained state,
+  reuse unchanged layout lines, and reconstruct only the buffer's dirty
+  source island. Three repeated byte-compiled public-command runs at 80
+  pixels measure append p99 at 1.158–1.326 ms for C and 1.429–1.438 ms for
+  pure Elisp; same-row editing and point motion still perform zero planning.
+  The stricter frozen source-instrumented matrix improves C p99 by 78.37% to
+  25.785 ms and Elisp p99 by 92.03% to 47.578 ms, but remains openly red
+  against its locked 16 ms absolute stress target (`issue018`/`task030`).
+  No stale reuse, debounce, skipped publication, or global GC workaround
+  hides either result.
 - Tokenization now accumulates fragments and joins once per emitted box;
   dense hyphen insertion likewise joins original word slices once.  On the
   1,000–8,000-character adversarial benchmark, the 8,000-character cases
@@ -157,6 +160,10 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### C module (1.6)
 
+- Signed 32-bit module inputs now use one `extract_integer` validation
+  instead of calling Lisp `integerp`, `>=`, and `<=` for every value. The
+  frozen 80-pixel candidate module layer measures 0.697/0.701 ms p95/p99,
+  down from 2.615/2.655 ms, without changing the ABI or DP output.
 - The 15-field single and batch APIs now preflight vector shape, lengths,
   scalar types, and signed 32-bit input range before extraction. Caller
   errors signal `ekp-c-invalid-input`; allocation/no-result still returns

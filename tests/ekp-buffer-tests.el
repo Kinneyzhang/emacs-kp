@@ -818,6 +818,38 @@
                  (buffer-substring (point-min) (point-max))
                  baseline))))))
 
+(ert-deftest ekp-buffer-test-live-source-rebuilds-only-dirty-island ()
+  "A live source rebuild must not rescan the projected paragraph."
+  (let ((text
+         "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu"))
+    (ekp-buffer-test--with-mode text 20
+      (let* ((middle
+              (nth 1
+                   (ekp-buffer--live-state-spans
+                    ekp-buffer--live-state)))
+             (beg (marker-position (ekp-buffer--span-beg middle)))
+             (end (marker-position (ekp-buffer--span-end middle)))
+             (space (save-excursion
+                      (goto-char beg)
+                      (search-forward " " end t)))
+             (logical-substring
+              (symbol-function 'ekp-buffer--logical-substring))
+             (rescans 0))
+        (should space)
+        (goto-char (1- space))
+        (delete-char 1)
+        (should ekp-buffer--live-edit)
+        (cl-letf (((symbol-function 'ekp-buffer--logical-substring)
+                   (lambda (&rest arguments)
+                     (setq rescans (1+ rescans))
+                     (apply logical-substring arguments))))
+          (should
+           (equal-including-properties
+            (ekp-buffer--current-live-source)
+            (ekp-buffer--logical-substring
+             (point-min) (point-max)))))
+        (should (= rescans 1))))))
+
 (ert-deftest ekp-buffer-test-point-leaving-paragraph-is-zero-work ()
   "Cursor motion across hard lines cannot commit or rewrite live state."
   (let ((text

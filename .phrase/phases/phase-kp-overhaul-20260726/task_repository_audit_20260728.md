@@ -590,6 +590,36 @@
   - Dependency: `task031` is complete. Optimize only the surviving
     structural-commit path; the obsolete per-keystroke whole-hard-line path
     no longer exists.
+  - Implementation checkpoint: layout plans now retain prepared paragraph
+    and context data. Exact plain-text appends retokenize only from the last
+    complete-word boundary, rebuild derived vectors from the first dirty box,
+    resume pure-Elisp 1D DP from the earliest state that can reach the new
+    tail, and reuse unchanged line records. The buffer reconstructs only its
+    dirty source island and falls back to the complete planner for every
+    unsupported context. C signed-int validation now uses one module
+    extraction instead of three Lisp predicate/comparison calls.
+  - Architecture decision: keep the C module. The frozen baseline places C
+    DP at only 2.615/2.655 ms p95/p99, and the candidate at
+    0.697/0.701 ms. Rust would cross the same Emacs module ABI while leaving
+    Elisp tokenization, measurement, transactions, and property publication
+    unchanged.
+  - Performance checkpoint: four interleaved source-instrumented rounds
+    reduce 80-pixel C p95/p99 from 114.717/119.201 ms to
+    25.490/25.785 ms (77.78/78.37%) and Elisp from 588.017/597.093 ms to
+    43.860/47.578 ms (92.54/92.03%). Exact parity, zero-work ordinary keys,
+    valid GC exclusion, conflict freedom, and all-width non-regression pass.
+  - Production checkpoint: with production files byte-compiled, three
+    repeated public-command runs measure append p99 at 1.158–1.326 ms for C
+    and 1.429–1.438 ms for pure Elisp; hard-boundary p99 is
+    1.251–1.363 ms and 1.457–1.470 ms respectively.
+  - Verification checkpoint: normal and random-order ERT pass 199/199;
+    300-case C/Elisp fuzz, portable warning-clean C build and 9/9 C tests,
+    warning-as-error production compilation, release checks, exact
+    append-chain review, and the 11-action/33-checkpoint temporal GUI run
+    pass.
+  - Remaining gate: the locked source-instrumented evaluator still exceeds
+    its absolute 16 ms target for C and Elisp. Keep `task030` open rather
+    than redefining the evaluator after observing the result.
 
 - task031 [x] Replace the overloaded live frontier with committed projection,
   a dirty edit transaction, and atomic structural commits.

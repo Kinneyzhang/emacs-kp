@@ -7,6 +7,12 @@ The division of labor: **Elisp owns all font-dependent data**
 module runs only the O(n²) dynamic program.  This keeps the two engines
 byte-identical in output while making the hot loop native.
 
+The module remains C deliberately. A Rust implementation would still expose
+the Emacs C module ABI and consume the same Elisp-prepared vectors. Current
+live-commit profiles put the candidate module call below one millisecond, so
+a Rust rewrite would add Cargo, target, and packaging obligations without
+removing the measured end-to-end owners.
+
 ## Architecture
 
 ```
@@ -100,6 +106,9 @@ the dispatcher never hides it or silently produces a different layout.
 Every public pixel/position integer must fit signed 32-bit range. The DP
 uses 64-bit intermediates for sums and differences, so valid extreme inputs
 cannot overflow when line width and protrusion are combined.
+Validation uses one `extract_integer` call per integer value and clears the
+temporary non-local exit only when the value is not an integer; it does not
+round-trip through Lisp predicates and comparisons.
 
 ## Performance
 
@@ -119,3 +128,10 @@ tokenization, measurement and rendering stay in Elisp.  The C engine
 matters most for `range-justify` (many widths per text) and
 multi-paragraph batches.  Absolute numbers vary with the machine and
 power state; regenerate them with the two commands in DEVELOPER.md §9.
+
+For task030's frozen 80-pixel structural-commit matrix, the C module layer
+improved from 2.615/2.655 ms to 0.697/0.701 ms p95/p99 after one-pass integer
+validation. With the production Elisp files byte-compiled, the complete
+public append path measures 1.158–1.326 ms p99 for C and 1.429–1.438 ms for
+pure Elisp on the same machine. These figures are separate from the
+deliberately source-loaded, fully instrumented evaluator.

@@ -54,6 +54,14 @@
     (should-error (apply #'ekp-c-break-with-arrays args)
                   :type 'ekp-c-invalid-input)))
 
+(ert-deftest ekp-c-test-rejects-non-integer-vector-value ()
+  "Vector values that are not integers use the explicit input condition."
+  (skip-unless (ekp-c-tests--available))
+  (let ((args (ekp-c-tests--valid-args)))
+    (setf (nth 3 args) ["not-an-integer"])
+    (should-error (apply #'ekp-c-break-with-arrays args)
+                  :type 'ekp-c-invalid-input)))
+
 (ert-deftest ekp-c-test-batch-rejects-short-paragraph-vector ()
   "Batch preflight validates each paragraph before indexing 15 fields."
   (skip-unless (ekp-c-tests--available))

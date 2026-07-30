@@ -260,7 +260,7 @@ when non-zero the C module is bypassed automatically."
 
 (cl-defstruct (ekp-layout-plan (:constructor ekp-layout-plan--create))
   "Semantic KP layout independent of any output representation."
-  string line-pixel boxes offsets lines)
+  string line-pixel context para boxes offsets lines)
 
 (defvar ekp--para-cache nil
   "Cache: equal-keyed table, content key → ekp-para struct.")
@@ -834,9 +834,23 @@ MEASURE is the paragraph measure passed to the justify call.
       (cons 0 measure)))
    (t (cons 0 measure))))
 
+(defun ekp--glue-params-snapshot ()
+  "Return current paragraph glue parameters as a stable plist."
+  (let ((justify (eq ekp-alignment 'justify)))
+    (list :lws-ideal ekp-lws-ideal-pixel
+          :lws-stretch (if justify ekp-lws-stretch-pixel 0)
+          :lws-shrink (if justify ekp-lws-shrink-pixel 0)
+          :mws-ideal ekp-mws-ideal-pixel
+          :mws-stretch (if justify ekp-mws-stretch-pixel 0)
+          :mws-shrink (if justify ekp-mws-shrink-pixel 0)
+          :cws-ideal ekp-cws-ideal-pixel
+          :cws-stretch (if justify ekp-cws-stretch-pixel 0)
+          :cws-shrink (if justify ekp-cws-shrink-pixel 0)
+          :alignment ekp-alignment
+          :extra-stretch (if justify 0 (ekp--ragged-extra-stretch)))))
+
 (defun ekp--make-para (string)
-  "Create and fully initialize `ekp-para' struct for STRING.
-Computes ALL data in one pass: text, params, and prefix arrays."
+  "Create and fully initialize `ekp-para' for STRING."
   ;; Ensure params: explicit params persist; otherwise derive defaults
   ;; from this string's font.
   (unless (and ekp--params-explicit (ekp--params-set-p))
@@ -983,20 +997,285 @@ Computes ALL data in one pass: text, params, and prefix arrays."
      :forbidden-positions (vconcat (nreverse forbidden))
      :tail-protrudes tail-protrudes
      :hyphen-protrude hyphen-protrude
-     :glue-params (let ((justify (eq ekp-alignment 'justify)))
-                    (list :lws-ideal ekp-lws-ideal-pixel
-                          :lws-stretch (if justify ekp-lws-stretch-pixel 0)
-                          :lws-shrink (if justify ekp-lws-shrink-pixel 0)
-                          :mws-ideal ekp-mws-ideal-pixel
-                          :mws-stretch (if justify ekp-mws-stretch-pixel 0)
-                          :mws-shrink (if justify ekp-mws-shrink-pixel 0)
-                          :cws-ideal ekp-cws-ideal-pixel
-                          :cws-stretch (if justify ekp-cws-stretch-pixel 0)
-                          :cws-shrink (if justify ekp-cws-shrink-pixel 0)
-                          :alignment ekp-alignment
-                          :extra-stretch (if justify 0
-                                           (ekp--ragged-extra-stretch))))
+     :glue-params (ekp--glue-params-snapshot)
      :dp-cache (make-hash-table :test 'equal :size 20))))
+
+(defun ekp--append-prefix-vector (prefix count suffix)
+  "Return PREFIX through COUNT followed by SUFFIX as a vector."
+  (vconcat (cl-subseq prefix 0 count) suffix))
+
+(defun ekp--append-hyphen-positions (para stable tail-positions)
+  "Merge PARA hyphen positions before STABLE with TAIL-POSITIONS."
+  (vconcat
+   (seq-filter
+    (lambda (position) (< position stable))
+    (ekp-para-hyphen-positions para))
+   (mapcar
+    (lambda (position) (+ stable position))
+    (append tail-positions nil))))
+
+(defun ekp--append-offsets (prefix stable tail-offsets cutoff)
+  "Merge PREFIX offsets before STABLE with TAIL-OFFSETS at CUTOFF."
+  (vconcat
+   (cl-subseq prefix 0 stable)
+   (mapcar
+    (lambda (range)
+      (cons (+ cutoff (car range)) (+ cutoff (cdr range))))
+    (append tail-offsets nil))))
+
+(defun ekp--gap-natural-at (string boxes offsets right)
+  "Return STRING's natural gap width before box RIGHT in BOXES and OFFSETS."
+  (let* ((left (1- right))
+         (start (cdr (aref offsets left)))
+         (end (car (aref offsets right)))
+         (source (if (< start end)
+                     (substring string start end)
+                   (car (last (string-glyph-split
+                               (aref boxes left)))))))
+    (ekp--measured-width source)))
+
+(defun ekp--append-gap-naturals (para string boxes offsets stable)
+  "Reuse PARA gaps before STABLE and measure STRING's BOXES via OFFSETS."
+  (let* ((old (or (ekp-para-gap-naturals-memo para)
+                  (ekp--gap-natural-pixels
+                   para (ekp-para-box-offsets-memo para))))
+         (naturals
+          (vconcat (cl-subseq old 0 stable)
+                   (make-vector (- (length boxes) stable) 0))))
+    (cl-loop for right from (max 1 stable) below (length boxes)
+             do (aset naturals right
+                      (ekp--gap-natural-at string boxes offsets right)))
+    naturals))
+
+(defun ekp--append-cutoff (old string)
+  "Return an append-safe source cutoff from OLD into STRING, or nil."
+  (when (and (< (length old) (length string))
+             (null (ekp--key-intervals old))
+             (null (ekp--key-intervals string))
+             (not (string-match-p "[\n\t]" string))
+             (string-prefix-p old string))
+    (let ((tail (1- (length old))))
+      (while (and (>= tail 0) (= (aref old tail) ?\s))
+        (setq tail (1- tail)))
+      (when (>= tail 0)
+        (when-let ((space
+                    (cl-position ?\s old :from-end t :end (1+ tail))))
+          (1+ space))))))
+
+(defun ekp--append-stable-box-count (offsets cutoff)
+  "Return the box index in OFFSETS beginning at CUTOFF."
+  (let ((position (1- (length offsets)))
+        found)
+    (while (and (>= position 0) (not found))
+      (if (= (car (aref offsets position)) cutoff)
+          (setq found position)
+        (setq position (1- position))))
+    found))
+
+(defun ekp--copy-vector-prefix (source length count initial)
+  "Return LENGTH vector initialized from SOURCE's first COUNT entries."
+  (vconcat (cl-subseq (if (bool-vector-p source)
+                          (vconcat source)
+                        source)
+                      0 count)
+           (make-vector (- length count) initial)))
+
+(defun ekp--append-glue-types (para boxes types hyphens stable)
+  "Extend PARA glue types for BOXES from STABLE using TYPES and HYPHENS."
+  (let ((glues (ekp--copy-vector-prefix
+                (ekp-para-glues-types para) (length boxes) stable nil)))
+    (dolist (position (append hyphens nil))
+      (when (>= position (1- stable))
+        (aset glues (1+ position) 'nws)))
+    (cl-loop for index from stable below (length boxes)
+             unless (aref glues index)
+             do (aset glues index
+                      (ekp--glue-type
+                       (and (> index 0) (aref types (1- index)))
+                       (aref types index))))
+    (cl-loop for position from stable below (length boxes)
+             when (ekp--append-break-forbidden-p boxes types position)
+             do (aset glues position 'nws))
+    glues))
+
+(defun ekp--append-prefix-data (para stable widths types glues)
+  "Extend PARA prefix data from STABLE using WIDTHS, TYPES, and GLUES."
+  (let* ((n (length widths))
+         (prefix-count (1+ stable))
+         (ideal (ekp--copy-vector-prefix
+                 (ekp-para-ideal-prefixs para) (1+ n) prefix-count 0))
+         (minimum (ekp--copy-vector-prefix
+                   (ekp-para-min-prefixs para) (1+ n) prefix-count 0))
+         (maximum (ekp--copy-vector-prefix
+                   (ekp-para-max-prefixs para) (1+ n) prefix-count 0))
+         (g-ideal (ekp--copy-vector-prefix
+                   (ekp-para-glue-ideals para) n stable 0))
+         (g-shrink (ekp--copy-vector-prefix
+                    (ekp-para-glue-shrinks para) n stable 0))
+         (g-stretch (ekp--copy-vector-prefix
+                     (ekp-para-glue-stretches para) n stable 0))
+         (lws (ekp--copy-vector-prefix
+               (ekp-para-lws-prefixs para) (1+ n) prefix-count 0))
+         (mws (ekp--copy-vector-prefix
+               (ekp-para-mws-prefixs para) (1+ n) prefix-count 0))
+         (cws (ekp--copy-vector-prefix
+               (ekp-para-cws-prefixs para) (1+ n) prefix-count 0))
+         (lead (ekp--copy-vector-prefix
+                (ekp-para-lead-spaces para) (1+ n) stable 0))
+         (trail (ekp--copy-vector-prefix
+                 (ekp-para-trail-spaces para) (1+ n) prefix-count 0)))
+    (cl-loop for index from stable below n do
+             (let* ((width (aref widths index))
+                    (type (aref glues index))
+                    (gi (ekp-glue-ideal-pixel type))
+                    (gmin (if (eq ekp-alignment 'justify)
+                              (ekp-glue-min-pixel type) gi))
+                    (gmax (if (eq ekp-alignment 'justify)
+                              (ekp-glue-max-pixel type) gi)))
+               (aset g-ideal index gi)
+               (aset g-shrink index (- gi gmin))
+               (aset g-stretch index (- gmax gi))
+               (aset ideal (1+ index)
+                     (+ (aref ideal index) width gi))
+               (aset minimum (1+ index)
+                     (+ (aref minimum index) width gmin))
+               (aset maximum (1+ index)
+                     (+ (aref maximum index) width gmax))
+               (aset lws (1+ index)
+                     (+ (aref lws index) (if (eq type 'lws) 1 0)))
+               (aset mws (1+ index)
+                     (+ (aref mws index) (if (eq type 'mws) 1 0)))
+               (aset cws (1+ index)
+                     (+ (aref cws index) (if (eq type 'cws) 1 0)))
+               (aset trail (1+ index)
+                     (if (ekp--space-box-type-p (aref types index))
+                         (+ (aref trail index) width) 0))))
+    (cl-loop for index downfrom (1- n) to stable
+             do (aset lead index
+                      (if (ekp--space-box-type-p (aref types index))
+                          (+ (aref widths index) (aref lead (1+ index)))
+                        0)))
+    (aset lead 0 0)
+    (vector ideal minimum maximum g-ideal g-shrink g-stretch
+            lws mws cws lead trail)))
+
+(defun ekp--append-break-forbidden-p (boxes types position)
+  "Return non-nil when BOXES of TYPES may not break at POSITION."
+  (let* ((previous (aref boxes (1- position)))
+         (current (aref boxes position))
+         (previous-last (aref previous (1- (length previous))))
+         (current-first (aref current 0)))
+    (or (ekp--box-no-line-end-p previous (aref types (1- position)))
+        (ekp--box-no-line-start-p current (aref types position))
+        (memq previous-last ekp--no-break-joiner-chars)
+        (memq current-first ekp--no-break-joiner-chars))))
+
+(defun ekp--append-break-data (para boxes types stable)
+  "Extend PARA break permissions for BOXES of TYPES from STABLE."
+  (let* ((n (length boxes))
+         (breaks (ekp--copy-vector-prefix
+                  (ekp-para-breaks-allowed para)
+                  (1+ n) stable t))
+         (forbidden
+          (seq-filter
+           (lambda (position) (< position stable))
+           (ekp-para-forbidden-positions para))))
+    (cl-loop for position from stable below n
+             when (ekp--append-break-forbidden-p boxes types position)
+             do (aset breaks position nil)
+             and do (push position forbidden))
+    (cons breaks (vconcat (sort (append forbidden nil) #'<)))))
+
+(defun ekp--append-tail-protrudes (para boxes types stable)
+  "Extend PARA tail protrusions for BOXES of TYPES from STABLE."
+  (let* ((n (length boxes))
+         (tail (ekp--copy-vector-prefix
+                (ekp-para-tail-protrudes para) (1+ n) (1+ stable) 0)))
+    (when ekp-protrusion
+      (cl-loop for position from (1+ stable) to n
+               for index = (1- position)
+               do (aset tail position
+                        (if (ekp--space-box-type-p (aref types index))
+                            (aref tail (1- position))
+                          (ekp--tail-protrude-pixel
+                           (aref boxes index) (aref types index))))))
+    tail))
+
+(defun ekp--append-para-record
+    (para string stable boxes widths types glues hyphens offsets gaps)
+  "Extend PARA with STRING after STABLE.
+Use BOXES, WIDTHS, TYPES, GLUES, HYPHENS, OFFSETS, and GAPS."
+  (let* ((prefix (ekp--append-prefix-data
+                  para stable widths types glues))
+         (breaks (ekp--append-break-data para boxes types stable))
+         (extended (copy-ekp-para para)))
+    (setf (ekp-para-string extended) string
+          (ekp-para-boxes extended) boxes
+          (ekp-para-boxes-widths extended) widths
+          (ekp-para-boxes-types extended) types
+          (ekp-para-glues-types extended) glues
+          (ekp-para-hyphen-positions extended) hyphens
+          (ekp-para-ideal-prefixs extended) (aref prefix 0)
+          (ekp-para-min-prefixs extended) (aref prefix 1)
+          (ekp-para-max-prefixs extended) (aref prefix 2)
+          (ekp-para-glue-ideals extended) (aref prefix 3)
+          (ekp-para-glue-shrinks extended) (aref prefix 4)
+          (ekp-para-glue-stretches extended) (aref prefix 5)
+          (ekp-para-lws-prefixs extended) (aref prefix 6)
+          (ekp-para-mws-prefixs extended) (aref prefix 7)
+          (ekp-para-cws-prefixs extended) (aref prefix 8)
+          (ekp-para-lead-spaces extended) (aref prefix 9)
+          (ekp-para-trail-spaces extended) (aref prefix 10)
+          (ekp-para-breaks-allowed extended) (car breaks)
+          (ekp-para-forbidden-positions extended) (cdr breaks)
+          (ekp-para-tail-protrudes extended)
+          (ekp--append-tail-protrudes para boxes types stable)
+          (ekp-para-box-offsets-memo extended) offsets
+          (ekp-para-gap-naturals-memo extended) gaps
+          (ekp-para-dp-cache extended)
+          (make-hash-table :test 'equal :size 20))
+    extended))
+
+(defun ekp--append-para (para string)
+  "Return (NEW-PARA . STABLE-BOXES) for plain STRING appended to PARA.
+Return nil when the tokenizer prefix cannot be reused exactly."
+  (let* ((old (ekp-para-string para))
+         (cutoff (and (> (length old) 0)
+                      (ekp--append-cutoff old string)))
+         (fonts-stable
+          (and cutoff
+               (equal (ekp-para-latin-font para)
+                      (ekp-latin-font string))
+               (equal (ekp-para-cjk-font para)
+                      (ekp-cjk-font string))))
+         (old-offsets (ekp-para-box-offsets-memo para))
+         (stable (and fonts-stable old-offsets
+                      (ekp--append-stable-box-count old-offsets cutoff))))
+    (when (and stable (> stable 0))
+      (let* ((tail (substring string cutoff))
+             (split (ekp--split-with-hyphen tail))
+             (tail-boxes (car split))
+             (boxes (ekp--append-prefix-vector
+                     (ekp-para-boxes para) stable tail-boxes))
+             (widths (ekp--append-prefix-vector
+                      (ekp-para-boxes-widths para) stable
+                      (ekp--measure-boxes tail-boxes t)))
+             (types (ekp--append-prefix-vector
+                     (ekp-para-boxes-types para) stable
+                     (vconcat (mapcar #'ekp--box-type tail-boxes))))
+             (hyphens (ekp--append-hyphen-positions para stable (cdr split)))
+             (glues (ekp--append-glue-types
+                     para boxes types hyphens stable))
+             (offsets (ekp--append-offsets
+                       old-offsets stable
+                       (ekp--box-offsets tail (append tail-boxes nil))
+                       cutoff))
+             (gaps (ekp--append-gap-naturals
+                    para string boxes offsets stable)))
+        (cons (ekp--append-para-record
+               para string stable boxes widths types glues
+               hyphens offsets gaps)
+              stable)))))
 
 (defun ekp--get-para (string)
   "Get or create `ekp-para' struct for STRING.
@@ -1180,12 +1459,84 @@ pass, where line 0 starts at box 0."
       (aset v (aref hyphen-positions j) t))
     v))
 
-(defun ekp--dp-run-1d (para line-pixel allow-emergency)
+(defun ekp--dp-state-array (length previous stable index initial)
+  "Return LENGTH array reusing PREVIOUS INDEX through STABLE."
+  (if previous
+      (ekp--copy-vector-prefix
+       (aref previous index) length (1+ stable) initial)
+    (make-vector length initial)))
+
+(defun ekp--dp-last-allowed-break (breaks end)
+  "Return the last permitted break in BREAKS at or before END."
+  (let ((position end))
+    (while (and (> position 0) (not (aref breaks position)))
+      (setq position (1- position)))
+    position))
+
+(defun ekp--dp-first-new-break (para stable)
+  "Return PARA's first permitted break after STABLE."
+  (let ((breaks (ekp-para-breaks-allowed para))
+        (position (1+ stable))
+        (end (length (ekp-para-boxes para))))
+    (while (and (< position end) (not (aref breaks position)))
+      (setq position (1+ position)))
+    position))
+
+(defun ekp--dp-line-too-long-p (para start end line-pixel)
+  "Return non-nil when PARA's START..END cannot fit LINE-PIXEL."
+  (let* ((hyphen-p (ekp--hyphenate-p
+                    (ekp-para-hyphen-positions para) (1- end)))
+         (hyphen-width (if hyphen-p (ekp-para-hyphen-pixel para) 0))
+         (ideal (ekp--line-ideal-pixel para start end))
+         (minimum-prefix (ekp-para-min-prefixs para))
+         (glue-ideal (aref (ekp-para-glue-ideals para) start))
+         (glue-min (- glue-ideal
+                      (aref (ekp-para-glue-shrinks para) start)))
+         (raw-ideal (- (aref (ekp-para-ideal-prefixs para) end)
+                       (aref (ekp-para-ideal-prefixs para) start)
+                       glue-ideal))
+         (space-width (ekp--line-stripped-space-pixel
+                       raw-ideal start end
+                       (ekp-para-lead-spaces para)
+                       (ekp-para-trail-spaces para)))
+         (minimum (+ (- (aref minimum-prefix end)
+                        (aref minimum-prefix start)
+                        glue-min space-width)
+                     hyphen-width))
+         (target (+ (if (= start 0)
+                        (cdr (ekp--line-spec para 0 line-pixel))
+                      line-pixel)
+                    (if hyphen-p
+                        (ekp-para-hyphen-protrude para)
+                      (aref (ekp-para-tail-protrudes para) end)))))
+    (or (> minimum target)
+        (and (= end (length (ekp-para-boxes para)))
+             (> ideal target)))))
+
+(defun ekp--dp-reused-start (para stable line-pixel)
+  "Return PARA's earliest state before STABLE reaching LINE-PIXEL's tail."
+  (let ((end (ekp--dp-first-new-break para stable))
+        (low 0)
+        (high stable))
+    (while (< low high)
+      (let ((middle (/ (+ low high) 2)))
+        (if (ekp--dp-line-too-long-p
+             para middle end line-pixel)
+            (setq low (1+ middle))
+          (setq high middle))))
+    low))
+
+(defun ekp--dp-run-1d
+    (para line-pixel allow-emergency &optional previous-state stable-end)
   "One strict (or emergency-permitting) K-P DP pass over PARA at LINE-PIXEL.
 Returns the dp-result plist, or nil when the paragraph end is
-unreachable (only possible when ALLOW-EMERGENCY is nil)."
+unreachable (only possible when ALLOW-EMERGENCY is nil).
+PREVIOUS-STATE may reuse exact states through STABLE-END."
   (let* ((boxes (ekp-para-boxes para))
          (n (length boxes))
+         (reuse (and previous-state stable-end
+                     (eq (aref previous-state 6) allow-emergency)))
+         (stable (if reuse (min stable-end n) 0))
          (hyphen-pixel (ekp-para-hyphen-pixel para))
          (hyph-flags (ekp--hyphen-flags
                       (ekp-para-hyphen-positions para) n))
@@ -1201,6 +1552,8 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
          (lead-spaces (ekp-para-lead-spaces para))
          (trail-spaces (ekp-para-trail-spaces para))
          (breaks-ok (ekp-para-breaks-allowed para))
+         (last-reused-break
+          (and reuse (ekp--dp-last-allowed-break breaks-ok stable)))
          (tail-protrudes (ekp-para-tail-protrudes para))
          (hyphen-protrude (ekp-para-hyphen-protrude para))
          ;; First-line indent shrinks line 0 only; a line starts at
@@ -1215,16 +1568,27 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
          (mws-shrink (plist-get params :mws-shrink))
          (cws-shrink (plist-get params :cws-shrink))
          (extra-stretch (or (plist-get params :extra-stretch) 0))
-         (backptrs (make-vector (1+ n) nil))
-         (demerits (make-vector (1+ n) nil))
-         (rests (make-vector (1+ n) nil))
-         (gaps (make-vector (1+ n) nil))
-         (hyphen-counts (make-vector (1+ n) 0))
-         (fitness-classes (make-vector (1+ n) 1)))
+         (reused-state (and reuse previous-state))
+         (backptrs (ekp--dp-state-array
+                    (1+ n) reused-state stable 0 nil))
+         (demerits (ekp--dp-state-array
+                    (1+ n) reused-state stable 1 nil))
+         (rests (ekp--dp-state-array
+                 (1+ n) reused-state stable 2 nil))
+         (gaps (ekp--dp-state-array
+                (1+ n) reused-state stable 3 nil))
+         (hyphen-counts (ekp--dp-state-array
+                         (1+ n) reused-state stable 4 0))
+         (fitness-classes (ekp--dp-state-array
+                           (1+ n) reused-state stable 5 1)))
     (aset demerits 0 0.0)
-    (dotimes (i n)
-      (when (aref demerits i)
-        (let* ((prev-dem (aref demerits i))
+    (let ((iteration-start
+           (if reuse
+               (ekp--dp-reused-start para stable line-pixel)
+             0)))
+      (cl-loop for i from iteration-start below n do
+        (when (aref demerits i)
+          (let* ((prev-dem (aref demerits i))
                (prev-hyphen-count (aref hyphen-counts i))
                (prev-fitness (aref fitness-classes i))
                (ip-i (aref ideal-prefixs i))
@@ -1233,8 +1597,12 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                (lead-glue-ideal (aref glue-ideals i))
                (lead-glue-min (- lead-glue-ideal (aref glue-shrinks i)))
                (lead-glue-max (+ lead-glue-ideal (aref glue-stretches i)))
-               (saw-allowed nil)
-               (k (1+ i)))
+               (saw-allowed
+                (and reuse (< i stable)
+                     (> last-reused-break i)))
+               (k (if (and reuse (< i stable))
+                      (1+ stable)
+                    (1+ i))))
           (catch 'break
             (while (<= k n)
               (if (not (or (= k n) (aref breaks-ok k)))
@@ -1354,8 +1722,8 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                    (- lw ideal) end-with-hyphenp
                    prev-hyphen-count
                    (unless single-box (ekp--gaps-between para i k)))))
-                (setq saw-allowed t)
-                (setq k (1+ k)))))))))
+                  (setq saw-allowed t)
+                  (setq k (1+ k))))))))))
     ;; Extract solution (nil when end unreachable in the strict pass)
     (when (aref demerits n)
       (let ((breaks (ekp--dp-trace-breaks backptrs n)))
@@ -1363,7 +1731,10 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
               :gaps (mapcar (lambda (b) (aref gaps b)) breaks)
               :breaks breaks
               :cost (aref demerits n)
-              :line-count (length breaks))))))
+              :line-count (length breaks)
+              :state (vector backptrs demerits rests gaps
+                             hyphen-counts fitness-classes
+                             allow-emergency))))))
 
 (defun ekp--dp-relax-emergency (demerits backptrs rests gaps hyphen-counts
                                          fitness-classes i k prev-dem rest
@@ -1666,6 +2037,22 @@ HYPHEN-COUNT)."
           (ekp--dp-cache-via-c para line-pixel)
         (ekp--dp-cache-elisp para line-pixel))))
 
+(defun ekp--dp-cache-append (para previous stable line-pixel)
+  "Compute PARA at LINE-PIXEL reusing PREVIOUS states through STABLE."
+  (if (ekp--c-available-p)
+      (ekp--dp-cache-via-c para line-pixel)
+    (let* ((old (ekp--dp-get-cached previous line-pixel))
+           (state (and old (plist-get old :state)))
+           (result
+            (if (and state (not (aref state 6)))
+                (or (ekp--dp-run-1d
+                     para line-pixel nil state stable)
+                    (ekp--dp-run-1d para line-pixel t))
+              (or (ekp--dp-run-1d para line-pixel nil)
+                  (ekp--dp-run-1d para line-pixel t)))))
+      (puthash (ekp--dp-key line-pixel) result (ekp-para-dp-cache para))
+      result)))
+
 (defun ekp-dp-cache (string line-pixel)
   "Compute optimal line breaks for STRING at LINE-PIXEL width.
 Uses Knuth-Plass dynamic programming with demerits.
@@ -1867,64 +2254,70 @@ Returns ((latin-adj . latin-extra) (mix-adj . mix-extra) (cjk-adj . cjk-extra)).
           (cons mix-adj mix-extra)
           (cons cjk-adj cjk-extra))))
 
-(defun ekp--compute-glue-pixels (para glues-types gaps-distribution stretch-p)
-  "Compute actual glue pixels from GLUES-TYPES and GAPS-DISTRIBUTION.
-Return the pixel list for each glue using PARA's stored glue params.
-STRETCH-P selects stretch (t) or shrink (nil)."
-  (let ((latin-adj (car (nth 0 gaps-distribution)))
-        (latin-extra (cdr (nth 0 gaps-distribution)))
-        (mix-adj (car (nth 1 gaps-distribution)))
-        (mix-extra (cdr (nth 1 gaps-distribution)))
-        (cjk-adj (car (nth 2 gaps-distribution)))
-        (cjk-extra (cdr (nth 2 gaps-distribution)))
-        (latin-idx -1) (mix-idx -1) (cjk-idx -1))
-    (mapcar
-     (lambda (type)
-       (let* ((base (ekp--para-glue-ideal para type))
-              (adj (pcase type
-                     ('lws (cl-incf latin-idx)
-                           (+ latin-adj (if (< latin-idx latin-extra) 1 0)))
-                     ('mws (cl-incf mix-idx)
-                           (+ mix-adj (if (< mix-idx mix-extra) 1 0)))
-                     ('cws (cl-incf cjk-idx)
-                           (+ cjk-adj (if (< cjk-idx cjk-extra) 1 0)))
-                     (_ 0))))
-         (max 0 (if stretch-p (+ base adj) (- base adj)))))
-     glues-types)))
+(defun ekp--fixed-line-glues (para types start end maximum trailing)
+  "Return fixed glue pixels for PARA TYPES from START to END.
+Use maximum widths when MAXIMUM is non-nil and finish with TRAILING."
+  (let* ((params (ekp-para-glue-params para))
+         (pixels (make-vector (1+ (- end start)) 0)))
+    (cl-loop for position from (1+ start) below end
+             for output from 1
+             for type = (aref types position)
+             for ideal = (pcase type
+                           ('lws (plist-get params :lws-ideal))
+                           ('mws (plist-get params :mws-ideal))
+                           ('cws (plist-get params :cws-ideal))
+                           (_ 0))
+             for stretch = (if maximum
+                               (pcase type
+                                 ('lws (plist-get params :lws-stretch))
+                                 ('mws (plist-get params :mws-stretch))
+                                 ('cws (plist-get params :cws-stretch))
+                                 (_ 0))
+                             0)
+             do (aset pixels output (+ ideal stretch)))
+    (aset pixels (1- (length pixels)) trailing)
+    pixels))
 
-(defun ekp--line-glue-single-box (line-pixel box-width hyphen-p hyphen-pixel)
-  "Compute glues for a single-box line of width LINE-PIXEL.
-BOX-WIDTH is the box width; HYPHEN-P adds HYPHEN-PIXEL when the box
-hyphenates.  The trailing filler is clamped at 0 for overfull boxes."
-  (let ((trailing (- line-pixel box-width (if hyphen-p hyphen-pixel 0))))
-    (list 0 (max 0 trailing))))
-
-(defun ekp--line-glue-last-line (para glues-types ideal-pixel line-pixel)
-  "Compute glues for the last line (ragged right) of PARA at LINE-PIXEL.
-GLUES-TYPES are the per-glue types and IDEAL-PIXEL the line's ideal
-width; PARA supplies the stored glue params."
-  (append '(0)
-          (mapcar (lambda (type) (ekp--para-glue-ideal para type)) glues-types)
-          (list (max 0 (- line-pixel ideal-pixel)))))
-
-(defun ekp--line-glue-normal (para glues-types rest-pixel gaps-list)
-  "Compute glues for a normal (justified) line from PARA.
-GLUES-TYPES are the per-glue types; REST-PIXEL is the surplus (or
-deficit) spread across GAPS-LIST using PARA's stored glue params."
+(defun ekp--adjusted-line-glues
+    (para types start end rest-pixel gaps-list)
+  "Distribute REST-PIXEL over GAPS-LIST for PARA TYPES from START to END."
   (if (= rest-pixel 0)
-      (append '(0) (mapcar (lambda (type) (ekp--para-glue-ideal para type))
-                           glues-types)
-              '(0))
+      (ekp--fixed-line-glues para types start end nil 0)
     (let* ((stretch-p (> rest-pixel 0))
            (distribution (ekp--distribute-gap-adjustment
                           para (abs rest-pixel) gaps-list stretch-p))
-           (glue-pixels (ekp--compute-glue-pixels
-                         para glues-types distribution stretch-p)))
-      (append '(0) glue-pixels '(0)))))
+           (shares (vconcat distribution))
+           (params (ekp-para-glue-params para))
+           (pixels (make-vector (1+ (- end start)) 0))
+           (indices (vector -1 -1 -1)))
+      (cl-loop for position from (1+ start) below end
+               for output from 1
+               for type = (aref types position)
+               for slot = (pcase type ('lws 0) ('mws 1) ('cws 2) (_ nil))
+               for ideal = (pcase type
+                             ('lws (plist-get params :lws-ideal))
+                             ('mws (plist-get params :mws-ideal))
+                             ('cws (plist-get params :cws-ideal))
+                             (_ 0))
+               do
+               (let ((adjustment 0))
+                 (when slot
+                   (cl-incf (aref indices slot))
+                   (let ((share (aref shares slot)))
+                     (setq adjustment
+                           (+ (car share)
+                              (if (< (aref indices slot) (cdr share))
+                                  1 0)))))
+                 (aset pixels output
+                       (max 0 (if stretch-p
+                                  (+ ideal adjustment)
+                                (- ideal adjustment))))))
+      pixels)))
 
-(defun ekp--line-glues-from-data (para line-pixel dp)
+(defun ekp--line-glues-from-data
+    (para line-pixel dp &optional previous-lines common)
   "Compute glue vectors from prepared PARA at LINE-PIXEL using DP.
-Each line's glues are [0 glue1 glue2 ... trailing-space]."
+Reuse COMMON entries from PREVIOUS-LINES when provided."
   (let* ((boxes-num (length (ekp-para-boxes para)))
          (glues-types (ekp-para-glues-types para))
          (alignment (or (plist-get (ekp-para-glue-params para) :alignment)
@@ -1936,11 +2329,14 @@ Each line's glues are [0 glue1 glue2 ... trailing-space]."
          (lines-gaps (plist-get dp :gaps))
          (hyphen-pixel (ekp-para-hyphen-pixel para))
          (line-glues (make-vector (length breaks) nil))
-         (start 0))
-    (dotimes (i (length breaks))
+         (start (if (> (or common 0) 0)
+                    (nth (1- common) breaks)
+                  0)))
+    (dotimes (index (or common 0))
+      (aset line-glues index
+            (ekp-layout-line-glues (aref previous-lines index))))
+    (cl-loop for i from (or common 0) below (length breaks) do
       (let* ((end (nth i breaks))
-             (line-glues-types (append (cl-subseq glues-types (1+ start) end)
-                                       nil))
              (is-last (>= end boxes-num))
              (hyphen-p (ekp--hyphenate-p hyphen-positions (1- end)))
              ;; per-line layout (parshape / first-line indent)
@@ -1968,53 +2364,48 @@ Each line's glues are [0 glue1 glue2 ... trailing-space]."
                                    (aref (ekp-para-glue-stretches para) start))
                                 space-w)
                              (if hyphen-p hyphen-pixel 0))))
-             glue-list)
-        (setq glue-list
+             glue-vector)
+        (setq glue-vector
               (cond
                ;; Single box: just trailing space
                ((= 1 (- end start))
-                (ekp--line-glue-single-box eff-pixel
-                                           (- ideal-pixel
-                                              (if hyphen-p hyphen-pixel 0))
-                                           hyphen-p hyphen-pixel))
+                (vector 0 (max 0 (- eff-pixel ideal-pixel))))
                ;; Last line, or any line under non-justify alignment:
                ;; natural glue widths plus a trailing filler.
                ((or is-last ragged)
-                (ekp--line-glue-last-line
-                 para line-glues-types ideal-pixel eff-pixel))
+                (ekp--fixed-line-glues
+                 para glues-types start end nil
+                 (max 0 (- eff-pixel ideal-pixel))))
                ;; Emergency underfull line (can't stretch to width):
                ;; set glues to max and pad with trailing filler.
                ((< max-pixel eff-pixel)
-                (append '(0)
-                        (mapcar (lambda (type)
-                                  (ekp--para-glue-max para type))
-                                line-glues-types)
-                        (list (max 0 (- eff-pixel max-pixel)))))
+                (ekp--fixed-line-glues
+                 para glues-types start end t
+                 (max 0 (- eff-pixel max-pixel))))
                ;; Normal justified line
                (t
-                (ekp--line-glue-normal para line-glues-types
-                                       (nth i lines-rests)
-                                       (nth i lines-gaps)))))
+                (ekp--adjusted-line-glues
+                 para glues-types start end
+                 (nth i lines-rests) (nth i lines-gaps)))))
         ;; Non-justify alignment: place the leftover per mode
         ;; (ragged-right keeps it trailing; center splits it; ragged-left
         ;; moves it to the head).
-        (when (and ragged (>= (length glue-list) 2)
+        (when (and ragged (>= (length glue-vector) 2)
                    (memq alignment '(center ragged-left)))
-          (let ((filler (car (last glue-list))))
-            (setq glue-list
+          (let* ((last (1- (length glue-vector)))
+                 (filler (aref glue-vector last))
+                 (lead (if (eq alignment 'center)
+                           (/ filler 2)
+                         filler)))
+            (aset glue-vector 0 lead)
+            (aset glue-vector last
                   (if (eq alignment 'center)
-                      (let ((lead (/ filler 2)))
-                        (append (list lead)
-                                (cdr (butlast glue-list))
-                                (list (- filler lead))))
-                    (append (list filler)
-                            (cdr (butlast glue-list))
-                            (list 0))))))
+                      (- filler lead)
+                    0))))
         ;; left indent renders as a leading spacer
         (when (> line-indent 0)
-          (setq glue-list (cons (+ (car glue-list) line-indent)
-                                (cdr glue-list))))
-        (aset line-glues i (vconcat glue-list))
+          (aset glue-vector 0 (+ (aref glue-vector 0) line-indent)))
+        (aset line-glues i glue-vector)
         (setq start end)))
     line-glues))
 
@@ -2191,23 +2582,53 @@ LAST-LINE-P suppresses a terminal discretionary hyphen."
        :trailing-pixel (aref glues (1- (length glues)))
        :hyphen-p hyphen-p))))
 
-(defun ekp-layout-plan (string line-pixel)
-  "Return a semantic KP layout plan for STRING at LINE-PIXEL.
-The plan records source offsets, glue targets, breaks, indentation,
-and discretionary hyphens without choosing a string or buffer display
-representation."
-  (let* ((para (ekp--get-para string))
-         (boxes (ekp-para-boxes para))
+(defun ekp--common-layout-line-count (previous breaks stable)
+  "Return the break prefix shared by PREVIOUS and BREAKS before STABLE."
+  (let ((lines (and previous (ekp-layout-plan-lines previous)))
+        (count 0))
+    (while (and lines
+                (< count (length lines))
+                (< count (length breaks))
+                (<= (ekp-layout-line-box-end (aref lines count)) stable)
+                (= (ekp-layout-line-box-end (aref lines count))
+                   (nth count breaks)))
+      (cl-incf count))
+    count))
+
+(defun ekp--layout-context-snapshot (line-pixel)
+  "Return every non-text input to a plan at LINE-PIXEL."
+  (list (ekp--dp-key line-pixel)
+        (copy-tree (ekp--width-context))
+        ekp-latin-lang
+        ekp-alignment
+        ekp-ragged-stretch-pixel
+        (and ekp-protrusion (copy-tree ekp-protrusion-ratios))
+        (copy-tree ekp-parshape)
+        ekp-first-line-indent
+        ekp-cjk-no-line-start-extra
+        (ekp--spacing-signature)))
+
+(defun ekp--layout-plan-from-para
+    (string line-pixel para dp &optional previous stable)
+  "Build STRING's LINE-PIXEL plan from PARA and DP.
+Reuse PREVIOUS lines that end before STABLE when both are non-nil."
+  (let* ((boxes (ekp-para-boxes para))
          (offsets (or (ekp-para-box-offsets-memo para)
                       (setf (ekp-para-box-offsets-memo para)
                             (ekp--box-offsets string (append boxes nil)))))
          (naturals (ekp--gap-natural-pixels para offsets))
-         (dp (ekp--dp-cache-para para line-pixel))
          (breaks (plist-get dp :breaks))
-         (line-glues (ekp--line-glues-from-data para line-pixel dp))
-         (start 0)
-         lines)
-    (dotimes (i (length breaks))
+         (previous-lines (and previous (ekp-layout-plan-lines previous)))
+         (common (if previous
+                     (ekp--common-layout-line-count
+                      previous breaks stable)
+                   0))
+         (line-glues (ekp--line-glues-from-data
+                      para line-pixel dp previous-lines common))
+         (start (if (> common 0) (nth (1- common) breaks) 0))
+         (lines (reverse
+                 (cl-subseq (append previous-lines nil) 0 common))))
+    (cl-loop for i from common below (length breaks) do
       (let* ((end (nth i breaks))
              (line (ekp--make-layout-line
                     para offsets naturals i start end (aref line-glues i)
@@ -2218,7 +2639,35 @@ representation."
                  string (vconcat (nreverse lines))))
     (ekp-layout-plan--create
      :string string :line-pixel line-pixel
-     :boxes boxes :offsets offsets :lines lines)))
+     :context (ekp--layout-context-snapshot line-pixel)
+     :para para :boxes boxes :offsets offsets :lines lines)))
+
+(defun ekp-layout-plan (string line-pixel)
+  "Return a semantic KP layout plan for STRING at LINE-PIXEL.
+The plan records source offsets, glue targets, breaks, indentation,
+and discretionary hyphens without choosing a display representation."
+  (let ((para (ekp--get-para string)))
+    (ekp--layout-plan-from-para
+     string line-pixel para (ekp--dp-cache-para para line-pixel))))
+
+(defun ekp-layout-plan-append (previous string line-pixel)
+  "Return STRING's exact append plan by extending PREVIOUS, or nil.
+Only property-free, context-stable 1D layouts take this fast path."
+  (let ((old-para (and previous (ekp-layout-plan-para previous))))
+    (when (and old-para
+               (equal (ekp-layout-plan-context previous)
+                      (ekp--layout-context-snapshot line-pixel))
+               (= ekp-looseness 0)
+               (not ekp-parshape)
+               (equal (ekp-para-glue-params old-para)
+                      (ekp--glue-params-snapshot)))
+      (when-let* ((append (ekp--append-para old-para string))
+                  (para (car append))
+                  (stable (cdr append))
+                  (dp (ekp--dp-cache-append
+                       para old-para stable line-pixel)))
+        (ekp--layout-plan-from-para
+         string line-pixel para dp previous stable)))))
 
 (defconst ekp--layout-marker-properties
   '(ekp-glue ekp-soft-break ekp-soft-hyphen ekp-hidden ekp-justified)
