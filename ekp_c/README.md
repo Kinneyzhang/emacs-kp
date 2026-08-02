@@ -67,7 +67,8 @@ metacharacters in the checkout path are not interpreted.
 
 ;; Synced automatically by ekp.el before every call:
 (ekp-c-set-penalties LINE HYPHEN FITNESS LAST-RATIO
-                     &optional CONSEC-HYPHEN LAST-SHORT EXTRA-STRETCH)
+                     &optional CONSEC-HYPHEN LAST-SHORT EXTRA-STRETCH
+                     EMERGENCY-STRETCH)
 
 ;; Single paragraph (15 args):
 (ekp-c-break-with-arrays IDEAL-PREFIX MIN-PREFIX MAX-PREFIX
@@ -93,9 +94,16 @@ when no indent is active).
 
 The DP uses the same two-pass strategy as the Elisp engine: a strict
 Knuth-Plass pass, then — only when the paragraph end is unreachable —
-a second pass permitting emergency single-box breaks, so overlong
-unbreakable tokens can never make the result empty.  Badness saturates
-at 10000 exactly like the Elisp side.
+a final pass that adds finite background emergency stretch to ordinary
+underfull candidates and still scores them through the same
+badness/fitness/demerits path. Separately, if an overfull candidate would
+extinguish the final active path to a breakpoint and no non-overfull
+candidate survives there, TeX-style artificial demerits install the best
+provisional path with tight fitness and zero incremental cost. This is a
+content-independent reachability safeguard, not a hard-atom scoring rule.
+Thus an overlong unbreakable token cannot make the result empty, while
+ordinary underfull choices remain global K-P decisions. Badness saturates at
+10000 exactly like the Elisp side.
 
 Failure behavior: the full schema is checked before extraction. Malformed
 direct API arguments signal `ekp-c-invalid-input`; allocation failure or an

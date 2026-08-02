@@ -31,15 +31,29 @@
 (defvar-local ekp-showcase--last-ms nil)
 (defvar-local ekp-showcase--parshape-on nil)
 
+(defface ekp-showcase-inline-code
+  '((t :inherit fixed-pitch
+       :background "#3a3f4b"
+       :foreground "#98c379"))
+  "Face for automatic inline-code policy spans in the showcase."
+  :group 'ekp)
+
 (defconst ekp-showcase--alignments
   '(justify ragged-right center ragged-left))
 
 (defun ekp-showcase--sample ()
   "Build the demo text: prose, punctuation, atoms, NBSP, a code block."
   (let ((zh1 "汉字排版的质感藏在细节里:开启标点悬挂之后,行尾的句号。逗号,和问号?都会把墨迹之外的空白悬出齐边,右边缘因此在视觉上更加平直。避头尾规则保证「引号」与《书名号》永远紧贴内容,连续闭合标点如此。」也绝不拆行。")
-        (mixed "中英混排是 Emacs 里最常见的场景:The quick brown fox jumps over the lazy dog, 而 internationalization 这样的长词在窄栏会按 Liang 模式断词,连字符同样参与悬挂。")
-        (atoms (concat "行内原子演示:代码片段 "
-                       (propertize "(ekp-pixel-justify STR W)"
+        (mixed (concat "中英混排是 Emacs 里最常见的场景: The quick brown fox "
+                       "jumps over the lazy dog, 而 internationalization "
+                       "这样的长词在窄栏会按 Liang 模式断词。自动行内代码 "
+                       (propertize
+                        "(ekp-pixel-justify paragraph-text target-width 'justify nil)"
+                                   'face 'ekp-showcase-inline-code)
+                       " 可以在合法空白边界附近换行,但不会插入"
+                       " discretionary hyphen。"))
+        (atoms (concat "行内原子演示:手动硬原子 "
+                       (propertize "M-x ekp-demo"
                                    'ekp-no-break t
                                    'face '(:inherit fixed-pitch
                                            :background "#3a3f4b"
@@ -230,6 +244,7 @@
   "Interactive showcase for ekp typesetting features."
   (setq-local truncate-lines t)
   (setq-local cursor-type 'bar)
+  (setq-local ekp-buffer-inline-faces '(ekp-showcase-inline-code))
   ;; keys stay pinned in the header line; live state lives in the
   ;; mode line (both always visible)
   (setq header-line-format (ekp-showcase--keys-line)))

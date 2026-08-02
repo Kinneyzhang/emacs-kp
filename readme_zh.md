@@ -22,7 +22,7 @@ Emacs-kp 在 Emacs 内部完整实现了 Knuth-Plass 最优断行算法,支持�
   搜索、语法、保存及普通 Elisp 文本 API 看到的都是源字符。
 - **文本属性保留** — face、颜色等属性完整保留;断词插入的连字符继承所
   在单词的样式。
-- **困难输入不丢内容** — 超长不可断 token(URL、窄栏长词)退化为紧急
+- **困难输入不丢内容** — 未受保护的超长 token(URL、窄栏长词)退化为紧急
   断行而不是吞掉文本;任何输入都有输出。
 - **可选 C 模块** — 动态模块用 C 执行 DP,线程池并行处理多个段落(见
   性能数据)。
@@ -145,7 +145,7 @@ Elisp。已启用模块若 signal,则作为后端契约错误直接呈现。若�
 Knuth-Plass 计算阻塞输入;`M-x ekp-diagnose` 会报告这一原因。确实需要
 对该段执行无上限完整质量排版时,显式运行 `M-x ekp-refill-paragraph`。
 
-各 mode 的 verbatim 保护预设——各一行:
+各 mode 的显式本地保护预设——各一行:
 
 ```elisp
 (add-hook 'org-mode-hook      #'ekp-org-setup)
@@ -153,7 +153,9 @@ Knuth-Plass 计算阻塞输入;`M-x ekp-diagnose` 会报告这一原因。确实
 ```
 
 在 Org 与 Markdown buffer 里,若你没有自定义配置,
-`ekp-auto-justify-mode` 会自动套用对应预设。
+`ekp-auto-justify-mode` 会自动查询 `ekp-buffer-mode-policy-alist`。
+它不会把 profile 值复制成 buffer-local 变量;只有显式调用上面的
+setup 函数时才会写入本地 face 列表。
 
 ### 保护代码块与 verbatim 文本
 
@@ -161,9 +163,18 @@ Knuth-Plass 计算阻塞输入;`M-x ekp-diagnose` 会报告这一原因。确实
   face 在 `ekp-buffer-skip-faces` 列表中(如 `org-block`、
   `markdown-code-face`)、或被 buffer-local 的
   `ekp-buffer-skip-predicate` 判定的段落**原样跳过**,一个字节都不动。
-- 行内级:带 `ekp-no-break` 属性的区间(`M-x ekp-no-break-region`)
+- 自动行内级:face 在 `ekp-buffer-inline-faces` 中的精确区间
+  (Org 的 `org-code`/`org-verbatim`,Markdown 行内代码默认由 mode
+  profile 提供)使用 `ekp-inline-code-policy`。默认 `no-hyphen`
+  保留源空格字面宽度并禁止词典断词,但仍可在合法源边界换行。自动
+  `no-break` 区间若宽于有效栏宽,会降级为 `no-hyphen`。
+- 显式硬原子级:带 `ekp-no-break` 属性的区间(`M-x ekp-no-break-region`)
   成为刚性原子——不断行、不断词、空格保持字面宽度——适合行内代码、
-  产品名、数字加单位。
+  产品名、数字加单位。原子宽于栏宽时仍保持完整,但不保证独占一行:
+  最终遍可能把它与前面的普通内容放在同一条溢出行。普通欠宽候选使用
+  固定的 emergency stretch 并按正常 K-P 代价评分;若超宽候选会让最终遍
+  的活动路径全部消失,核心按 TeX 的 artificial demerits 语义保留最后
+  路径。这里没有中文孤字、单位或截图专用规则。
 
 手动属性明确只在**当前 buffer 会话**有效:普通文本保存与重新打开不会
 恢复它们。使用 `M-x ekp-allow-break-region` /
@@ -196,6 +207,37 @@ mode face 或 buffer-local 的 `ekp-buffer-skip-predicate`(Org/Markdown
 悬挂同理不可渲染(文本无法起笔于行原点之前)。
 
 ## 配置
+
+### 断行策略与测量宽度
+
+默认策略的目标是让代码可读,但不把所有"看起来像代码"的片段都变成
+硬原子:
+
+| 选项 | 默认值 | 作用域 | 含义 |
+|:-----|:-------|:-------|:-----|
+| `ekp-inline-code-policy` | `no-hyphen` | 全局、profile、本地 | 行内 face 的 `normal`、`no-hyphen` 或自动适配 `no-break` |
+| `ekp-hyphenation` | `auto` | 全局、profile、本地、区域命令 | `auto`/`on` 在词典可用时断词;`off` 禁止词典断词 |
+| `ekp-token-break-policies` | URL/path/identifier `no-hyphen`,number-unit `no-break` | 全局、profile、本地 | 按 token 类别合并的自动策略 |
+| `ekp-number-unit-suffixes` | 常见 CSS、时间、数据、频率、度量单位 | 全局、profile、本地 | 紧凑数字单位识别的后缀 |
+| `ekp-kinsoku-profile` | `common` | 全局、profile、本地 | `common`、`zh`、`ja`、`off` 或 `custom` 禁则 |
+| `ekp-cjk-no-line-start-extra` / `ekp-cjk-no-line-end-extra` | `""` | 全局、profile、本地 | `custom` profile 使用的附加禁则字符 |
+| `ekp-overlong-token-policy` | `emergency` | 全局、profile、本地 | 普通超宽 Latin-like token 的 `emergency`、`overflow` 或 `natural` |
+| `ekp-buffer-measure` | `narrowest-window` | 全局、profile、本地 | `narrowest-window`、固定像素整数或 `(max . PIXELS)` |
+| `ekp-buffer-skip-faces` | 由 profile 提供 | 全局、profile、本地 | 段落级 verbatim face |
+| `ekp-buffer-inline-faces` | 由 profile 提供 | 全局、profile、本地 | 使用行内策略的精确 face 区间 |
+| `ekp-buffer-mode-policy-alist` | Org 与 Markdown profile | 全局/安全本地值 | 自动与手动 buffer 排版查询的 mode profile |
+
+有效优先级固定为:显式区域文本属性 > 显式 buffer/file/dir-local 值 >
+第一个匹配的 major-mode profile > 全局默认值。区域 `ekp-break-policy`
+可取 `normal`、`hyphenate`、`no-hyphen`;它只覆盖精确区间内的自动
+token/行内策略,不会创建硬原子。`ekp-no-break` 仍是唯一显式硬原子
+属性,并且胜过所有自动策略。
+
+支持 file/dir local 的上述变量都有封闭的 safe-local 谓词。
+`M-x ekp-diagnose` 会报告请求宽度、最窄活动窗口、有效宽度、溢出风险、
+冲突数量,以及当前行内/断词/禁则/超宽策略摘要。EKP 菜单提供诊断与
+区域命令:普通断行、开启区域断词、关闭区域断词、清除区域断行策略、
+no-break 与 verbatim。
 
 ### 断词语言
 

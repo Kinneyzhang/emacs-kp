@@ -153,9 +153,11 @@ typedef struct {
     /* Per-line flexibility for non-justify alignment (0 = justify):
      * widens max_w, so flexibility = max_w - ideal includes it. */
     int32_t extra_stretch;
+    /* Fixed final-pass emergency stretch, matching TeX's emergency pass. */
+    int32_t emergency_stretch;
 
-    /* Two-pass strategy: strict K-P first; emergency single-box
-     * breaks only in the second pass (when no valid layout exists). */
+    /* Two-pass strategy: strict K-P first; emergency transitions only
+     * in the second pass (when no valid layout exists). */
     bool allow_emergency;
 } dp_input_t;
 
@@ -209,31 +211,46 @@ static inline bool dp_is_forbidden(const dp_input_t *in, size_t pos)
  * Processes position i, trying all end positions k.
  * Updates output arrays when better solutions found.
  */
-/*
- * Emergency break: record a single-box over/underfull line so that the
- * DP can never dead-end (every reachable i can always record i+1).
- * Demerits are at least as bad as the worst regular line, so these are
- * only chosen when nothing better exists.  Mirrors
- * ekp--dp-relax-emergency in ekp.el.
- */
-static inline void dp_relax_emergency(
-    const dp_input_t *in, size_t i, size_t k,
-    double prev_dem, int prev_hyph, int prev_lines,
-    int64_t rest, bool end_hyphen,
+typedef struct {
+    bool present;
+    double previous_demerits;
+    size_t start;
+    int previous_hyphens;
+    int previous_lines;
+    int64_t rest;
+    bool end_hyphen;
+} dp_artificial_candidate_t;
+
+static inline void dp_remember_artificial(
+    dp_artificial_candidate_t *candidate, size_t start,
+    double previous_demerits, int previous_hyphens, int previous_lines,
+    int64_t rest, bool end_hyphen)
+{
+    if (candidate->present &&
+        candidate->previous_demerits <= previous_demerits)
+        return;
+
+    candidate->present = true;
+    candidate->previous_demerits = previous_demerits;
+    candidate->start = start;
+    candidate->previous_hyphens = previous_hyphens;
+    candidate->previous_lines = previous_lines;
+    candidate->rest = rest;
+    candidate->end_hyphen = end_hyphen;
+}
+
+static inline void dp_install_artificial(
+    const dp_artificial_candidate_t *candidate, size_t k,
     double *demerits, int32_t *backptrs, int64_t *rest_pixels,
     uint8_t *fitness, int32_t *hyphen_counts, int32_t *line_counts)
 {
-    double base = in->line_penalty + EKP_BADNESS_INF;
-    double dem = prev_dem + base * base + (double)rest * rest;
-
-    if (dem < demerits[k]) {
-        demerits[k] = dem;
-        backptrs[k] = i;
-        rest_pixels[k] = rest;
-        fitness[k] = FITNESS_VERY_LOOSE;
-        hyphen_counts[k] = end_hyphen ? prev_hyph + 1 : 0;
-        line_counts[k] = prev_lines + 1;
-    }
+    demerits[k] = candidate->previous_demerits;
+    backptrs[k] = (int32_t)candidate->start;
+    rest_pixels[k] = candidate->rest;
+    fitness[k] = FITNESS_TIGHT;
+    hyphen_counts[k] = candidate->end_hyphen
+        ? candidate->previous_hyphens + 1 : 0;
+    line_counts[k] = candidate->previous_lines + 1;
 }
 
 static void dp_process_position(
@@ -250,7 +267,9 @@ static void dp_process_position(
     int64_t *rest_pixels,
     uint8_t *fitness,
     int32_t *hyphen_counts,
-    int32_t *line_counts)
+    int32_t *line_counts,
+    uint8_t *surviving_candidates,
+    dp_artificial_candidate_t *artificial_candidates)
 {
     size_t n = in->n;
     /* Line 0 (i == 0) may have a different width: first-line indent */
@@ -265,20 +284,16 @@ static void dp_process_position(
     int64_t lead_space = in->lead_spaces ? in->lead_spaces[i] : 0;
 
     /* Try extending to each position k > i */
-    bool saw_allowed = false;
     for (size_t k = i + 1; k <= n; k++) {
         bool is_last = (k == n);
 
         /* Break forbidden here (kinsoku, no-break span): not a
          * candidate; keep extending the line. */
-        if (!is_last && dp_is_forbidden(in, k))
+        if (!is_last && dp_is_forbidden(in, k)) {
             continue;
+        }
 
         bool is_single_box = (k == i + 1);
-        /* No permitted break strictly inside [i, k): the run is atomic
-         * and eligible for emergency handling, like a single box. */
-        bool atomic_run = !saw_allowed;
-        saw_allowed = true;
 
         bool end_hyphen = dp_is_hyphen(in, k - 1);
         int64_t hyph_w = end_hyphen ? in->hyphen_width : 0;
@@ -303,29 +318,28 @@ static void dp_process_position(
         int64_t max_w = (int64_t)in->max_prefix[k] - in->max_prefix[i] -
                         (lead_ideal + lead_stretch) - space_w + hyph_w +
                         in->extra_stretch;
+        int64_t emergency_stretch = in->allow_emergency
+            ? in->emergency_stretch : 0;
+        int64_t effective_max_w = max_w + emergency_stretch;
 
         /* Too long? (last line is never shrunk below its ideal) */
         if (min_w > lw || (is_last && ideal > lw)) {
-            if (atomic_run && in->allow_emergency)
-                dp_relax_emergency(in, i, k, prev_dem, prev_hyph, prev_lines,
-                                   lw - ideal, end_hyphen,
-                                   demerits, backptrs, rest_pixels,
-                                   fitness, hyphen_counts, line_counts);
+            if (in->allow_emergency)
+                dp_remember_artificial(&artificial_candidates[k], i,
+                                       prev_dem, prev_hyph, prev_lines,
+                                       lw - ideal, end_hyphen);
             break;  /* No point trying longer lines */
         }
 
+        if (in->allow_emergency)
+            surviving_candidates[k] = 1;
+
         /* Valid break? */
-        bool valid = (min_w <= lw && max_w >= lw) ||
+        bool valid = (min_w <= lw && effective_max_w >= lw) ||
                     (is_last && ideal <= lw);
 
         if (!valid) {
-            /* Rigid underfull atomic run: emergency-record so the
-             * position after it stays reachable (2nd pass only). */
-            if (atomic_run && in->allow_emergency)
-                dp_relax_emergency(in, i, k, prev_dem, prev_hyph, prev_lines,
-                                   lw - ideal, end_hyphen,
-                                   demerits, backptrs, rest_pixels,
-                                   fitness, hyphen_counts, line_counts);
+            /* An underfull active path survives to later breakpoints. */
             continue;
         }
 
@@ -333,6 +347,8 @@ static void dp_process_position(
         int64_t adjustment = lw - ideal;
         int64_t flexibility = (adjustment > 0) ?
             (max_w - ideal) : (ideal - min_w);
+        if (adjustment > 0)
+            flexibility += emergency_stretch;
 
         double badness;
         uint8_t fit;
@@ -341,8 +357,12 @@ static void dp_process_position(
         /* Single-box line: use fixed flexibility=1, fitness=decent.
          * This must come BEFORE is_last check to match Elisp behavior. */
         if (is_single_box) {
-            badness = compute_badness(adjustment, 1);
-            fit = FITNESS_DECENT;
+            int64_t flexibility =
+                (in->allow_emergency && adjustment > 0) ? emergency_stretch : 1;
+            badness = compute_badness(adjustment, flexibility);
+            fit = (in->allow_emergency && adjustment > 0)
+                      ? compute_fitness(adjustment, flexibility)
+                      : FITNESS_DECENT;
 
             int penalty = end_hyphen ? in->hyphen_penalty : 0;
             dem = prev_dem + compute_demerits(badness, penalty,
@@ -405,9 +425,8 @@ void ekp_result_destroy(ekp_result_t *r)
  *
  * All font-dependent calculations happen in Elisp. C module is pure algorithm.
  *
- * Note: This function now uses dp_process_position() for the core DP logic,
- * sharing the same algorithm with process_dp_range(). Any bug fix only needs
- * to be made once in dp_process_position().
+ * dp_process_position() owns the per-breakpoint transition logic used by
+ * both strict and final passes, including final-pass active-path preservation.
  */
 
 ekp_result_t *ekp_break_with_prefixes(
@@ -443,10 +462,15 @@ ekp_result_t *ekp_break_with_prefixes(
     uint8_t *fitness = malloc((n + 1) * sizeof(uint8_t));
     int32_t *hyph_counts = malloc((n + 1) * sizeof(int32_t));
     int32_t *line_counts = malloc((n + 1) * sizeof(int32_t));
+    uint8_t *surviving_candidates = calloc(n + 1, sizeof(uint8_t));
+    dp_artificial_candidate_t *artificial_candidates =
+        calloc(n + 1, sizeof(dp_artificial_candidate_t));
 
-    if (!demerits || !backptrs || !rest_pixels || !fitness || !hyph_counts || !line_counts) {
+    if (!demerits || !backptrs || !rest_pixels || !fitness || !hyph_counts ||
+        !line_counts || !surviving_candidates || !artificial_candidates) {
         free(demerits); free(backptrs); free(rest_pixels);
         free(fitness); free(hyph_counts); free(line_counts);
+        free(surviving_candidates); free(artificial_candidates);
         return NULL;
     }
 
@@ -469,6 +493,7 @@ ekp_result_t *ekp_break_with_prefixes(
     int chp = ekp_global ? ekp_global->consec_hyphen_penalty : 100;
     double llsp = ekp_global ? ekp_global->last_line_short_penalty : 50.0;
     int32_t xstretch = ekp_global ? ekp_global->extra_stretch : 0;
+    int32_t estretch = ekp_global ? ekp_global->emergency_stretch : 0;
 
     /* Create unified input structure */
     dp_input_t in = {
@@ -497,11 +522,12 @@ ekp_result_t *ekp_break_with_prefixes(
         .consec_hyphen_penalty = chp,
         .last_line_short_penalty = llsp,
         .extra_stretch = xstretch,
+        .emergency_stretch = estretch,
         .allow_emergency = false
     };
 
     /* Two passes: strict Knuth-Plass first; if the paragraph end is
-     * unreachable, rerun permitting emergency single-box breaks.
+     * unreachable, rerun permitting emergency transitions.
      * Mirrors ekp--dp-cache-elisp. */
     for (int pass = 0; pass < 2; pass++) {
         in.allow_emergency = (pass == 1);
@@ -514,10 +540,19 @@ ekp_result_t *ekp_break_with_prefixes(
             hyph_counts[i] = 0;
             line_counts[i] = 0;
         }
+        memset(surviving_candidates, 0, (n + 1) * sizeof(uint8_t));
+        memset(artificial_candidates, 0,
+               (n + 1) * sizeof(dp_artificial_candidate_t));
         demerits[0] = 0.0;
 
         /* DP: for each valid start, try all ends */
         for (size_t i = 0; i < n; i++) {
+            if (in.allow_emergency && demerits[i] >= EKP_INFINITY &&
+                !surviving_candidates[i] && artificial_candidates[i].present)
+                dp_install_artificial(&artificial_candidates[i], i,
+                                      demerits, backptrs, rest_pixels,
+                                      fitness, hyph_counts, line_counts);
+
             if (demerits[i] >= EKP_INFINITY)
                 continue;
 
@@ -531,8 +566,16 @@ ekp_result_t *ekp_break_with_prefixes(
                                rest_pixels,
                                fitness,
                                hyph_counts,
-                               line_counts);
+                               line_counts,
+                               surviving_candidates,
+                               artificial_candidates);
         }
+
+        if (in.allow_emergency && demerits[n] >= EKP_INFINITY &&
+            !surviving_candidates[n] && artificial_candidates[n].present)
+            dp_install_artificial(&artificial_candidates[n], n,
+                                  demerits, backptrs, rest_pixels,
+                                  fitness, hyph_counts, line_counts);
 
         if (demerits[n] < EKP_INFINITY)
             break;
@@ -542,6 +585,7 @@ ekp_result_t *ekp_break_with_prefixes(
     if (demerits[n] >= EKP_INFINITY) {
         free(demerits); free(backptrs); free(rest_pixels);
         free(fitness); free(hyph_counts); free(line_counts);
+        free(surviving_candidates); free(artificial_candidates);
         return NULL;
     }
 
@@ -550,6 +594,7 @@ ekp_result_t *ekp_break_with_prefixes(
     if (!result) {
         free(demerits); free(backptrs); free(rest_pixels);
         free(fitness); free(hyph_counts); free(line_counts);
+        free(surviving_candidates); free(artificial_candidates);
         return NULL;
     }
 
@@ -568,6 +613,7 @@ ekp_result_t *ekp_break_with_prefixes(
         ekp_result_destroy(result);
         free(demerits); free(backptrs); free(rest_pixels);
         free(fitness); free(hyph_counts); free(line_counts);
+        free(surviving_candidates); free(artificial_candidates);
         return NULL;
     }
 
@@ -584,6 +630,7 @@ ekp_result_t *ekp_break_with_prefixes(
 
     free(demerits); free(backptrs); free(rest_pixels);
     free(fitness); free(hyph_counts); free(line_counts);
+    free(surviving_candidates); free(artificial_candidates);
 
     return result;
 }
@@ -709,6 +756,8 @@ int ekp_init(void)
     ekp_global->last_line_ratio = 0.5;
     ekp_global->consec_hyphen_penalty = 100;
     ekp_global->last_line_short_penalty = 50.0;
+    ekp_global->extra_stretch = 0;
+    ekp_global->emergency_stretch = 0;
 
     /* The thread pool is created lazily by the first batch call:
      * plain single-paragraph use never starts worker threads. */

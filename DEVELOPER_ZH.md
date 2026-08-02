@@ -109,7 +109,8 @@ badness  = min(10000, 100·|adjustment/flexibility|³)
 ```
 
 松紧等级(tight/decent/loose/very-loose)沿用 TeX 的比例阈值。特殊情
-况:单盒行 flexibility 固定为 1、fitness 为 decent;末行代价为
+况:严格遍的单盒行 flexibility 固定为 1;最终遍使用与普通欠宽行相同
+的有限 emergency stretch。末行代价为
 `(line-penalty + 短行badness)²`,填充率低于 `ekp-last-line-min-ratio`
 时 `短行badness = last-line-short-penalty × (1 − 填充率)`。
 
@@ -121,10 +122,17 @@ penalty/flagged 断点),主流程无 `q`/looseness(见 §6),相邻松紧惩
 
 某些输入不存在合法排版:比行宽更宽的不可断盒子,或无法伸展到目标宽
 的刚性(全 `nws`)区段。先跑严格遍;若段尾不可达,第二遍额外允许
-**紧急断行**——demerits 为 `(line-penalty + 10000)² + rest²` 的单盒行,
-不低于任何常规行的代价。由位置归纳可证:任何输入必有输出(回归:窄
-栏 CJK 曾整段返回空串),常规输入不付任何代价、保持纯 K-P 最优。两个
-引擎实现完全相同的策略。
+为普通欠宽候选加入有限 background emergency stretch,并继续走同一套
+adjustment ratio、badness、fitness 和 demerits。这样最终遍的欠宽选择
+仍由全局 K-P DP 比较,不会被塞进另一条固定代价路径。
+
+另外,最终遍实现 TeX 的 `artificial_demerits` 可达性保护。如果某个
+超宽候选将使一个断点的最后活动路径消失,且该断点没有任何未超宽候选
+存活,就以 tight fitness 和零增量 demerits 安装最佳暂存路径。这不是
+hard atom 专用的评分捷径:只要正常活动路径还在,它就不参与竞争,也不
+检查中文、单位或 token 类别。因此任何输入仍会得到覆盖完整源文本的
+plan(回归:窄栏 CJK 曾整段返回空结果),而普通欠宽行仍按正常 K-P 代价
+竞争。Elisp 1D、looseness/parshape 与 C 引擎实现相同语义。
 
 ## 5. 渲染
 
@@ -142,6 +150,15 @@ penalty/flagged 断点),主流程无 `q`/looseness(见 §6),相邻松紧惩
 记录。plan 不包含 buffer 位置或具体显示机制。
 `ekp-render-layout-string` 用它服务现有字符串 API;buffer 集成可复用
 完全相同的决策,无需重新运行或重新解释 KP 算法。
+
+缓存的 semantic plan 对缓存 owner 不可变。缓存命中会返回 consumer
+自有副本,覆盖所有 plan 自有的可变 payload:源字符串、context 树、盒
+向量与盒字符串、源 offset、line 记录、line glue、gap 记录和 line
+signature。`ekp-layout-plan-para` 是有意例外:段落缓存所有权早于
+semantic-plan cache,append planning 依赖稳定的段落身份。
+layout context snapshot 与返回 plan context 使用同一个递归 copier,
+覆盖 cons、vector 与 string,因此可变 policy 输入不会别名到 cache key
+或后续 consumer plan。
 
 两个消费方拥有不同且明确的表示权限。
 
@@ -242,8 +259,27 @@ idle formatter。point 移动本身严格零副作用;之后若在别处发生�
 - **断行许可**:每个 CJK 字符(含标点)独立成盒;
   `ekp-para-breaks-allowed` 按禁则(全角与半角)、`ekp-no-break`
   区间及 NBSP 族连接符禁止相应间隙,被禁间隙不携带 glue。DP 跳过
-  被禁候选但继续延伸行;紧急兜底把"内部无许可断点的连跑段"视为
-  原子。C 侧接收稀疏 `forbidden-positions` 向量。
+  被禁候选但继续延伸行。最终遍中的合法欠宽候选获得有限 emergency
+  stretch 并按正常 badness/demerits 评分;若超宽候选将消灭最后活动
+  路径,TeX 风格 artificial demerits 以零增量代价保留该路径。C 侧接收
+  稀疏 `forbidden-positions` 向量。显式 hard atom 只禁止其区间内部
+  断行;atom 前后本来合法的边界仍然合法。atom 邻接不获得特殊评分,
+  也不会额外禁止断点。
+- **可配置 policy 编译**:buffer 与 core policy 变量在 tokenization
+  之前解析为私有结构区间。区域 `ekp-break-policy` 优先,显式
+  buffer/file/dir local 值优先于 mode profile,profile 优先于全局默认。
+  只有 token policy 是按类别合并的 map;标量与 face 列表都直接替换
+  低优先级值。core 可以在 analysis copy 上使用
+  `ekp--face-break-policy`、`ekp--no-hyphen`、`ekp--literal-spacing`
+  等私有属性,但 cache key、plan string、box、rendered string 与
+  `ekp--last-para` 只能保留公开源属性。自动 face no-break 按连续的
+  私有 face-policy 区间整体测宽,超宽时降级为 no-hyphen;显式
+  `ekp-no-break` 永不降级。
+- **行内字面空格**:face 派生的 `no-hyphen` 在行内保留源空格为字面
+  box,禁止会把源空格 box 移到行首的断点,并允许互补的"空格后到内容"
+  断点。当这些空白成为选中的视觉断点时,源归属属于 break gap metadata,
+  而不是尾随可见行 box。该规则来自 policy,不能依赖源上是否另有公开
+  `face` 属性。
 - **对齐**(`ekp-alignment`):非两端对齐把 glue 伸缩数组与类参数
   置零,DP 给 `max_w` 加每行额外伸展 R(`ekp-c-set-penalties` 第 7
   参),badness = 100·(欠宽/R)³;渲染层按模式分派剩余(尾部/对半/
@@ -261,7 +297,8 @@ idle formatter。point 移动本身严格零副作用;之后若在别处发生�
 
 C 模块 1.6:`ekp-c-break-with-arrays` 15 参(…、forbidden-positions、
 tail-protrudes、hyphen-protrude、first-line-width);batch 向量 15 元;
-`ekp-c-set-penalties` 4–7 参。
+`ekp-c-set-penalties` 4–8 参。policy 编译只进入现有断词位置与禁断
+向量;没有新的架构决策时,不得增加第 16 个 C 参数或 batch 字段。
 
 特性完成后的性能(字节编译 + C,Apple Silicon,batch):justify zh
 w=200 ≈ 54 ms、range zh ≈ 117 ms——justify 与特性前持平,range 因盒
@@ -296,16 +333,20 @@ C 模块(`ekp_c/`,版本 1.6)只执行阶段 ④。所有字体相关数据以 E
   ——每段一个任务(这是正确的并行粒度;DP 本身天然串行)。线程池在
   首次多段落 batch 时惰性创建,按机器核心数定大小;队列满时提交方
   阻塞等待而非丢弃任务。
-- `ekp-c-set-penalties`(4–7 参数):`ekp--c-sync-params` 在**每次**
+- `ekp-c-set-penalties`(4–8 参数):`ekp--c-sync-params` 在**每次**
   进入 C 之前调用,保证 `ekp-line-penalty` 等变量始终生效(回归:此
   前从未同步)。
 - `ekp-c-module-load` 拒绝低于 `ekp-c-module-required-version` 的模块
   并回落到 Elisp,避免升级后的参数数量不匹配。
 
-模块不可用、分配/无结果返回 nil 或 ABI 版本不兼容时回落到 Elisp。
-直接 API 的非法输入 signal `ekp-c-invalid-input`;已启用后端发出的
-任何 signal 都会穿过公共 formatter,dispatcher 不捕获或隐藏。模块
-不会在部分失败时静默产出不同的排版。两引擎输出逐字节一致,由
+模块不可用、ABI 版本不兼容、整批 C 结果为 nil 或单项/断点结果为
+nil 时回落到 Elisp。直接 API 的非法输入 signal
+`ekp-c-invalid-input`。任何非 nil 的畸形后端结果 signal
+`ekp-backend-contract-error`:结果 cons 形状错误、breaks 不是 list、
+break 非整数/越界/非递增/未覆盖段尾、cost 非数字,或 batch 结果形状
+错误。已启用后端发出的任何 signal 都会穿过公共 formatter,dispatcher
+不捕获或隐藏。模块不会在部分失败时静默产出不同的排版。两引擎输出
+逐字节一致,由
 `ekp-test-c-parity-simple` / `ekp-test-c-parity-files` 及 300 例性质
 fuzz 验证。
 

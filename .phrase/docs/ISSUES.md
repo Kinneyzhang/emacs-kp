@@ -20,3 +20,4 @@
 - issue018 [ ] [Unique live appends miss the frame budget at very narrow widths.](../phases/phase-kp-overhaul-20260726/issue_narrow_live_append_latency_20260729.md)
 - issue019 [ ] [Per-edit frontier replanning destabilizes live projection and cannot restore reversible edits exactly.](../phases/phase-kp-overhaul-20260726/issue_stable_live_edit_transaction_20260729.md)
 - issue020 [ ] [C-backed resize reflow still takes roughly 60–70 ms.](../phases/phase-kp-overhaul-20260726/issue_c_resize_latency_20260729.md)
+- issue021 [x] [Final-pass emergency layout can isolate CJK source lines at narrow widths.](../phases/phase-kp-overhaul-20260726/issue_overlong_no_break_atom_20260801.md)

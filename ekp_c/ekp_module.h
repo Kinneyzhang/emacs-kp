@@ -82,6 +82,7 @@ typedef struct {
     double last_line_short_penalty; /* multiplier for short last lines */
     int32_t extra_stretch;          /* per-line flexibility for non-justify
                                      * alignment (0 = justify) */
+    int32_t emergency_stretch;      /* fixed final-pass emergency stretch */
 } ekp_state_t;
 
 /* Global state instance */

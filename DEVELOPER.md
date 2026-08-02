@@ -121,10 +121,12 @@ badness  = min(10000, 100·|adjustment/flexibility|³)
 ```
 
 Fitness classes (tight/decent/loose/very-loose) follow the TeX ratio
-thresholds.  Special cases: single-box lines use flexibility 1 and
-fitness decent; the last line pays `(line-penalty + short-badness)²`
-where `short-badness = last-line-short-penalty × (1 − fill)` when the
-fill ratio is below `ekp-last-line-min-ratio`.
+thresholds.  Special cases: single-box lines use flexibility 1 in the
+strict pass; the final pass uses the same finite emergency stretch as
+ordinary underfull lines.  The last line pays
+`(line-penalty + short-badness)²` where
+`short-badness = last-line-short-penalty × (1 − fill)` when the fill ratio
+is below `ekp-last-line-min-ratio`.
 
 Deviations from the 1981 paper, by design: penalties are always added
 as `+p²` (no negative/flagged penalties), there is no `q`/looseness in
@@ -135,12 +137,22 @@ the main pass (see §6), and adjacent-fitness is a flat constant.
 Some inputs admit no valid layout: an unbreakable box wider than the
 line, or a rigid (all-`nws`) region that cannot stretch to the target.
 A strict pass runs first; if the paragraph end is unreachable, a second
-pass additionally allows **emergency breaks** — single-box lines with
-demerits `(line-penalty + 10000)² + rest²`, at least as bad as any
-regular line.  This guarantees, by induction over positions, that every
-input produces output (regression: narrow CJK used to return an empty
-string), while the common case pays nothing and keeps pure K-P
-optimality.  Both engines implement the identical strategy.
+pass adds a finite background emergency stretch to ordinary underfull
+candidates and still scores them through the same adjustment ratio,
+badness, fitness, and demerits used by the strict pass.  That keeps
+underfull final-pass choices inside the global K-P DP instead of forcing
+them through a separate fixed-cost path.
+
+Separately, the final pass implements TeX's `artificial_demerits` safeguard.
+When an overfull candidate would otherwise remove the last active path to a
+breakpoint and no non-overfull candidate survives there, the best provisional
+path is installed with tight fitness and zero incremental demerits. This is a
+reachability rule, not a hard-atom scoring shortcut: it never competes while a
+normal active path survives, and it does not inspect CJK, units, or token
+classes. Thus every input still produces a complete plan (regression: narrow
+CJK used to return an empty result), while ordinary underfull lines compete
+by normal K-P cost. The Elisp 1D, looseness/parshape, and C engines implement
+the identical strategy.
 
 ## 5. Rendering
 
@@ -161,6 +173,16 @@ hyphen decisions into `ekp-layout-plan`, `ekp-layout-line`, and
 mechanism.  `ekp-render-layout-string` consumes it for the public string API;
 the buffer integration can consume the same decisions without re-running or
 reinterpreting the KP algorithm.
+
+Cached semantic plans are immutable to the cache owner.  A cache hit returns
+a consumer-owned copy of every plan-owned mutable payload: source string,
+context tree, box vector and box strings, source offsets, line records,
+line glues, gap records, and line signatures.  `ekp-layout-plan-para` is the
+intentional exception: paragraph-cache ownership predates the semantic-plan
+cache, and append planning depends on stable paragraph identity.
+Layout context snapshots and returned plan contexts use the same recursive
+copier for conses, vectors, and strings, so mutable policy inputs cannot alias
+the cache key or a later consumer plan.
 
 The two consumers deliberately have different representation rights.
 
@@ -281,9 +303,33 @@ the one authoritative width.
   own box; `ekp-para-breaks-allowed` forbids gaps per kinsoku (full-
   and halfwidth), `ekp-no-break' spans and NBSP-family joiners.
   Forbidden gaps carry no glue.  The DP skips them as candidates while
-  the line keeps extending; the emergency fallback treats a run with
-  no permitted inner break as atomic.  C receives the sparse
-  `forbidden-positions` vector.
+  the line keeps extending.  In the final pass, legal underfull candidates
+  receive finite emergency stretch and are scored by normal
+  badness/demerits. If an overfull candidate would extinguish the last active
+  final-pass path, TeX-style artificial demerits preserve that path with zero
+  incremental cost. C receives the sparse `forbidden-positions` vector.
+  Explicit hard atoms forbid only breaks inside their interval; an otherwise
+  legal boundary immediately before or after an atom remains legal. Atom
+  adjacency therefore receives no special scoring or break prohibition.
+- **Configurable policy compilation**: buffer and core policy variables are
+  resolved before tokenization into private structural intervals.  Region
+  `ekp-break-policy` wins first, explicit buffer/file/dir locals win over
+  mode profiles, and profiles win over global defaults.  Token policies are
+  the only merged category map; scalar and face-list options replace the
+  lower scope.  The core may use private properties such as
+  `ekp--face-break-policy`, `ekp--no-hyphen`, and
+  `ekp--literal-spacing` on an analysis copy, but cache keys, plan strings,
+  boxes, rendered strings, and `ekp--last-para` must contain only public
+  source properties.  Automatic face no-break is measured over the
+  contiguous private face-policy span and downgrades to no-hyphen when
+  overwide; explicit `ekp-no-break` never downgrades.
+- **Literal inline spaces**: face-derived `no-hyphen` preserves source
+  spaces as literal boxes inside a line, forbids a break that would move a
+  literal source-space box to line start, and permits the complementary
+  break after a source-space box.  When such whitespace is the selected
+  visual break, source ownership belongs to the break gap metadata, not to a
+  trailing visible line box.  This rule is policy-derived and must not depend
+  on whether the source also carries a public `face` property.
 - **Alignment** (`ekp-alignment`): non-justify modes zero the glue
   stretch/shrink arrays and class params; the DP widens `max_w` by an
   extra per-line stretch R (`ekp-c-set-penalties` arg 7), so badness =
@@ -306,7 +352,9 @@ the one authoritative width.
 C module 1.6: `ekp-c-break-with-arrays' takes 15 args
 (…, forbidden-positions, tail-protrudes, hyphen-protrude,
 first-line-width); batch vectors have 15 elements;
-`ekp-c-set-penalties' takes 4–7.
+`ekp-c-set-penalties' takes 4–8.  Policy compilation feeds the existing
+hyphen-position and forbidden-break vectors; it must not add a sixteenth C
+argument or batch field without a new architecture decision.
 
 Performance after the feature wave (byte-compiled + C, Apple
 Silicon, batch): justify zh w=200 ≈ 54 ms, range zh ≈ 117 ms —
@@ -349,19 +397,22 @@ the source of truth for all font-dependent data.
   pool is created lazily on the first multi-paragraph batch and sized
   to the machine's cores; a full queue blocks the submitter rather
   than dropping the task.
-- `ekp-c-set-penalties` (4–7 args): called by `ekp--c-sync-params`
+- `ekp-c-set-penalties` (4–8 args): called by `ekp--c-sync-params`
   before *every* C entry, so `ekp-line-penalty` & friends always take
   effect (regression: they were never synced before).
 - `ekp-c-module-load` refuses modules older than
   `ekp-c-module-required-version` and falls back to Elisp, preventing
   arity mismatches after upgrades.
 
-An unavailable module, an allocation/no-result nil, or an incompatible
-module version falls back to the Elisp engine.  Invalid direct API input
-signals `ekp-c-invalid-input`, and any signal from an enabled backend
-propagates through the public formatter; the dispatcher does not catch and
-hide it.  The module never silently produces a different layout on partial
-failure.  The two engines are verified byte-identical by
+An unavailable module, an incompatible module version, a nil whole C result,
+or a nil per-item/break result falls back to the Elisp engine.  Invalid
+direct API input signals `ekp-c-invalid-input`.  Any non-nil malformed
+backend result signals `ekp-backend-contract-error`: malformed cons shape,
+non-list breaks, non-integer/out-of-range/non-increasing/partial breaks,
+nonnumeric cost, or malformed batch result shape.  Any signal from an
+enabled backend propagates through the public formatter; the dispatcher does
+not catch and hide it.  The module never silently produces a different
+layout on partial failure.  The two engines are verified byte-identical by
 `ekp-test-c-parity-simple` / `ekp-test-c-parity-files` and the 300-case
 property fuzz.
 

@@ -141,6 +141,42 @@ overlay and inserts no layout character.
   state.
 - Major-mode changes and mode disable leave the logical text and prior
   integrations intact.
+- A rigid inline atom that jumps a candidate line from underfull to overfull
+  stays intact without forcing the preceding prose through one-box emergency
+  lines. In the final pass, ordinary underfull candidates receive finite
+  emergency stretch and remain normal K-P cost candidates. An atom wider than
+  the measure stays intact but may share an overflow line with preceding
+  ordinary content when TeX-style artificial demerits must preserve the last
+  active path. Atom adjacency has no special break or scoring rule.
+- Inline code is not rigid by default. Known Org/Markdown inline faces use
+  the inline policy path, not the paragraph verbatim path. The default policy
+  permits legal wrapping at existing boundaries, suppresses discretionary
+  dictionary hyphenation, and preserves source whitespace literally. Known
+  code-block faces remain paragraph-level verbatim.
+- Manual `ekp-no-break` is the only explicit hard-atom owner and is never
+  downgraded. Automatic no-break spans, such as compact number-unit tokens,
+  downgrade to no-hyphen when wider than the effective measure.
+- The previous narrow showcase orphan-glyph failure is now a permanent
+  acceptance invariant: the inline-code paragraph must not isolate CJK glyphs
+  such as `行`, `内`, or `永` as one-character source lines around automatic
+  inline code when a non-emergency legal alternative exists. Dynamic evidence
+  must distinguish automatic inline code from explicit hard atoms and block
+  verbatim spans.
+- The GUI oracle rejects any isolated CJK source line in the showcase
+  paragraph at the checked widths. This is a core K-P invariant, not a
+  unit-suffix, screenshot-specific, or renderer compensation rule.
+- Effective policy precedence is deterministic: region properties, then
+  explicit buffer/file/dir-local values, then major-mode profiles, then
+  global defaults. Manual text properties are session-local; persistence
+  comes from mode syntax/profiles and file/dir locals.
+- URL, path, and identifier tokens default to no-hyphen. Compact number-unit
+  tokens default to no-break. Hyphenation defaults to `auto`, with `on` and
+  `off` overrides. Kinsoku defaults to `common`, with `zh`, `ja`, `off`, and
+  custom additions available. Ordinary overlong tokens default to the current
+  emergency output, with `overflow` and `natural` alternatives.
+- The buffer measure defaults to the narrowest live window. A positive
+  integer fixed measure and `(max . PIXELS)` cap are configurable and must be
+  reported by diagnostics when they create overflow risk.
 - Reprojection preserves point, the mark marker, and `mark-active`
   independently. An inactive historical mark must never become a visible
   selection merely because width or layout options changed.
@@ -190,3 +226,19 @@ overlay and inserts no layout character.
 9. Default, permuted, and isolated ERT; C/Elisp fuzz; warning-as-error
    Elisp/C builds; checkdoc; package/static/release gates; full diff review;
    independent code review; and independent architecture review pass.
+10. Elisp, C, semantic-plan, string-renderer, and real GUI paths keep an
+    `ekp-no-break` atom intact while proving that its preceding CJK prefix is
+    not fragmented into one-glyph lines at narrow measures.
+11. Inline and token break policies are configurable at global, mode profile,
+    explicit local, and region scopes. The accepted defaults are: inline code
+    `no-hyphen`; block code verbatim; URL/path/identifier `no-hyphen`;
+    compact number-unit `no-break`; hyphenation `auto`; kinsoku `common`;
+    overlong token `emergency`; buffer measure `narrowest-window`.
+12. Region `ekp-break-policy` supports `normal`, `hyphenate`, and
+    `no-hyphen`, and never creates a second hard-atom representation.
+    Overlapping explicit `ekp-no-break` wins over every new policy.
+13. The showcase paragraph containing inline code, CJK prose, NBSP-backed
+    numbers, and units must have no pathological single-CJK source line in
+    the inspected 280px GUI path while retaining exact source text, zero
+    overlays, block-code verbatim display, internal source-space inline
+    breaks, and C/Elisp plan parity.

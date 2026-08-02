@@ -49,6 +49,8 @@
 (require 'ekp)
 (require 'ekp-buffer)
 (require 'ekp-showcase)
+(require 'ert)
+(require 'subr-x)
 
 (defun ekp-gui-verify--line-width (window base line)
   "Measure planned LINE in WINDOW at paragraph BASE."
@@ -105,6 +107,500 @@ When SKIP-PREDICATE is non-nil, omit spans for which it returns non-nil."
                        (point-min) (point-max) 'ekp-glue nil))
                  (null (overlays-in (point-min) (point-max))))
             :pass (and (= over 0) (= wrong 0) (> lines 0))))))
+
+(defun ekp-gui-verify--atom-context ()
+  "Return the protected showcase atom and its projected plan context."
+  (let* ((atom-beg (text-property-any
+                    (point-min) (point-max) 'ekp-no-break t))
+         (atom-end (and atom-beg
+                        (next-single-property-change
+                         atom-beg 'ekp-no-break nil (point-max))))
+         (span (and atom-beg
+                    (seq-find
+                     (lambda (candidate)
+                       (and (<= (marker-position
+                                  (ekp-buffer--span-beg candidate))
+                                atom-beg)
+                            (< atom-beg
+                               (marker-position
+                                (ekp-buffer--span-end candidate)))))
+                     ekp-buffer--spans))))
+    (unless (and atom-beg atom-end span)
+      (error "Showcase atom projection is unavailable"))
+    (list atom-beg atom-end span (ekp-buffer--span-plan span))))
+
+(defun ekp-gui-verify-atom-adapter ()
+  "Return primitive evidence for the showcase rigid-atom regression."
+  (pcase-let* ((`(,atom-beg ,atom-end ,span ,plan)
+                 (ekp-gui-verify--atom-context))
+                (base (marker-position (ekp-buffer--span-beg span)))
+                (atom-start (- atom-beg base))
+                (atom-finish (- atom-end base))
+                (prefix-end (1- atom-start))
+                (lines (ekp-layout-plan-lines plan))
+                (first (aref lines 0))
+                (atom-line
+                 (seq-find
+                  (lambda (line)
+                    (and (<= (ekp-layout-line-source-start line) atom-start)
+                         (>= (ekp-layout-line-source-end line) atom-finish)))
+                  (append lines nil))))
+    `((width . ,ekp-showcase--width)
+      (first_line_end . ,(ekp-layout-line-source-end first))
+      (prefix_end . ,prefix-end)
+      (prefix_screen_lines
+       . ,(count-screen-lines base (+ base prefix-end)))
+      (atom_intact . ,(if atom-line t :false))
+      (source_exact
+       . ,(if (equal (buffer-substring-no-properties
+                      (point-min) (point-max))
+                     (substring-no-properties (ekp-showcase--sample)))
+              t :false))
+      (overlays . ,(length (overlays-in (point-min) (point-max))))
+      (engine_c . ,(if (and ekp-use-c-module (ekp--c-available-p))
+                       t :false))
+      (reflow_ms . ,(or ekp-showcase--last-ms 0)))))
+
+(defun ekp-gui-verify-atom-assertions ()
+  "Return assertions for `ekp-gui-verify-atom-adapter'."
+  (let* ((adapter (ekp-gui-verify-atom-adapter))
+         (value (lambda (key) (cdr (assq key adapter)))))
+    `(((name . "full-prefix-before-atom")
+       (passed . ,(if (>= (funcall value 'first_line_end)
+                           (funcall value 'prefix_end)) t :false)))
+      ((name . "prefix-not-vertical")
+       (passed . ,(if (<= (funcall value 'prefix_screen_lines) 2)
+                      t :false)))
+      ((name . "atom-stays-on-one-plan-line")
+       (passed . ,(funcall value 'atom_intact)))
+      ((name . "logical-source-exact")
+       (passed . ,(funcall value 'source_exact)))
+      ((name . "zero-overlays")
+       (passed . ,(if (= (funcall value 'overlays) 0) t :false)))
+      ((name . "c-engine-active")
+       (passed . ,(funcall value 'engine_c))))))
+
+(defun ekp-gui-verify--source-text (beg end)
+  "Return source text from BEG through END without properties."
+  (buffer-substring-no-properties beg end))
+
+(defun ekp-gui-verify--range-end (beg property)
+  "Return the end of PROPERTY's run starting at BEG."
+  (next-single-property-change beg property nil (point-max)))
+
+(defun ekp-gui-verify--face-has-showcase-inline-role-p (face)
+  "Return non-nil when FACE carries the dedicated showcase inline role."
+  (cond
+   ((memq face '(ekp-showcase-inline-code
+                 ekp-showcase-inline-code-face))
+    t)
+   ((consp face)
+    (seq-some #'ekp-gui-verify--face-has-showcase-inline-role-p face))))
+
+(defun ekp-gui-verify--inline-role-at-p (pos)
+  "Return non-nil when POS is the automatic showcase inline role."
+  (or (get-text-property pos 'ekp-showcase-inline-code)
+      (ekp-gui-verify--face-has-showcase-inline-role-p
+       (get-text-property pos 'face))))
+
+(defun ekp-gui-verify--face-code-range ()
+  "Return the automatic showcase inline-code role range."
+  (let ((pos (point-min))
+        hit)
+    (while (and (< pos (point-max)) (not hit))
+      (if (and (ekp-gui-verify--inline-role-at-p pos)
+               (not (get-text-property pos 'ekp-verbatim))
+               (not (get-text-property pos 'ekp-no-break)))
+          (setq hit
+                (cons pos
+                      (min (or (next-single-property-change
+                                pos 'ekp-showcase-inline-code
+                                nil (point-max))
+                               (point-max))
+                           (ekp-gui-verify--range-end pos 'face)
+                           (or (next-single-property-change
+                                pos 'ekp-no-break nil (point-max))
+                               (point-max))
+                           (or (next-single-property-change
+                                pos 'ekp-verbatim nil (point-max))
+                               (point-max)))))
+        (setq pos (1+ pos))))
+    hit))
+
+(defun ekp-gui-verify--projected-property-free-p (beg end)
+  "Return non-nil when BEG through END has no EKP projection props."
+  (seq-every-p
+   (lambda (property)
+     (not (text-property-not-all beg end property nil)))
+   '(ekp-justified ekp-buffer--display ekp-buffer--line-prefix
+     display line-prefix)))
+
+(defun ekp-gui-verify--unplanned-span-count ()
+  "Return the number of installed spans that have no layout plan yet."
+  (let ((count 0))
+    (dolist (span ekp-buffer--spans count)
+      (unless (ekp-buffer--span-plan span)
+        (setq count (1+ count))))))
+
+(defun ekp-gui-verify--current-live-prefix-p ()
+  "Return non-nil when the committed live prefix still matches the buffer."
+  (if-let* ((state ekp-buffer--live-state)
+            (beg (marker-position (ekp-buffer--live-state-beg state))))
+      (ekp-buffer--live-prefix-current-p
+       beg
+       (ekp-buffer--live-state-plan state)
+       (or (ekp-buffer--live-state-active-index state) 0)
+       (ekp-buffer--live-state-signatures state))
+    t))
+
+(defun ekp-gui-verify--unplanned-span-counts ()
+  "Return raw, live, and stale nil-plan span counts."
+  (let ((raw 0)
+        (live 0)
+        (stale 0)
+        (live-spans (and ekp-buffer--live-state
+                         (ekp-buffer--live-state-spans
+                          ekp-buffer--live-state)))
+        (live-current (ekp-gui-verify--current-live-prefix-p)))
+    (dolist (span ekp-buffer--spans)
+      (unless (ekp-buffer--span-plan span)
+        (setq raw (1+ raw))
+        (if (and live-current (memq span live-spans))
+            (setq live (1+ live))
+          (setq stale (1+ stale)))))
+    `((raw . ,raw)
+      (live . ,live)
+      (stale . ,stale)
+      (live_state_current . ,(if live-current t :false)))))
+
+(defun ekp-gui-verify--isolated-cjk-cascades ()
+  "Return runs of three or more consecutive isolated CJK source lines."
+  (let (hits)
+    (dolist (span ekp-buffer--spans)
+      (when-let* ((plan (ekp-buffer--span-plan span))
+                  (source (ekp-layout-plan-string plan)))
+        (let (run)
+          (dolist (line (append (ekp-layout-plan-lines plan) nil))
+            (if (ekp-gui-verify--isolated-cjk-line-p line source)
+                (push (substring source
+                                 (ekp-layout-line-source-start line)
+                                 (ekp-layout-line-source-end line))
+                      run)
+              (when (>= (length run) 3)
+                (push (nreverse run) hits))
+              (setq run nil)))
+          (when (>= (length run) 3)
+            (push (nreverse run) hits)))))
+    (nreverse hits)))
+
+(defun ekp-gui-verify--hard-atom-range ()
+  "Return the explicit hard no-break range in the showcase."
+  (when-let* ((beg (text-property-any
+                    (point-min) (point-max) 'ekp-no-break t)))
+    (cons beg (ekp-gui-verify--range-end beg 'ekp-no-break))))
+
+(defun ekp-gui-verify--verbatim-range ()
+  "Return the explicit verbatim block range in the showcase."
+  (when-let* ((beg (text-property-any
+                    (point-min) (point-max) 'ekp-verbatim t)))
+    (cons beg (ekp-gui-verify--range-end beg 'ekp-verbatim))))
+
+(defun ekp-gui-verify--span-for-position (position)
+  "Return the projected span containing POSITION."
+  (seq-find
+   (lambda (span)
+     (and (<= (marker-position (ekp-buffer--span-beg span)) position)
+          (< position (marker-position (ekp-buffer--span-end span)))))
+   ekp-buffer--spans))
+
+(defun ekp-gui-verify--range-lines (range)
+  "Return layout lines intersecting RANGE."
+  (when-let* ((span (and range
+                         (ekp-gui-verify--span-for-position (car range))))
+              (plan (ekp-buffer--span-plan span)))
+    (let* ((base (marker-position (ekp-buffer--span-beg span)))
+           (start (- (car range) base))
+           (finish (- (cdr range) base)))
+      (seq-filter
+       (lambda (line)
+         (and (< (ekp-layout-line-source-start line) finish)
+              (< start (ekp-layout-line-source-end line))))
+       (append (ekp-layout-plan-lines plan) nil)))))
+
+(defun ekp-gui-verify--range-plan-complete-p (range)
+  "Return non-nil when RANGE's plan is nonempty and covers its source."
+  (when-let* ((span (and range
+                         (ekp-gui-verify--span-for-position (car range))))
+              (plan (ekp-buffer--span-plan span))
+              (lines (append (ekp-layout-plan-lines plan) nil)))
+    (and (= (ekp-layout-line-source-start (car lines)) 0)
+         (= (ekp-layout-line-source-end (car (last lines)))
+            (length (ekp-layout-plan-string plan))))))
+
+(defun ekp-gui-verify--range-intact-p (range)
+  "Return non-nil when RANGE is contained in one planned line."
+  (seq-some
+   (lambda (line)
+     (let* ((span (ekp-gui-verify--span-for-position (car range)))
+            (base (marker-position (ekp-buffer--span-beg span)))
+            (start (- (car range) base))
+            (finish (- (cdr range) base)))
+       (and (<= (ekp-layout-line-source-start line) start)
+            (>= (ekp-layout-line-source-end line) finish))))
+   (ekp-gui-verify--range-lines range)))
+
+(defun ekp-gui-verify--range-break-text (range line)
+  "Return LINE's break source inside RANGE, or nil when outside."
+  (let ((start (ekp-layout-line-break-source-start line))
+        (end (ekp-layout-line-break-source-end line)))
+    (when-let* ((span (and start end (< start end)
+                           (ekp-gui-verify--span-for-position
+                            (car range)))))
+      (let* ((base (marker-position (ekp-buffer--span-beg span)))
+             (range-start (- (car range) base))
+             (range-end (- (cdr range) base)))
+        (when (and (<= range-start start) (<= end range-end))
+          (substring (ekp-gui-verify--source-text (car range) (cdr range))
+                     (- start range-start)
+                     (- end range-start)))))))
+
+(defun ekp-gui-verify--inline-legal-breaks-p (range)
+  "Return non-nil when RANGE uses only source-space breaks."
+  (and range
+       (seq-every-p
+        (lambda (line)
+          (or (not (ekp-layout-line-break-kind line))
+              (let ((break-text
+                     (ekp-gui-verify--range-break-text range line)))
+                (or (not break-text)
+                    (string-match-p
+                     "\\`[[:space:]\n\r\t]+\\'" break-text)))))
+        (ekp-gui-verify--range-lines range))))
+
+(defun ekp-gui-verify--inline-hyphenated-p (range)
+  "Return non-nil when RANGE has a discretionary hyphenated line."
+  (seq-some #'ekp-layout-line-hyphen-p
+            (or (ekp-gui-verify--range-lines range) nil)))
+
+(defun ekp-gui-verify--inline-line-evidence (range)
+  "Return planned line evidence for inline RANGE."
+  (let* ((span (and range (ekp-gui-verify--span-for-position (car range))))
+         (plan (and span (ekp-buffer--span-plan span)))
+         (source (and plan (ekp-layout-plan-string plan)))
+         (base (and span (marker-position (ekp-buffer--span-beg span))))
+         (range-start (and base (- (car range) base)))
+         (range-end (and base (- (cdr range) base)))
+         (lines (or (ekp-gui-verify--range-lines range) nil))
+         (line-count (length lines))
+         break-map internal-breaks)
+    (dolist (line lines)
+      (let* ((start (ekp-layout-line-break-source-start line))
+             (end (ekp-layout-line-break-source-end line))
+             (kind (ekp-layout-line-break-kind line))
+             (internal (and source start end (< start end)
+                            range-start range-end
+                            (< range-start start)
+                            (<= end range-end)))
+             (source-space
+              (and source start end (< start end)
+                   (string-match-p
+                    "\\`[[:space:]\n\r\t]+\\'"
+                    (substring source start end))))
+             (hyphen (and internal (ekp-layout-line-hyphen-p line)))
+             (entry
+              `((start . ,(or start 0))
+                (end . ,(or end 0))
+                (kind . ,(ekp-gui-verify--json-policy-value kind))
+                (internal . ,(if internal t :false))
+                (source_space . ,(if source-space t :false))
+                (hyphen . ,(if hyphen t :false)))))
+        (when (or kind start end)
+          (push entry break-map))
+        (when internal
+          (push entry internal-breaks))))
+    `((automatic_inline_line_count . ,line-count)
+      (automatic_inline_wrapped . ,(if (> line-count 1) t :false))
+      (automatic_inline_breaks_source_spaces
+       . ,(if (and (> line-count 1)
+                   internal-breaks
+                   (seq-every-p
+                    (lambda (entry)
+                      (and (eq (cdr (assq 'source_space entry)) t)
+                           (eq (cdr (assq 'hyphen entry)) :false)))
+                    internal-breaks))
+              t :false))
+      (automatic_inline_break_map . ,(nreverse break-map)))))
+
+(defun ekp-gui-verify--isolated-cjk-line-p (line source)
+  "Return non-nil when LINE projects a single CJK character from SOURCE."
+  (let ((text (string-trim
+               (substring source
+                          (ekp-layout-line-source-start line)
+                          (ekp-layout-line-source-end line)))))
+    (and (= (length text) 1)
+         (let ((char (aref text 0)))
+           (and (<= #x4E00 char) (<= char #x9FFF))))))
+
+(defun ekp-gui-verify--isolated-cjk-lines ()
+  "Return isolated CJK planned lines in projected showcase spans."
+  (let (hits)
+    (dolist (span ekp-buffer--spans)
+      (when-let* ((plan (ekp-buffer--span-plan span))
+                  (source (ekp-layout-plan-string plan)))
+        (dolist (line (append (ekp-layout-plan-lines plan) nil))
+          (when (ekp-gui-verify--isolated-cjk-line-p line source)
+            (push (substring source
+                             (ekp-layout-line-source-start line)
+                             (ekp-layout-line-source-end line))
+                  hits)))))
+    (nreverse hits)))
+
+(defun ekp-gui-verify--refresh-showcase-width (width)
+  "Open the showcase and refresh it at WIDTH."
+  (when (get-buffer "*ekp-showcase*")
+    (kill-buffer "*ekp-showcase*"))
+  (ekp-showcase)
+  (with-current-buffer "*ekp-showcase*"
+    (ekp-showcase-set-width width)
+    (redisplay t)
+    (current-buffer)))
+
+(defun ekp-gui-verify--showcase-policy-evidence ()
+  "Return G004 policy evidence for the current showcase buffer."
+  (let* ((auto (ekp-gui-verify--face-code-range))
+         (manual (ekp-gui-verify--hard-atom-range))
+         (block (ekp-gui-verify--verbatim-range))
+         (auto-lines (ekp-gui-verify--inline-line-evidence auto))
+         (sample (substring-no-properties (ekp-showcase--sample))))
+    `((width . ,ekp-showcase--width)
+      (automatic_inline_present . ,(if auto t :false))
+      (automatic_inline_plan_complete
+       . ,(if (ekp-gui-verify--range-plan-complete-p auto) t :false))
+      (automatic_inline_explicit_no_break
+       . ,(if (and auto (text-property-not-all
+                         (car auto) (cdr auto) 'ekp-no-break nil))
+              t :false))
+      (automatic_inline_literal_source
+       . ,(if (and auto
+                   (string-match-p "[[:space:]][^[:space:]]+[[:space:]]"
+                                   (ekp-gui-verify--source-text
+                                    (car auto) (cdr auto))))
+              t :false))
+      (automatic_inline_legal_breaks
+       . ,(if (and auto
+                   (ekp-gui-verify--inline-legal-breaks-p auto))
+              t :false))
+      (automatic_inline_no_hyphen
+       . ,(if (and auto
+                   (not (ekp-gui-verify--inline-hyphenated-p auto)))
+              t :false))
+      ,@auto-lines
+      (manual_hard_atom_present . ,(if manual t :false))
+      (manual_hard_atom_distinct
+       . ,(if (and auto manual (not (equal auto manual))) t :false))
+      (manual_hard_atom_explicit
+       . ,(if (and manual
+                   (not (text-property-not-all
+                         (car manual) (cdr manual) 'ekp-no-break t)))
+              t :false))
+      (manual_hard_atom_intact
+       . ,(if (and manual
+                   (ekp-gui-verify--range-intact-p manual))
+              t :false))
+      (block_verbatim_present . ,(if block t :false))
+      (block_verbatim_intact
+       . ,(if (and block
+                   (ekp-gui-verify--projected-property-free-p
+                    (car block) (cdr block)))
+              t :false))
+      (isolated_cjk_cascades . ,(ekp-gui-verify--isolated-cjk-cascades))
+      (isolated_cjk_lines . ,(ekp-gui-verify--isolated-cjk-lines))
+      (source_exact
+       . ,(if (equal (buffer-substring-no-properties
+                      (point-min) (point-max))
+                     sample)
+              t :false))
+      (overlays . ,(length (overlays-in (point-min) (point-max))))
+      (engine_c . ,(if (and ekp-use-c-module (ekp--c-available-p))
+                       t :false)))))
+
+(defun ekp-gui-verify-showcase-policy-adapter (&optional width)
+  "Return G004 machine evidence for the showcase policy contract."
+  (with-current-buffer (ekp-gui-verify--refresh-showcase-width
+                        (or width 280))
+    (ekp-gui-verify--showcase-policy-evidence)))
+
+(defun ekp-gui-verify-showcase-parshape-policy-adapter (&optional width)
+  "Return showcase policy evidence with parshape enabled at WIDTH."
+  (with-current-buffer (ekp-gui-verify--refresh-showcase-width
+                        (or width 280))
+    (setq-local ekp-showcase--parshape-on t)
+    (ekp-showcase--refresh)
+    (redisplay t)
+    (ekp-gui-verify--showcase-policy-evidence)))
+
+(defun ekp-gui-verify-showcase-policy-assertions ()
+  "Return G004 assertions for `ekp-gui-verify-showcase-policy-adapter'."
+  (let* ((adapter (ekp-gui-verify-showcase-policy-adapter 280))
+         (value (lambda (key) (cdr (assq key adapter)))))
+    `(((name . "automatic-inline-face-present")
+       (passed . ,(funcall value 'automatic_inline_present)))
+      ((name . "automatic-inline-plan-complete")
+       (passed . ,(funcall value 'automatic_inline_plan_complete)))
+      ((name . "automatic-inline-has-no-explicit-no-break")
+       (passed . ,(if (eq (funcall value
+                                    'automatic_inline_explicit_no_break)
+                          :false)
+                      t :false)))
+      ((name . "automatic-inline-keeps-literal-source")
+       (passed . ,(funcall value 'automatic_inline_literal_source)))
+      ((name . "automatic-inline-breaks-only-legally")
+       (passed . ,(funcall value 'automatic_inline_legal_breaks)))
+      ((name . "automatic-inline-never-discretionary-hyphenates")
+       (passed . ,(funcall value 'automatic_inline_no_hyphen)))
+      ((name . "manual-hard-atom-is-distinct")
+       (passed . ,(funcall value 'manual_hard_atom_distinct)))
+      ((name . "manual-hard-atom-remains-explicit")
+       (passed . ,(funcall value 'manual_hard_atom_explicit)))
+      ((name . "manual-hard-atom-remains-intact")
+       (passed . ,(funcall value 'manual_hard_atom_intact)))
+      ((name . "block-code-stays-verbatim")
+       (passed . ,(if (and (funcall value 'block_verbatim_present)
+                           (funcall value 'block_verbatim_intact))
+                      t :false)))
+      ((name . "narrow-rendering-has-no-isolated-cjk-cascade")
+       (passed . ,(if (null (funcall value 'isolated_cjk_cascades))
+                      t :false)))
+      ((name . "narrow-rendering-has-no-isolated-cjk-lines")
+       (passed . ,(if (null (funcall value 'isolated_cjk_lines))
+                      t :false)))
+      ((name . "logical-source-exact")
+       (passed . ,(funcall value 'source_exact)))
+      ((name . "zero-overlays")
+       (passed . ,(if (= (funcall value 'overlays) 0) t :false)))
+      ((name . "c-engine-active")
+       (passed . ,(funcall value 'engine_c))))))
+
+(ert-deftest ekp-gui-verify-g004-showcase-policy-contract ()
+  "The showcase separates automatic inline code from manual hard atoms."
+  (let ((assertions (ekp-gui-verify-showcase-policy-assertions)))
+    (dolist (assertion assertions)
+      (ert-info ((cdr (assq 'name assertion)))
+        (should (eq (cdr (assq 'passed assertion)) t))))))
+
+(ert-deftest ekp-gui-verify-showcase-1d-rejects-isolated-cjk-lines ()
+  "The default 168px showcase oracle rejects isolated CJK rows."
+  (let* ((adapter (ekp-gui-verify-showcase-policy-adapter 168))
+         (isolated (cdr (assq 'isolated_cjk_lines adapter))))
+    (should (eq (cdr (assq 'automatic_inline_plan_complete adapter)) t))
+    (should-not isolated)))
+
+(ert-deftest ekp-gui-verify-showcase-parshape-rejects-isolated-cjk-lines ()
+  "The parshape-on 280px showcase oracle rejects isolated CJK rows."
+  (let* ((adapter (ekp-gui-verify-showcase-parshape-policy-adapter 280))
+         (isolated (cdr (assq 'isolated_cjk_lines adapter))))
+    (should (eq (cdr (assq 'automatic_inline_plan_complete adapter)) t))
+    (should-not isolated)))
 
 ;;;###autoload
 (defun ekp-gui-verify ()
@@ -382,6 +878,558 @@ In batch mode, terminate with status 1 when any result fails."
 (defvar-local ekp-gui-verify--live-middle-plan nil)
 (defvar-local ekp-gui-verify--live-middle-spans nil)
 (defvar-local ekp-gui-verify--live-stage "setup")
+(defvar-local ekp-gui-verify--showcase-temporal-source nil)
+(defvar-local ekp-gui-verify--showcase-temporal-before-generation nil)
+(defvar-local ekp-gui-verify--showcase-temporal-before-projection nil)
+
+(defun ekp-gui-verify--timer-state (timer)
+  "Return a JSON-compatible state for TIMER."
+  (if (timerp timer) t :false))
+
+(defun ekp-gui-verify--current-source-hash ()
+  "Return the current buffer's logical source hash."
+  (secure-hash 'sha256
+               (buffer-substring-no-properties
+                (point-min) (point-max))))
+
+(defun ekp-gui-verify--json-policy-value (value)
+  "Return VALUE as a JSON-compatible policy primitive."
+  (if (symbolp value)
+      (and value (symbol-name value))
+    value))
+
+(defun ekp-gui-verify--current-policy-context ()
+  "Return a compact JSON-compatible policy context summary."
+  (let ((context (ekp-buffer--policy-context ekp-buffer--auto-width)))
+    `((inline_code . ,(ekp-gui-verify--json-policy-value
+                       (plist-get context :inline-code-policy)))
+      (hyphenation . ,(ekp-gui-verify--json-policy-value
+                       (plist-get context :hyphenation)))
+      (kinsoku . ,(ekp-gui-verify--json-policy-value
+                   (plist-get context :kinsoku-profile)))
+      (overlong . ,(ekp-gui-verify--json-policy-value
+                    (plist-get context :overlong-token-policy)))
+      (width . ,(or (plist-get context :width) 0)))))
+
+(defun ekp-gui-verify-showcase-temporal-adapter
+    (&optional stage completed)
+  "Return current G004 temporal showcase state for STAGE."
+  (let* ((policy (ekp-gui-verify--showcase-policy-evidence))
+         (source-hash (ekp-gui-verify--current-source-hash))
+         (unplanned (ekp-gui-verify--unplanned-span-counts))
+         (raw-unplanned (cdr (assq 'raw unplanned)))
+         (live-unplanned (cdr (assq 'live unplanned)))
+         (stale-unplanned (cdr (assq 'stale unplanned)))
+         (live-state-current (cdr (assq 'live_state_current unplanned)))
+         (generation-delta
+          (and ekp-gui-verify--showcase-temporal-before-generation
+               (- ekp-buffer--generation
+                  ekp-gui-verify--showcase-temporal-before-generation))))
+    `((stage . ,(or stage "current"))
+      (width . ,ekp-showcase--width)
+      (selected_target_window
+       . ,(if (and (= (length (seq-remove #'window-minibuffer-p
+                                           (window-list)))
+                      1)
+                   (eq (window-buffer (selected-window))
+                       (current-buffer)))
+              t :false))
+      (source_hash . ,source-hash)
+      (source_unchanged
+       . ,(if (or (not ekp-gui-verify--showcase-temporal-source)
+                  (equal source-hash
+                         ekp-gui-verify--showcase-temporal-source))
+              t :false))
+      (projection_hash . ,(ekp-gui-verify--projection-hash))
+      (projection_published . ,(if ekp-buffer--spans t :false))
+      (current_projection
+       . ,(if (and ekp-buffer--spans
+                   (= stale-unplanned 0)
+                   (eq live-state-current t))
+              t :false))
+      (projection_changed
+       . ,(if (and ekp-gui-verify--showcase-temporal-before-projection
+                   (not (equal (ekp-gui-verify--projection-hash)
+                               ekp-gui-verify--showcase-temporal-before-projection)))
+              t :false))
+      (generation . ,ekp-buffer--generation)
+      (generation_delta . ,(or generation-delta 0))
+      (resize_timer . ,(ekp-gui-verify--timer-state
+                        ekp-buffer--resize-timer))
+      (policy_timer . ,(ekp-gui-verify--timer-state
+                        ekp-buffer--policy-reflow-timer))
+      (unplanned_spans . ,raw-unplanned)
+      (live_unplanned_spans . ,live-unplanned)
+      (stale_unplanned_spans . ,stale-unplanned)
+      (live_state_current . ,live-state-current)
+      (timers_settled
+       . ,(if (and (not (timerp ekp-buffer--resize-timer))
+                   (not (timerp ekp-buffer--policy-reflow-timer)))
+              t :false))
+      (pending_chunks . ,(if ekp-buffer--pending t :false))
+      (overlays . ,(cdr (assq 'overlays policy)))
+      (engine_c . ,(cdr (assq 'engine_c policy)))
+      (automatic_inline_plan_complete
+       . ,(cdr (assq 'automatic_inline_plan_complete policy)))
+      (automatic_inline_line_count
+       . ,(cdr (assq 'automatic_inline_line_count policy)))
+      (automatic_inline_wrapped
+       . ,(cdr (assq 'automatic_inline_wrapped policy)))
+      (automatic_inline_breaks_source_spaces
+       . ,(cdr (assq 'automatic_inline_breaks_source_spaces policy)))
+      (automatic_inline_break_map
+       . ,(cdr (assq 'automatic_inline_break_map policy)))
+      (isolated_cjk_cascades
+       . ,(cdr (assq 'isolated_cjk_cascades policy)))
+      (isolated_cjk_lines
+       . ,(cdr (assq 'isolated_cjk_lines policy)))
+      (policy . ,(ekp-gui-verify--current-policy-context))
+      (completed . ,(if completed t :false)))))
+
+;;;###autoload
+(defun ekp-gui-verify-showcase-temporal-setup ()
+  "Create a clean single-window showcase temporal verification buffer."
+  (interactive)
+  (unless (display-graphic-p)
+    (user-error "GUI verification needs a graphical frame"))
+  (cancel-function-timers #'ekp-buffer--reflow)
+  (cancel-function-timers #'ekp-buffer--process-chunk)
+  (cancel-function-timers #'ekp-buffer--reflow-for-policy-change)
+  (when (get-buffer "*ekp-showcase*")
+    (kill-buffer "*ekp-showcase*"))
+  (delete-other-windows)
+  (ekp-showcase)
+  (delete-other-windows)
+  (with-current-buffer "*ekp-showcase*"
+    (when ekp-auto-justify-mode
+      (ekp-auto-justify-mode -1))
+    (setq ekp-gui-verify--showcase-temporal-source nil
+          ekp-gui-verify--showcase-temporal-before-generation nil
+          ekp-gui-verify--showcase-temporal-before-projection nil)
+    (kill-local-variable 'ekp-inline-code-policy)
+    (ekp-showcase-set-width 480)
+    (redisplay t)
+    (ekp-gui-verify-showcase-temporal-adapter "setup" nil)))
+
+(defun ekp-gui-verify--temporal-set-width (width stage)
+  "Set showcase WIDTH and record temporal STAGE."
+  (with-current-buffer "*ekp-showcase*"
+    (ekp-showcase-set-width width)
+    (redisplay t)
+    (ekp-gui-verify-showcase-temporal-adapter stage nil)))
+
+;;;###autoload
+(defun ekp-gui-verify-showcase-temporal-width-480 ()
+  "Record manual showcase width 480 in the temporal scenario."
+  (interactive)
+  (ekp-gui-verify--temporal-set-width 480 "width-480"))
+
+;;;###autoload
+(defun ekp-gui-verify-showcase-temporal-width-280 ()
+  "Record manual showcase width 280 in the temporal scenario."
+  (interactive)
+  (ekp-gui-verify--temporal-set-width 280 "width-280"))
+
+;;;###autoload
+(defun ekp-gui-verify-showcase-temporal-width-340 ()
+  "Record manual showcase width 340 in the temporal scenario."
+  (interactive)
+  (ekp-gui-verify--temporal-set-width 340 "width-340"))
+
+;;;###autoload
+(defun ekp-gui-verify-showcase-temporal-policy-before ()
+  "Enable auto layout and capture the policy-change before checkpoint."
+  (interactive)
+  (with-current-buffer "*ekp-showcase*"
+    (ekp-auto-justify-mode 1)
+    (let ((deadline (+ (float-time) 2.0)))
+      (while (and (or (timerp ekp-buffer--resize-timer)
+                      ekp-buffer--pending)
+                  (< (float-time) deadline))
+        (sit-for 0.05)))
+    (setq ekp-gui-verify--showcase-temporal-source
+          (ekp-gui-verify--current-source-hash)
+          ekp-gui-verify--showcase-temporal-before-generation
+          ekp-buffer--generation
+          ekp-gui-verify--showcase-temporal-before-projection
+          (ekp-gui-verify--projection-hash))
+    (redisplay t)
+    (ekp-gui-verify-showcase-temporal-adapter "policy-before" nil)))
+
+;;;###autoload
+(defun ekp-gui-verify-showcase-temporal-policy-immediate ()
+  "Apply a local inline-code policy change and capture pending timer state."
+  (interactive)
+  (with-current-buffer "*ekp-showcase*"
+    (setq-local ekp-inline-code-policy 'normal)
+    (ekp-gui-verify-showcase-temporal-adapter "policy-immediate" nil)))
+
+;;;###autoload
+(defun ekp-gui-verify-showcase-temporal-policy-settled ()
+  "Wait for the real policy timer and capture the settled checkpoint."
+  (interactive)
+  (with-current-buffer "*ekp-showcase*"
+    (let ((deadline (+ (float-time) 2.0)))
+      (while (and (or (timerp ekp-buffer--policy-reflow-timer)
+                      (timerp ekp-buffer--resize-timer)
+                      ekp-buffer--pending)
+                  (< (float-time) deadline))
+        (sit-for 0.05)))
+    (redisplay t)
+    (ekp-gui-verify-showcase-temporal-adapter "policy-settled" t)))
+
+(defun ekp-gui-verify-showcase-temporal-assertions (state)
+  "Return assertions for temporal showcase adapter STATE."
+  (let* ((stage (cdr (assq 'stage state)))
+         (immediate-p (equal stage "policy-immediate"))
+         (manual-wrap-stage-p (member stage '("width-280" "width-340")))
+         (completed-p (eq (cdr (assq 'completed state)) t))
+         (policy-timer (cdr (assq 'policy_timer state)))
+         (unplanned-spans (cdr (assq 'unplanned_spans state)))
+         (stale-unplanned-spans
+          (cdr (assq 'stale_unplanned_spans state)))
+         (generation-delta (cdr (assq 'generation_delta state)))
+         (immediate-observed-p
+          (or (eq policy-timer t)
+              (and (eq policy-timer :false)
+                   (= (or generation-delta 0) 1))))
+         (policy (cdr (assq 'policy state))))
+    `(((name . "policy-timer-state-valid")
+       (passed . ,(if (memq policy-timer '(t :false))
+                      t :false)))
+      ((name . "automatic-inline-plan-complete")
+       (passed . ,(if (eq (cdr (assq 'automatic_inline_plan_complete state)) t)
+                      t :false)))
+      ((name . "immediate-policy-timer-pending")
+       (passed . ,(if (or (not immediate-p)
+                          immediate-observed-p)
+                      t :false)))
+      ((name . "immediate-unplanned-spans-only-while-policy-pending")
+       (passed . ,(if (or (not immediate-p)
+                          (= (or unplanned-spans 0) 0)
+                          immediate-observed-p)
+                      t :false)))
+      ((name . "manual-width-automatic-inline-wrapped")
+       (passed . ,(if (or (not manual-wrap-stage-p)
+                          (eq (cdr (assq 'automatic_inline_wrapped state)) t))
+                      t :false)))
+      ((name . "manual-width-inline-breaks-use-source-spaces")
+       (passed . ,(if (or (not manual-wrap-stage-p)
+                          (eq (cdr (assq 'automatic_inline_breaks_source_spaces
+                                          state))
+                              t))
+                      t :false)))
+      ((name . "settled-policy-timer-cleared")
+       (passed . ,(if (or (not completed-p)
+                          (eq policy-timer :false))
+                      t :false)))
+      ((name . "settled-resize-timer-cleared")
+       (passed . ,(if (or (not completed-p)
+                          (eq (cdr (assq 'resize_timer state)) :false))
+                      t :false)))
+      ((name . "settled-no-stale-resize-or-policy-timers")
+       (passed . ,(if (or (not completed-p)
+                          (eq (cdr (assq 'timers_settled state)) t))
+                      t :false)))
+      ((name . "settled-exactly-one-generation-reflow")
+       (passed . ,(if (or (not completed-p)
+                          (= (or generation-delta 0) 1))
+                      t :false)))
+      ((name . "settled-source-hash-unchanged")
+       (passed . ,(if (or (not completed-p)
+                          (eq (cdr (assq 'source_unchanged state)) t))
+                      t :false)))
+      ((name . "settled-effective-inline-policy-normal")
+       (passed . ,(if (or (not completed-p)
+                          (equal (cdr (assq 'inline_code policy)) "normal"))
+                      t :false)))
+      ((name . "settled-zero-stale-unplanned-spans")
+       (passed . ,(if (or (not completed-p)
+                          (and (numberp stale-unplanned-spans)
+                               (= stale-unplanned-spans 0)))
+                      t :false)))
+      ((name . "settled-current-projection")
+       (passed . ,(if (or (not completed-p)
+                          (eq (cdr (assq 'current_projection state)) t))
+                      t :false)))
+      ((name . "settled-zero-overlays")
+       (passed . ,(if (= (cdr (assq 'overlays state)) 0) t :false)))
+      ((name . "settled-projection-published")
+       (passed . ,(if (eq (cdr (assq 'projection_published state)) t)
+                      t :false)))
+      ((name . "settled-c-engine-active")
+       (passed . ,(if (eq (cdr (assq 'engine_c state)) t)
+                      t :false)))
+      ((name . "settled-no-isolated-cjk-cascade")
+       (passed . ,(if (null (cdr (assq 'isolated_cjk_cascades state)))
+                      t :false)))
+      ((name . "settled-no-isolated-cjk-lines")
+       (passed . ,(if (null (cdr (assq 'isolated_cjk_lines state)))
+                      t :false)))
+      ((name . "settled-one-selected-target-window")
+       (passed . ,(if (eq (cdr (assq 'selected_target_window state)) t)
+                      t :false)))
+      ((name . "settled-no-pending-chunks")
+       (passed . ,(if (or (not completed-p)
+                          (eq (cdr (assq 'pending_chunks state)) :false))
+                      t :false))))))
+
+(ert-deftest ekp-gui-verify-g004-temporal-skips-unplanned-spans ()
+  "Treat pending nil-plan spans as observable state, not verifier failure."
+  (with-temp-buffer
+    (insert "中文 abc")
+    (let ((ekp-buffer--spans
+           (list (ekp-buffer--span-create
+                  :beg (copy-marker (point-min))
+                  :end (copy-marker (point-max))
+                  :width 10
+                  :plan nil
+                  :lines nil))))
+      (should (= (ekp-gui-verify--unplanned-span-count) 1))
+      (should (null (ekp-gui-verify--isolated-cjk-cascades)))
+      (should (null (ekp-gui-verify--isolated-cjk-lines)))
+      (should (null (ekp-gui-verify--range-lines
+                     (cons (point-min) (point-max))))))))
+
+(defun ekp-gui-verify--json-primitive-tree-p (value)
+  "Return non-nil when VALUE contains only JSON-compatible primitives."
+  (cond
+   ((or (null value) (eq value t) (eq value :false)
+        (stringp value) (numberp value))
+    t)
+   ((and (consp value) (symbolp (car value)))
+    (and (symbolp (car value))
+         (ekp-gui-verify--json-primitive-tree-p (cdr value))))
+   ((listp value)
+    (seq-every-p #'ekp-gui-verify--json-primitive-tree-p value))))
+
+(ert-deftest ekp-gui-verify-g004-policy-context-is-json-primitive ()
+  "Policy context exposes stable JSON primitive values."
+  (let ((ekp-buffer--auto-width 280)
+        (ekp-inline-code-policy 'no-hyphen)
+        (ekp-hyphenation 'auto)
+        (ekp-kinsoku-profile 'liang)
+        (ekp-overlong-token-policy 'emergency))
+    (let ((policy (ekp-gui-verify--current-policy-context)))
+      (should (equal (cdr (assq 'inline_code policy)) "no-hyphen"))
+      (should (equal (cdr (assq 'hyphenation policy)) "auto"))
+      (should (equal (cdr (assq 'kinsoku policy)) "liang"))
+      (should (equal (cdr (assq 'overlong policy)) "emergency"))
+      (should (ekp-gui-verify--json-primitive-tree-p policy)))))
+
+(ert-deftest ekp-gui-verify-g004-inline-break-map-ignores-external-break ()
+  "Final external line breaks do not invalidate internal inline break proof."
+  (with-temp-buffer
+    (let* ((source (make-string 220 ?x))
+           (range (cons (+ (point-min) 108) (+ (point-min) 198)))
+           (lines
+            (vector
+             (ekp-layout-line--create
+              :source-start 108 :source-end 136
+              :break-kind 'space
+              :break-source-start 136 :break-source-end 137)
+             (ekp-layout-line--create
+              :source-start 137 :source-end 173
+              :break-kind 'space
+              :break-source-start 173 :break-source-end 174)
+             (ekp-layout-line--create
+              :source-start 174 :source-end 198
+              :break-kind 'space
+              :break-source-start 198 :break-source-end 199)))
+           (plan (ekp-layout-plan--create
+                  :string source
+                  :lines lines))
+           ekp-buffer--spans)
+      (insert source)
+      (aset source 136 ?\s)
+      (aset source 173 ?\s)
+      (aset source 198 ?\s)
+      (setq ekp-buffer--spans
+            (list (ekp-buffer--span-create
+                   :beg (copy-marker (point-min))
+                   :end (copy-marker (point-max))
+                   :width 280
+                   :plan plan)))
+      (let ((evidence (ekp-gui-verify--inline-line-evidence range)))
+        (should (eq (cdr (assq 'automatic_inline_wrapped evidence)) t))
+        (should (eq (cdr (assq 'automatic_inline_breaks_source_spaces
+                               evidence))
+                    t))
+        (should (ekp-gui-verify--json-primitive-tree-p
+                 (cdr (assq 'automatic_inline_break_map evidence))))
+        (should (equal
+                 (cdr (assq 'kind
+                            (car (cdr (assq 'automatic_inline_break_map
+                                            evidence)))))
+                 "space"))))))
+
+(ert-deftest ekp-gui-verify-g004-temporal-live-nil-plan-is-current ()
+  "Settled temporal assertions allow current live nil-plan spans."
+  (let* ((state '((stage . "policy-settled")
+                  (width . 280)
+                  (selected_target_window . t)
+                  (source_unchanged . t)
+                  (projection_published . t)
+                  (generation_delta . 1)
+                  (resize_timer . :false)
+                  (policy_timer . :false)
+                  (unplanned_spans . 1)
+                  (live_unplanned_spans . 1)
+                  (stale_unplanned_spans . 0)
+                  (current_projection . t)
+                  (timers_settled . t)
+                  (pending_chunks . :false)
+                  (overlays . 0)
+                  (engine_c . t)
+                  (automatic_inline_plan_complete . t)
+                  (automatic_inline_line_count . 2)
+                  (automatic_inline_wrapped . t)
+                  (automatic_inline_breaks_source_spaces . t)
+                  (isolated_cjk_cascades)
+                  (isolated_cjk_lines)
+                  (policy . ((inline_code . "normal")))
+                  (completed . t)))
+         (assertions (ekp-gui-verify-showcase-temporal-assertions state)))
+    (dolist (name '("settled-zero-stale-unplanned-spans"
+                    "settled-current-projection"))
+      (let ((assertion
+             (seq-find
+              (lambda (candidate)
+                (equal (cdr (assq 'name candidate)) name))
+              assertions)))
+        (should assertion)
+        (should (eq (cdr (assq 'passed assertion)) t))))))
+
+(ert-deftest ekp-gui-verify-g004-temporal-unplanned-span-policy ()
+  "Allow unplanned spans only during the immediate pending policy stage."
+  (let* ((base '((width . 280)
+                 (selected_target_window . t)
+                 (source_unchanged . t)
+                 (projection_published . t)
+                 (generation_delta . 1)
+                 (resize_timer . :false)
+                 (pending_chunks . :false)
+                 (overlays . 0)
+                 (engine_c . t)
+                 (automatic_inline_plan_complete . t)
+                 (live_unplanned_spans . 0)
+                 (stale_unplanned_spans . 0)
+                 (live_state_current . t)
+                 (automatic_inline_line_count . 2)
+                 (automatic_inline_wrapped . t)
+                 (automatic_inline_breaks_source_spaces . t)
+                 (automatic_inline_break_map)
+                 (isolated_cjk_cascades)
+                 (isolated_cjk_lines)
+                 (policy . ((inline_code . "normal")))))
+         (assertion-passed
+          (lambda (state name)
+            (let ((assertion
+                   (seq-find
+                    (lambda (candidate)
+                      (equal (cdr (assq 'name candidate)) name))
+                    (ekp-gui-verify-showcase-temporal-assertions state))))
+              (cdr (assq 'passed assertion))))))
+    (should
+     (eq (funcall assertion-passed
+                  (append '((stage . "policy-immediate")
+                            (policy_timer . t)
+                            (unplanned_spans . 2)
+                            (current_projection . :false)
+                            (timers_settled . :false)
+                            (completed . :false))
+                          base)
+                  "immediate-unplanned-spans-only-while-policy-pending")
+         t))
+    (should
+     (eq (funcall assertion-passed
+                  (append '((stage . "policy-immediate")
+                            (policy_timer . :false)
+                            (unplanned_spans . 2)
+                            (current_projection . :false)
+                            (timers_settled . t)
+                            (completed . :false))
+                          base)
+                  "immediate-unplanned-spans-only-while-policy-pending")
+         t))
+    (should
+     (eq (funcall assertion-passed
+                  (append '((stage . "policy-settled")
+                            (policy_timer . :false)
+                            (unplanned_spans . 0)
+                            (live_unplanned_spans . 0)
+                            (stale_unplanned_spans . 0)
+                            (current_projection . t)
+                            (timers_settled . t)
+                            (completed . t))
+                          base)
+                  "settled-zero-stale-unplanned-spans")
+         t))
+    (should
+     (eq (funcall assertion-passed
+                  (append '((stage . "policy-settled")
+                            (policy_timer . :false)
+                            (unplanned_spans . 1)
+                            (live_unplanned_spans . 0)
+                            (stale_unplanned_spans . 1)
+                            (current_projection . :false)
+                            (timers_settled . t)
+                            (completed . t))
+                          base)
+                  "settled-zero-stale-unplanned-spans")
+         :false))
+    (should
+     (eq (funcall assertion-passed
+                  (append '((stage . "policy-settled")
+                            (policy_timer . :false)
+                            (unplanned_spans . 1)
+                            (live_unplanned_spans . 0)
+                            (stale_unplanned_spans . 1)
+                            (current_projection . :false)
+                            (timers_settled . t)
+                            (completed . t))
+                          base)
+                  "settled-current-projection")
+         :false))))
+
+(ert-deftest ekp-gui-verify-g004-temporal-width-requires-inline-wrap ()
+  "Manual narrow checkpoints fail when automatic inline evidence is unwrapped."
+  (let* ((state '((stage . "width-280")
+                  (width . 280)
+                  (selected_target_window . t)
+                  (source_unchanged . t)
+                  (projection_published . t)
+                  (generation_delta . 0)
+                  (resize_timer . :false)
+                  (policy_timer . :false)
+                  (unplanned_spans . 0)
+                  (live_unplanned_spans . 0)
+                  (stale_unplanned_spans . 0)
+                  (live_state_current . t)
+                  (current_projection . t)
+                  (timers_settled . t)
+                  (pending_chunks . :false)
+                  (overlays . 0)
+                  (engine_c . t)
+                  (automatic_inline_plan_complete . t)
+                  (automatic_inline_line_count . 1)
+                  (automatic_inline_wrapped . :false)
+                  (automatic_inline_breaks_source_spaces . :false)
+                  (automatic_inline_break_map)
+                  (isolated_cjk_cascades)
+                  (isolated_cjk_lines)
+                  (policy . ((inline_code . "no-hyphen")))
+                  (completed . :false)))
+         (assertions (ekp-gui-verify-showcase-temporal-assertions state)))
+    (dolist (name '("manual-width-automatic-inline-wrapped"
+                    "manual-width-inline-breaks-use-source-spaces"))
+      (let ((assertion
+             (seq-find
+              (lambda (candidate)
+                (equal (cdr (assq 'name candidate)) name))
+              assertions)))
+        (should assertion)
+        (should (eq (cdr (assq 'passed assertion)) :false))))))
 
 (defun ekp-gui-verify--near-overflow-text (target)
   "Return prose whose natural final line is nearly full at TARGET."

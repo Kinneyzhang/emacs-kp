@@ -722,3 +722,205 @@
     checkdoc, release checks, and reviewed dynamic GUI evidence pass.
   - Closure: developer verification is complete. `issue020` remains open
     only for the required user-visible confirmation.
+
+- task033 [x] Prevent rigid inline atoms from fragmenting preceding CJK.
+  - Source: `issue021`, the user's 2026-08-01 showcase screenshot, and
+    `plan_text_property_layout_engine_20260729.md` M12.
+  - Red tests: reproduce the deterministic batch underfull-to-overfull jump
+    and the real 280px showcase path; require the fullest permitted prefix
+    line, one intact atom line, and matching Elisp/C plans.
+  - Work: correct the emergency transition owner in core DP and its C/loose
+    equivalents without changing strict K-P results or buffer projection.
+  - Validation: focused RED/GREEN core and buffer ERT, normal/random/
+    isolated full ERT, C/Elisp fuzz, warning-as-error compilation, checkdoc,
+    release/static gates, and inspected static/dynamic GUI evidence.
+  - Impact: core line breaking, C parity, regression tests, user/developer
+    documentation, issue/change records, and no new public API.
+  - Result: retain the original emergency transition and add a fallback only
+    for a forbidden-run underfull-to-overfull jump. This was later superseded
+    by the accepted `task036` final-pass model; strict K-P and buffer
+    projection remain unchanged.
+  - Verification: the RED boundary was 1 instead of 11. Normal,
+    seeded-random, and isolated ERT pass 201/201; property fuzz passes
+    300/300; Elisp/static/release/dictionary and three C profile builds pass.
+    Reviewed 62.7-second GUI evidence at
+    `/private/tmp/ekp-atom-gui-final-Beg8hb` passes all nine checkpoints with
+    an intact atom, one-line full prefix, exact source, zero overlays, active
+    C engine, and no black or transient vertical frame.
+  - Closure: developer verification is complete. `issue021` remains open
+    only for the required user-visible confirmation.
+
+- task034 [x] Make break policy configurable and eliminate inline-code
+  induced orphan glyph lines.
+  - Source: the approved RALPLAN PRD
+    `.omx/plans/prd-ekp-configurable-break-policies.md`, test spec
+    `.omx/plans/test-spec-ekp-configurable-break-policies.md`, and the
+    user's 2026-08-01 follow-up screenshot showing the showcase no longer
+    collapses into the previous one-glyph cascade but still permits
+    pathological single-CJK source lines around the inline atom, including
+    `行`, `内`, and `永`.
+  - Work: implement the locked A2/B2/C2/D1/E1/F1/G2/H1/I1/J1/K1/M1 policy
+    contract. Inline code defaults to legal wrapping with no dictionary
+    hyphenation; block code remains verbatim; explicit `ekp-no-break` stays
+    rigid forever; automatic no-break downgrades to no-hyphen when wider than
+    the effective measure; URL/path/identifier default to no-hyphen; compact
+    number-unit tokens default to no-break; kinsoku defaults to `common`;
+    ordinary overlong tokens default to current emergency output; and buffer
+    measure defaults to the narrowest live window with fixed and max-cap
+    alternatives.
+  - Public configuration: add global, major-mode profile, buffer/file/dir
+    local, and region controls for inline code, hyphenation, token policies,
+    kinsoku profiles, overlong-token behavior, and buffer measure. Region
+    `ekp-break-policy` provides `normal`, `hyphenate`, and `no-hyphen`; the
+    existing `ekp-no-break` remains the only manual hard-atom owner.
+  - Red tests: prove inline faces no longer cause paragraph skipping; prove
+    region > explicit local > mode profile > global precedence; prove token
+    classification/downgrade behavior; prove `common`/`zh`/`ja`/`off`/custom
+    kinsoku; prove `emergency`/`overflow`/`natural` overlong modes; prove
+    `narrowest-window`, fixed, and `(max . PIXELS)` measure resolution; and
+    reproduce the current showcase orphan-glyph screenshot as a failing
+    public path before the fix, with an oracle that rejects any pathological
+    single-CJK source line in the crafted paragraph when a legal
+    non-emergency alternative exists.
+  - Verification: focused RED/GREEN ERT for core, buffer, command, cache, and
+    diagnostics; C/Elisp parity without changing the 15-argument C entry or
+    15-field batch payload; 300-case property fuzz; warning-as-error Elisp
+    compilation; C builds/tests; checkdoc/package/static/release gates; and
+    clean fullscreen single-window GUI evidence for inline wrapping,
+    no-orphan showcase text, explicit no-break, block verbatim, measure
+    modes, and overlong-token modes.
+  - Impact: `ekp.el`, `ekp-buffer.el`, `ekp_c/ekp_kp.c` only if parity logic
+    requires a mirrored DP adjustment, tests, bilingual user/developer
+    documentation, spec/plan/tech reference, issue/change records, changelog,
+    and a postmortem explaining the policy boundary.
+  - Implementation evidence recorded: G002 completed core policy compilation
+    without changing the 15-argument/15-field C boundary; G003 completed
+    buffer ownership, consult-only mode profiles, local/region controls,
+    diagnostics, and generation reflow; G004 completed the showcase split
+    between automatic inline code, explicit no-break, and verbatim block;
+    G005 performance work removed unconditional policy measure from paragraph
+    semantic identity, canonicalized adjacent equal filtered property
+    intervals, moved repeated policy full analysis behind a bounded two-tier
+    cache, and added a bounded per-paragraph semantic plan cache; G006
+    cleanup touched only `ekp.el` and `ekp-buffer.el`, removing redundant
+    policy/cache code while preserving behavior; G007 resolved the first G006
+    review blockers by returning consumer-owned copies of all plan-owned
+    mutable payloads from semantic-plan cache hits, keeping `para`
+    intentionally shared for append identity, and by making malformed non-nil
+    C single/batch results signal `ekp-backend-contract-error` while
+    preserving nil-result Elisp fallback and the 15-argument/15-field C
+    boundary; G008 resolved the final string-leaf context alias by using the
+    recursive context copier for cons/vector/string payloads both when the
+    context snapshot/cache key is created and when a plan is returned.
+  - GUI evidence recorded: `/tmp/ekp-g004-evidence.Tp77dW` has 12/12
+    checkpoints, a 25.75s/206-frame recording, no black segments, no failed
+    assertions, automatic inline wrapping 3→2→3 lines across 280→340→280,
+    every internal inline split as source whitespace, C active, exact source,
+    zero overlays, and policy no-hyphen→normal settling with generation_delta
+    1, live nil-plan span 1, stale nil-plan span 0, and current projection.
+  - Verified so far: G002 focused core policy ERT 22/22, no-break 5/5, cache
+    15/15, C parity 5/5, 300-case fuzz, warning-clean C build, byte
+    compilation, checkdoc, and diff-check; G003 core ERT 118/118, buffer ERT
+    119/119, watcher invariants 2/2, byte compilation, checkdoc, and
+    diff-check; G004 GUI verifier ERT 7/7 and clean GUI evidence; G005
+    formal four-interleaved evaluator layout parity true, core baseline
+    p50/p95 38.6679/51.6782ms versus candidate 21.7102/33.0040ms for
+    43.8549%/36.1354% gains, resize baseline p50/p95 43.3831/55.6250ms
+    versus candidate 22.0919/32.8202ms for 49.0773%/40.9973% gains, both
+    candidate p95 values under 50ms and both gain sets at least 20%; live
+    evaluator source-instrumented locked goal remains the known
+    `validation_failed` debt, with parity, zero-work, GC, conflict, and
+    all-width-nonregression true, current C p95/p99 26.449/26.740ms
+    (76.65%/77.23% improvement), current Elisp p95/p99 49.940/52.017ms
+    (91.64%/91.35% improvement), consistent with historical open `issue018`
+    and not a regression; byte-compiled production public path passed three
+    runs with zero GC, C append p99 1.361-1.368ms, C hard p99
+    1.876-1.891ms, Elisp append p99 1.692-1.775ms, and Elisp hard p99
+    2.100-2.230ms; default ERT 262/262, seeded permuted ERT seed 20260728
+    255/255, isolated per-test process suite exit 0, targeted alias guard
+    passed, property fuzz 300/300, warning-as-error byte compilation,
+    package-lint pinned at `35996f478d81e51dae4fa30d051f741895d07399` exit
+    0 with only an external obsolete warning from the local names dependency,
+    empty checkdoc, release, 49-entry dictionary manifest, pinned dictionary
+    update, shell syntax, CI YAML, diff-check, portable/native/debug/sanitize
+    warning-clean C builds, module 1.6/4-thread smoke, and focused C 19/19
+    including the 15-argument/15-field boundary passed; G006 targeted
+    cleanup verification passed 6/6 and 3/3, full core ERT 125/125 and
+    buffer ERT 120/120 passed, and byte compilation, diff-check, and C build
+    gates passed; G008 formal resize parity true, core baseline/candidate
+    p50/p95 36.595/48.357ms versus 23.266/36.363ms for 36.42%/24.80%
+    gains, resize baseline/candidate p50/p95 41.443/53.541ms versus
+    23.761/36.889ms for 42.67%/31.10% gains, ERT 268/268, fuzz 300/300,
+    release gates pass, and byte-compiled current public path records zero
+    GC with C append/hard p99 1.440-1.464/2.022-2.050ms and Elisp
+    append/hard p99 1.648-1.687/2.136-2.335ms, all below 16ms.
+  - Closure: task034 developer implementation, repository gates, performance
+    gates, cleanup gates, G007 first-blocker fixes, and the G008 final
+    string-leaf context fix are complete.
+    `issue021` is closed after user visual confirmation, historical `issue018`
+    remains open, and final independent review returned APPROVE with
+    architecture status CLEAR.
+
+- task035 [x] Falsify line-width-scaled final-pass emergency stretch.
+  - Source: `issue021`, the user's 2026-08-02 narrow-showcase screenshot,
+    and the G009 upstream K-P review.
+  - Red tests: reproduce the mixed showcase paragraph at narrow widths and
+    reject any isolated CJK source line through the core, public buffer path,
+    and GUI oracle.
+  - Work attempted: keep the strict pass unchanged; in the final pass add a
+    line-width-sized finite background emergency stretch to ordinary
+    underfull candidates and score them through adjustment ratio, badness,
+    fitness, and demerits. Keep the fixed artificial emergency transition
+    only for truly overfull first permitted hard/atomic runs. Do not add
+    CJK-orphan, unit, or screenshot-specific penalties.
+  - Validation: focused core single-CJK ERT passes 2/2; focused core, C,
+    hard-atom, buffer, and GUI-oracle G009 coverage passes 18/18 in the
+    implementation lane; warning-as-error byte compilation and the C build
+    pass. Full regression then falsified the line-width stretch detail: it
+    made emergency stretch scale with the candidate measure instead of a TeX
+    fixed dimension and regressed existing emergency behavior.
+  - Impact: `ekp.el`, `ekp_c/ekp_kp.c`, tests, bilingual documentation,
+    phase records, changelog, and postmortem. Public configuration and the C
+    ABI are unchanged.
+  - Closure: task035 is closed as a disproved implementation attempt, not as
+    the accepted current behavior. Continue with `task036`.
+
+- task036 [x] Implement fixed-dimension final-pass emergency stretch and
+  preserve the final active path.
+  - Source: task035 full-regression failure, `issue021`, and the G009
+    original K-P correction.
+  - Work: replace the candidate-width/line-width emergency stretch detail
+    with a TeX-style fixed dimension exposed as
+    `ekp-emergency-stretch-pixel`. A nil value auto-resolves to roughly three
+    display-font `M` widths; a non-negative integer fixes the stretch in
+    pixels. Keep the strict pass unchanged and the 15-field C paragraph ABI
+    stable. In the final pass, preserve the best provisional overfull path
+    with tight fitness and zero incremental demerits only when no normal
+    active path survives to that breakpoint. Do not add CJK-orphan, unit,
+    atom-adjacency, or screenshot-specific penalties.
+  - Red tests: add five focused RED cases covering fixed dimension versus
+    measure scaling, nil auto resolution, non-negative integer override,
+    Elisp/C parity without C ABI growth, and renderer width/glue consistency.
+  - Regression gate: the original three regressions that task035 broke must
+    stay green alongside the new RED cases.
+  - Full gate: focused G009 core/public-buffer/C parity and GUI-oracle
+    coverage, final fullscreen dynamic GUI evidence, default/permuted/
+    isolated ERT, 300-case fuzz, warning-as-error byte compilation, C builds,
+    checkdoc/package/static/release gates, and diff-check.
+  - Result: production Elisp 1D, looseness/parshape, and C implementations
+    match; renderer glue distribution uses the chosen line's actual rest;
+    explicit hard atoms forbid only interior breaks and may share an overflow
+    line with preceding ordinary content. The test oracle now requires a
+    nonempty source-covering plan so an empty result cannot false-green.
+  - Validation: focused root regressions pass 8/8, emergency selection passes
+    10/10, core/buffer/GUI oracle passes 8/8, full ERT passes 288/288, seeded
+    and isolated suites pass 279/279, fuzz passes 300/300, portable/native/
+    debug/sanitize C builds and warning-as-error production plus changed-test
+    byte compilation pass, checkdoc/package/static/release gates pass, formal
+    core/resize performance gates pass, and reviewed 42.78-second
+    single-window dynamic GUI evidence at
+    `/tmp/ekp-g009-evidence-retry.UOpPNp` returns PASS.
+    Final independent code review returns APPROVE and architecture review
+    returns CLEAR.
+  - Closure: developer implementation and full quality gate complete;
+    `issue021` closed after the user's 2026-08-02 visual confirmation.

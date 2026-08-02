@@ -9,6 +9,7 @@
 
 (require 'ert)
 (require 'ekp-buffer)
+(require 'ekp-showcase)
 
 (defconst ekp-buffer-test--samples
   (list "简单的中文段落测试内容,排版效果应当良好稳定。"
@@ -39,6 +40,21 @@
                        (and (consp item) (eq (car item) name)))
                      value))))
 
+(defun ekp-buffer-test--strings-in-tree (tree)
+  "Return all strings contained anywhere in TREE."
+  (let (strings)
+    (cl-labels ((walk (value)
+                  (cond
+                   ((stringp value) (push value strings))
+                   ((consp value)
+                    (walk (car value))
+                    (walk (cdr value)))
+                   ((vectorp value)
+                    (dotimes (i (length value))
+                      (walk (aref value i)))))))
+      (walk tree))
+    (nreverse strings)))
+
 (ert-deftest ekp-buffer-test-layout-never-changes-source-characters ()
   "Layout changes display properties, never the logical character stream."
   (let ((text "中文排版 mixed words with spaces and extraordinary wrapping"))
@@ -59,6 +75,28 @@
         (should (eq buffer-undo-list undo-before))
         (should-not (buffer-modified-p))
         (should-not (overlays-in (point-min) (point-max)))))))
+
+(ert-deftest ekp-buffer-test-overlong-no-break-preserves-atom ()
+  "A rigid overflow atom remains intact in the public projection."
+  (let* ((prefix "行内原子演示:代码片段 ")
+         (atom (propertize
+                (concat (make-string 48 ?a) " b") 'ekp-no-break t))
+         (text (concat prefix atom " 后文继续。"))
+         (ekp-use-c-module nil))
+    (ekp-buffer-test--with-text text
+      (ekp-justify-region (point-min) (point-max) 40)
+      (let* ((breaks (ekp-buffer-test--display-newline-positions))
+             (atom-beg (+ (point-min) (length prefix)))
+             (atom-end (+ atom-beg (length atom))))
+        (should breaks)
+        (should-not
+         (seq-some (lambda (position)
+                     (and (> position atom-beg) (< position atom-end)))
+                   breaks)))
+      (should (equal (substring-no-properties (buffer-string))
+                     (substring-no-properties text)))
+      (should (get-text-property (+ (point-min) (length prefix))
+                                 'ekp-no-break)))))
 
 (ert-deftest ekp-buffer-test-projection-fires-no-external-change-hooks ()
   "Projection installation and removal are silent to external change hooks."
@@ -160,7 +198,7 @@
   "A discretionary hyphen and newline live in `display', not source text."
   (let ((text "extraordinary hyphenation demonstration paragraph"))
     (ekp-buffer-test--with-text text
-      (ekp-justify-region (point-min) (point-max) 15)
+      (ekp-justify-region (point-min) (point-max) 16)
       (should (equal (substring-no-properties (buffer-string)) text))
       (should (= (cl-count ?\n (buffer-string)) 0))
       (should-not (string-match-p "-" (substring-no-properties
@@ -348,6 +386,44 @@
           (push pos positions))
         (setq pos next)))
     (nreverse positions)))
+
+(defun ekp-buffer-test--display-lines ()
+  "Return source slices separated by EKP-owned display newlines."
+  (let ((beg (point-min))
+        (pos (point-min))
+        lines)
+    (while (< pos (point-max))
+      (let ((display (get-text-property pos 'ekp-buffer--display)))
+        (when (and (stringp display)
+                   (string-match-p "\n"
+                                   (substring-no-properties display)))
+          (push (buffer-substring-no-properties beg (1+ pos)) lines)
+          (setq beg (1+ pos))))
+      (setq pos (1+ pos)))
+    (push (buffer-substring-no-properties beg (point-max)) lines)
+    (nreverse lines)))
+
+(defun ekp-buffer-test--single-cjk-line-p (line)
+  "Return non-nil when LINE is exactly one CJK source character."
+  (let ((trimmed (replace-regexp-in-string
+                  "\\`[[:space:]\n\r\t]+\\|[[:space:]\n\r\t]+\\'"
+                  "" line)))
+    (and (= (length trimmed) 1)
+         (let ((char (aref trimmed 0)))
+           (and (<= #x4E00 char) (<= char #x9FFF))))))
+
+(defun ekp-buffer-test--display-hyphen-p ()
+  "Return non-nil when an EKP-owned display break publishes a hyphen."
+  (let ((pos (point-min))
+        hit)
+    (while (and (< pos (point-max)) (not hit))
+      (let ((display (get-text-property pos 'ekp-buffer--display)))
+        (setq hit
+              (and (stringp display)
+                   (string-match-p "-\n"
+                                   (substring-no-properties display)))))
+      (setq pos (1+ pos)))
+    hit))
 
 (defun ekp-buffer-test--type-string (string)
   "Insert STRING through the public self-insert command path."
@@ -1220,7 +1296,7 @@
   "An ordinary live edit must not dispatch through `ekp-justify-region'."
   (ekp-buffer-test--with-mode
       "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda"
-      15
+      20
     (let ((called nil)
           (original (symbol-function 'ekp-justify-region)))
       (cl-letf (((symbol-function 'ekp-justify-region)
@@ -1591,6 +1667,253 @@
       (should (search-forward ";; a  comment   line kept   as-is" nil t))
       (ekp-unjustify-region (point-min) (point-max))
       (should (equal-including-properties (buffer-string) text)))))
+
+(ert-deftest ekp-buffer-test-org-inline-code-face-does-not-skip-paragraph ()
+  "An Org inline-code face must not make prose stay native-wrapped."
+  (let* ((code (propertize "(ekp-pixel-justify STR W)" 'face 'org-code))
+         (text (concat "行内原子演示: 代码片段 " code
+                       " 之后的正文仍然需要由 EKP 负责断行。")))
+    (ekp-buffer-test--with-text text
+      (ekp-org-setup)
+      (buffer-enable-undo)
+      (setq buffer-undo-list nil)
+      (set-buffer-modified-p nil)
+      (goto-char (+ (point-min) 7))
+      (set-mark (+ (point-min) 2))
+      (let ((point-before (point))
+            (mark-before (mark t))
+            (chars-tick (buffer-chars-modified-tick))
+            (undo-before buffer-undo-list)
+            (overlays-before (length (overlays-in (point-min) (point-max)))))
+        (ekp-justify-region (point-min) (point-max) 20)
+        (should (get-text-property (point-min) 'ekp-justified))
+        (should (equal (substring-no-properties (buffer-string))
+                       (substring-no-properties text)))
+        (should (= (point) point-before))
+        (should (= (mark t) mark-before))
+        (should (= (buffer-chars-modified-tick) chars-tick))
+        (should (eq buffer-undo-list undo-before))
+        (should-not (buffer-modified-p))
+        (should (= (length (overlays-in (point-min) (point-max)))
+                   overlays-before))
+        (save-excursion
+          (goto-char (point-min))
+          (should (search-forward "(ekp-pixel-justify STR W)" nil t))
+          (should (eq (get-text-property (match-beginning 0) 'face)
+                      'org-code)))
+        (ekp-unjustify-region (point-min) (point-max))
+        (should (equal-including-properties (buffer-string) text))))))
+
+(ert-deftest ekp-buffer-test-org-block-face-stays-verbatim ()
+  "An Org block face still protects its own paragraph verbatim."
+  (let* ((block (propertize "#+begin_src emacs-lisp\n(+ 1   2)\n#+end_src"
+                            'face 'org-block))
+         (text (concat "prose before wraps with EKP projection\n"
+                       block
+                       "\nprose after wraps with EKP projection")))
+    (ekp-buffer-test--with-text text
+      (ekp-org-setup)
+      (ekp-justify-region (point-min) (point-max) 20)
+      (goto-char (point-min))
+      (should (get-text-property (point) 'ekp-justified))
+      (search-forward "(+ 1   2)")
+      (should-not (get-text-property (match-beginning 0) 'ekp-justified))
+      (ekp-unjustify-region (point-min) (point-max))
+      (should (equal-including-properties (buffer-string) text)))))
+
+(ert-deftest ekp-buffer-test-inline-protection-has-no-single-cjk-lines ()
+  "A narrow public layout must not publish isolated CJK rows near inline code."
+  (let* ((atom (propertize "(ekp-pixel-justify STR W)"
+                           'face 'org-code
+                           'ekp-no-break t))
+         (text (concat "行内原子演示: 代码片段 " atom
+                       " 永不拆散、空格保持字面宽度；不间断空格让 "
+                       "100_000 与 3.14 MB 这类数字单位锁在同一行。")))
+    (ekp-buffer-test--with-text text
+      (ekp-justify-region (point-min) (point-max) 11)
+      (let ((lines (ekp-buffer-test--display-lines)))
+        (should (> (length lines) 1))
+        (should-not
+         (seq-find #'ekp-buffer-test--single-cjk-line-p lines)))
+      (should (equal (substring-no-properties (buffer-string))
+                     (substring-no-properties text)))
+      (should-not (overlays-in (point-min) (point-max)))
+      (ekp-unjustify-region (point-min) (point-max))
+      (should (equal-including-properties (buffer-string) text)))))
+
+(ert-deftest ekp-buffer-test-showcase-1d-publishes-no-single-cjk-lines ()
+  "The exact public 168px showcase sample must not publish isolated CJK rows."
+  (let ((text (ekp-showcase--sample))
+        (ekp-use-c-module nil))
+    (ekp-buffer-test--with-text text
+      (ekp-showcase-mode)
+      (ekp-justify-region (point-min) (point-max) 168)
+      (let* ((lines (ekp-buffer-test--display-lines))
+             (single-cjk-lines
+              (seq-filter #'ekp-buffer-test--single-cjk-line-p lines)))
+        (should (> (length lines) 1))
+        (should-not single-cjk-lines))
+      (should (equal (substring-no-properties (buffer-string))
+                     (substring-no-properties text)))
+      (should-not (overlays-in (point-min) (point-max))))))
+
+(ert-deftest ekp-buffer-test-showcase-parshape-publishes-no-single-cjk-lines ()
+  "The exact parshape 280px showcase must not publish isolated CJK rows."
+  (let ((text (ekp-showcase--sample))
+        (ekp-use-c-module nil)
+        (ekp-looseness 1))
+    (ekp-buffer-test--with-text text
+      (ekp-showcase-mode)
+      (setq-local ekp-showcase--width 280
+                  ekp-showcase--parshape-on t)
+      (ekp-showcase--apply-parshape)
+      (ekp-justify-region (point-min) (point-max) 280)
+      (let* ((lines (ekp-buffer-test--display-lines))
+             (single-cjk-lines
+              (seq-filter #'ekp-buffer-test--single-cjk-line-p lines)))
+        (should (> (length lines) 1))
+        (should-not single-cjk-lines))
+      (should (equal (substring-no-properties (buffer-string))
+                     (substring-no-properties text)))
+      (should-not (overlays-in (point-min) (point-max))))))
+
+(ert-deftest ekp-buffer-test-break-policy-precedence-public-path ()
+  "Public policy resolution is region, local, mode, then global."
+  (dolist (option '(ekp-hyphenation
+                    ekp-inline-code-policy
+                    ekp-buffer-mode-policy-alist
+                    ekp-buffer-inline-faces
+                    ekp-overlong-token-policy))
+    (should (boundp option)))
+  (let ((original-hyphenation (default-value 'ekp-hyphenation))
+        (original-inline-policy (default-value 'ekp-inline-code-policy))
+        (original-inline-faces (default-value 'ekp-buffer-inline-faces))
+        (original-mode-policy
+         (default-value 'ekp-buffer-mode-policy-alist))
+        (original-overlong (default-value 'ekp-overlong-token-policy)))
+    (unwind-protect
+        (let* ((word "internationalization")
+               (auto-atom (propertize "auto inline atom" 'face 'org-code))
+               (explicit-atom
+                (propertize "manual no break atom with spaces"
+                            'face 'org-code 'ekp-no-break t))
+               (text (concat word " " word " " auto-atom " " explicit-atom))
+               captures
+               (original-layout (symbol-function 'ekp-buffer--layout-plan)))
+          (set-default-toplevel-value 'ekp-hyphenation 'off)
+          (set-default-toplevel-value 'ekp-inline-code-policy 'normal)
+          (set-default-toplevel-value 'ekp-buffer-inline-faces nil)
+          (set-default-toplevel-value
+           'ekp-overlong-token-policy 'emergency)
+          (set-default-toplevel-value
+           'ekp-buffer-mode-policy-alist
+           '((text-mode . ((ekp-hyphenation . on)
+                           (ekp-inline-code-policy . no-break)
+                           (ekp-buffer-inline-faces . (org-code))
+                           (ekp-overlong-token-policy . natural)))))
+          (ekp-buffer-test--with-text text
+            (text-mode)
+            (let ((region-beg (save-excursion
+                                (goto-char (point-min))
+                                (search-forward word)
+                                (search-forward word)
+                                (match-beginning 0)))
+                  (explicit-beg (save-excursion
+                                  (goto-char (point-min))
+                                  (search-forward explicit-atom)
+                                  (match-beginning 0)))
+                  (explicit-end (save-excursion
+                                  (goto-char (point-min))
+                                  (search-forward explicit-atom)
+                                  (match-end 0))))
+              (cl-letf (((symbol-function 'ekp-buffer--layout-plan)
+                         (lambda (source width context)
+                           (push (list :source (copy-sequence source)
+                                       :width width
+                                       :context (copy-tree context))
+                                 captures)
+                           (funcall original-layout source width context))))
+                ;; Mode profile beats real global defaults; no profile value is
+                ;; copied into a buffer-local variable.
+                (ekp-justify-region (point-min) (point-max) 80)
+                (let ((context (plist-get (car captures) :context)))
+                  (should (eq (plist-get context :hyphenation) 'on))
+                  (should (eq (plist-get context :inline-code-policy)
+                              'no-break))
+                  (should (equal (plist-get context :inline-faces)
+                                 '(org-code)))
+                  (should (eq (plist-get context :overlong-token-policy)
+                              'natural)))
+                (should-not (local-variable-p 'ekp-hyphenation))
+                (should-not (local-variable-p 'ekp-inline-code-policy))
+                (should-not (local-variable-p 'ekp-buffer-inline-faces))
+                (ekp-unjustify-region (point-min) (point-max))
+                (setq captures nil)
+
+                ;; Explicit buffer/file/dir-local values use the same public
+                ;; variables and outrank the matching mode profile.
+                (setq-local ekp-hyphenation 'off)
+                (setq-local ekp-inline-code-policy 'normal)
+                (setq-local ekp-buffer-inline-faces nil)
+                (ekp-justify-region (point-min) (point-max) 80)
+                (let ((context (plist-get (car captures) :context)))
+                  (should (eq (plist-get context :hyphenation) 'off))
+                  (should (eq (plist-get context :inline-code-policy)
+                              'normal))
+                  (should-not (plist-get context :inline-faces)))
+                (ekp-unjustify-region (point-min) (point-max))
+                (setq captures nil)
+
+                ;; Exact region policy is passed only on the annotated source
+                ;; range and outranks explicit locals in the core planner.
+                (setq-local ekp-overlong-token-policy 'emergency)
+                (put-text-property region-beg (+ region-beg (length word))
+                                   'ekp-break-policy 'hyphenate)
+                (put-text-property explicit-beg explicit-end
+                                   'ekp-break-policy 'hyphenate)
+                (ekp-justify-region (point-min) (point-max) 40)
+                (should (get-text-property (point-min) 'ekp-justified))
+                (let* ((source (plist-get (car captures) :source))
+                       (region-offset (- region-beg (point-min)))
+                       (region-end (+ region-offset (length word)))
+                       (before-explicit (- explicit-beg (point-min)))
+                       (explicit-offset before-explicit)
+                       (explicit-finish (- explicit-end (point-min))))
+                  (should
+                   (eq (get-text-property region-offset 'ekp-break-policy
+                                          source)
+                       'hyphenate))
+                  (should-not
+                   (get-text-property (1- region-offset) 'ekp-break-policy
+                                      source))
+                  (should-not
+                   (get-text-property region-end 'ekp-break-policy source))
+                  (should
+                   (eq (get-text-property explicit-offset 'ekp-break-policy
+                                          source)
+                       'hyphenate))
+                  (should
+                   (get-text-property explicit-offset 'ekp-no-break source))
+                  (should-not
+                   (seq-some
+                    (lambda (pos)
+                      (and (>= pos explicit-beg) (< pos explicit-end)))
+                    (ekp-buffer-test--display-newline-positions)))
+                  (should (< before-explicit explicit-finish)))
+                (should (equal (substring-no-properties (buffer-string))
+                               (substring-no-properties text)))
+                (ekp-unjustify-region (point-min) (point-max))
+                (should (equal (substring-no-properties (buffer-string))
+                               (substring-no-properties text)))))))
+      (set-default-toplevel-value 'ekp-hyphenation original-hyphenation)
+      (set-default-toplevel-value
+       'ekp-inline-code-policy original-inline-policy)
+      (set-default-toplevel-value
+       'ekp-buffer-inline-faces original-inline-faces)
+      (set-default-toplevel-value
+       'ekp-buffer-mode-policy-alist original-mode-policy)
+      (set-default-toplevel-value
+       'ekp-overlong-token-policy original-overlong))))
 
 (ert-deftest ekp-buffer-test-skip-predicate ()
   "The paragraph predicate is the general escape hatch."
@@ -2224,10 +2547,14 @@ keeps the buffer justified, and leaves it unmodified."
     (ekp-markdown-setup)
     (should (equal font-lock-extra-managed-props
                    '(display composition)))
-    (should (equal ekp-buffer-skip-faces ekp-buffer-markdown-skip-faces))))
+    (should (local-variable-p 'ekp-buffer-skip-faces))
+    (should (local-variable-p 'ekp-buffer-inline-faces))
+    (should (equal ekp-buffer-skip-faces ekp-buffer-markdown-block-faces))
+    (should (equal ekp-buffer-inline-faces
+                   ekp-buffer-markdown-inline-faces))))
 
 (ert-deftest ekp-buffer-test-org-auto-preset ()
-  "Enabling the mode in an Org buffer applies the Org skip preset."
+  "Auto mode consults the Org profile without copying preset locals."
   (with-temp-buffer
     (org-mode)
     (insert "普通正文段落内容足够长断行几次的样子")
@@ -2235,7 +2562,13 @@ keeps the buffer justified, and leaves it unmodified."
                (lambda (&optional _) 100)))
       (ekp-auto-justify-mode 1)
       (unwind-protect
-          (should (equal ekp-buffer-skip-faces ekp-buffer-org-skip-faces))
+          (let ((context (ekp-buffer--policy-context)))
+            (should-not (local-variable-p 'ekp-buffer-skip-faces))
+            (should-not (local-variable-p 'ekp-buffer-inline-faces))
+            (should (equal (plist-get context :block-faces)
+                           ekp-buffer-org-block-faces))
+            (should (equal (plist-get context :inline-faces)
+                           ekp-buffer-org-inline-faces)))
         (ekp-auto-justify-mode -1)))))
 
 ;;;; Lazy re-flow scheduling
@@ -2336,6 +2669,785 @@ a zero budget still makes progress (exactly one chunk)."
           (let ((ekp-auto-justify-mode t))
             (ekp-buffer--process-chunk (current-buffer)))))
       (should-not ekp-buffer--pending))))
+
+;;;; G003 configurable buffer policy contracts
+
+(defun ekp-buffer-test--private-policy-property-present-p ()
+  "Return non-nil when any private policy property leaked to the buffer."
+  (let ((properties '(ekp--break-policy ekp--hyphenation ekp--literal-spacing
+                      ekp--policy-provenance ekp--automatic-no-break
+                      ekp--resolved-policy ekp--no-hyphen
+                      ekp--token-category ekp--downgraded-no-break))
+        (pos (point-min))
+        hit)
+    (while (and (< pos (point-max)) (not hit))
+      (setq hit
+            (seq-some
+             (lambda (property)
+               (get-text-property pos property))
+             properties)
+            pos (1+ pos)))
+    hit))
+
+(defun ekp-buffer-test--drain-policy-reflow ()
+  "Run the scheduled zero-delay policy reflow for the current buffer."
+  (let* ((timer ekp-buffer--policy-reflow-timer)
+         (callback (timer--function timer))
+         (arguments (timer--args timer)))
+    (should (timerp timer))
+    (should (eq callback #'ekp-buffer--reflow-for-policy-change))
+    (apply callback arguments)
+    (when (timerp ekp-buffer--policy-reflow-timer)
+      (cancel-timer ekp-buffer--policy-reflow-timer)
+      (setq ekp-buffer--policy-reflow-timer nil)))
+  (should-not (timerp ekp-buffer--policy-reflow-timer)))
+
+(ert-deftest ekp-buffer-test-g003-inline-profile-is-exact-span-only ()
+  "Inline face lists affect exact spans; outside gaps remain breakable."
+  (let* ((inline-text "aa  bb   cc")
+         (inline (propertize inline-text 'face '(org-code bold)))
+         (block (propertize "#+begin_src\n(+ 1   2)\n#+end_src"
+                            'face 'org-block))
+         (text (concat "prefix prose wraps before " inline
+                       " after wraps more words with trailing prose\n"
+                       block "\n"
+                       "tail prose wraps normally")))
+    (ekp-buffer-test--with-text text
+      (ekp-org-setup)
+      (let ((before (buffer-string))
+            inline-beg inline-end)
+        (goto-char (point-min))
+        (search-forward inline-text)
+        (setq inline-beg (match-beginning 0)
+              inline-end (match-end 0))
+        (ekp-justify-region (point-min) (point-max) 160)
+        (should (get-text-property (point-min) 'ekp-justified))
+        (should (equal (buffer-substring-no-properties inline-beg inline-end)
+                       inline-text))
+        (let* ((span (seq-find
+                      (lambda (candidate)
+                        (and (= (marker-position
+                                 (ekp-buffer--span-beg candidate))
+                                (point-min))
+                             (< inline-end
+                                (marker-position
+                                 (ekp-buffer--span-end candidate)))))
+                      ekp-buffer--spans))
+               (plan (and span (ekp-buffer--span-plan span)))
+               (source (and plan (ekp-layout-plan-string plan)))
+               (base (and span
+                          (marker-position (ekp-buffer--span-beg span))))
+               (inline-start (- inline-beg base))
+               (inline-finish (- inline-end base))
+               literal-space-runs
+               outside-gap-seen)
+          (should span)
+          (should (equal (substring source inline-start inline-finish)
+                         inline-text))
+          (cl-loop for box across (ekp-layout-plan-boxes plan)
+                   for offset across (ekp-layout-plan-offsets plan)
+                   when (and (<= inline-start (car offset))
+                             (<= (cdr offset) inline-finish)
+                             (string-match-p
+                              "\\` +\\'" (substring-no-properties box)))
+                   do (push (substring-no-properties box)
+                            literal-space-runs))
+          (cl-loop for line across (ekp-layout-plan-lines plan)
+                   do (cl-loop
+                       for gap across (ekp-layout-line-gaps line)
+                       for start = (ekp-layout-gap-source-start gap)
+                       for finish = (ekp-layout-gap-source-end gap)
+                       when (and (or (<= finish inline-start)
+                                     (<= inline-finish start))
+                                 (string-match-p
+                                  "\\` +\\'" (substring source start finish)))
+                       do (setq outside-gap-seen t)
+                       when (and (<= inline-start start)
+                                 (<= finish inline-finish)
+                                 (string-match-p
+                                  "\\` +\\'" (substring source start finish)))
+                       do
+                       (should (= (ekp-layout-gap-target-pixel gap)
+                                  (ekp-layout-gap-natural-pixel gap)))))
+          (should (member "  " literal-space-runs))
+          (should (member "   " literal-space-runs))
+          (should outside-gap-seen))
+        (should-not
+         (cl-loop for pos from inline-beg below inline-end
+                  thereis
+                  (let ((display (get-text-property pos 'ekp-buffer--display)))
+                    (and (stringp display)
+                         (string-match-p "-\n"
+                                         (substring-no-properties display))))))
+        (should-not (ekp-buffer-test--private-policy-property-present-p))
+        (goto-char (point-min))
+        (search-forward "(+ 1   2)")
+        (should-not (get-text-property (match-beginning 0) 'ekp-justified))
+        (ekp-unjustify-region (point-min) (point-max))
+        (should (equal-including-properties (buffer-string) before))))))
+
+(ert-deftest ekp-buffer-test-g004-inline-face-breaks-at-source-spaces ()
+  "Inline faces use the public policy path without becoming hard atoms."
+  (let* ((face 'ekp-buffer-test-inline-code-face)
+         (inline-text
+          "(ekp pixel justify STR W)  alpha   beta gamma delta epsilon zeta")
+         (text (propertize inline-text 'face face))
+         (ekp-buffer-inline-faces (list face))
+         (ekp-inline-code-policy 'no-hyphen)
+         (ekp-hyphenation 'off)
+         (ekp-use-c-module nil))
+    (ekp-buffer-test--with-text text
+      (let ((before (buffer-string))
+            (inline-beg (point-min))
+            (inline-end (point-max)))
+        (ekp-justify-region (point-min) (point-max) 20)
+        (should-not (text-property-not-all
+                     inline-beg inline-end 'ekp-no-break nil))
+        (let* ((span (seq-find
+                      (lambda (candidate)
+                        (and (<= (marker-position
+                                   (ekp-buffer--span-beg candidate))
+                                 inline-beg)
+                             (<= inline-end
+                                 (marker-position
+                                  (ekp-buffer--span-end candidate)))))
+                      ekp-buffer--spans))
+               (plan (and span (ekp-buffer--span-plan span)))
+               (source (and plan (ekp-layout-plan-string plan)))
+               (breaks-inside
+                (and plan
+                     (cl-loop
+                      for line across (ekp-layout-plan-lines plan)
+                      for start = (ekp-layout-line-break-source-start line)
+                      for end = (ekp-layout-line-break-source-end line)
+                      when (and start end (< start end)
+                                (<= start (length inline-text))
+                                (<= end (length inline-text)))
+                      collect (substring source start end))))
+               (hyphen-inside
+                (and plan
+                     (seq-some #'ekp-layout-line-hyphen-p
+                               (append (ekp-layout-plan-lines plan) nil)))))
+          (should span)
+          (should plan)
+          (should (> (length (ekp-layout-plan-lines plan)) 1))
+          (should breaks-inside)
+          (dolist (break breaks-inside)
+            (should (string-match-p "\\`[[:space:]\n\r\t]+\\'"
+                                    break)))
+          (should-not hyphen-inside)
+          (should (equal (substring-no-properties source)
+                         inline-text))
+          (should (equal (get-text-property 0 'face source) face)))
+        (should (equal (substring-no-properties (buffer-string))
+                       (substring-no-properties before)))
+        (should (eq (get-text-property inline-beg 'face) face))
+        (should-not (overlays-in (point-min) (point-max)))))))
+
+(ert-deftest ekp-buffer-test-g003-profile-precedence-and-auto-consult-only ()
+  "Auto profiles are consult-only; explicit locals and region policy win."
+  (should (boundp 'ekp-buffer-mode-policy-alist))
+  (let ((original-hyphenation (default-value 'ekp-hyphenation))
+        (original-inline-policy (default-value 'ekp-inline-code-policy))
+        (original-mode-policy
+         (default-value 'ekp-buffer-mode-policy-alist)))
+    (unwind-protect
+        (progn
+          (set-default-toplevel-value 'ekp-hyphenation 'off)
+          (set-default-toplevel-value 'ekp-inline-code-policy 'normal)
+          (set-default-toplevel-value
+           'ekp-buffer-mode-policy-alist
+           '((org-mode . ((ekp-hyphenation . on)
+                          (ekp-inline-code-policy . no-hyphen)
+                          (ekp-buffer-measure . 12)))))
+          (with-temp-buffer
+            (org-mode)
+            (insert "internationalization internationalization internationalization")
+            (cl-letf (((symbol-function 'ekp-buffer--window-pixel)
+                       (lambda (&optional _) 100)))
+              (ekp-auto-justify-mode 1)
+              (unwind-protect
+                  (progn
+                    ;; Mode profiles must be consulted without copying values
+                    ;; into locals.  File and dir locals use these same public
+                    ;; variables; no separate file/directory policy alists.
+                    (should-not (local-variable-p 'ekp-buffer-skip-faces))
+                    (should-not (local-variable-p 'ekp-inline-code-policy))
+                    (should-not (local-variable-p 'ekp-hyphenation))
+                    (should-not (local-variable-p 'ekp-buffer-measure))
+                    (should (ekp-buffer-test--display-hyphen-p))
+                    (ekp-unjustify-region (point-min) (point-max))
+                    ;; Explicit locals are the public file/dir/buffer-local
+                    ;; owner and outrank the mode profile without manual cache
+                    ;; clearing.
+                    (setq-local ekp-hyphenation 'off)
+                    (ekp-justify-region (point-min) (point-max) 12)
+                    (should-not (ekp-buffer-test--display-hyphen-p))
+                    (ekp-unjustify-region (point-min) (point-max))
+                    ;; Region policy is the final override over explicit
+                    ;; locals.
+                    (put-text-property (point-min) (+ (point-min) 20)
+                                       'ekp-break-policy 'hyphenate)
+                    (ekp-justify-region (point-min) (point-max) 12)
+                    (should (ekp-buffer-test--display-hyphen-p)))
+                (ekp-auto-justify-mode -1)))))
+      (set-default-toplevel-value 'ekp-hyphenation original-hyphenation)
+      (set-default-toplevel-value
+       'ekp-inline-code-policy original-inline-policy)
+      (set-default-toplevel-value
+       'ekp-buffer-mode-policy-alist original-mode-policy))))
+
+(ert-deftest ekp-buffer-test-g003-safe-local-values-are-closed ()
+  "Documented locals are safe; malformed and executable values are rejected."
+  (dolist (case '((ekp-inline-code-policy . normal)
+                  (ekp-inline-code-policy . no-hyphen)
+                  (ekp-inline-code-policy . no-break)
+                  (ekp-hyphenation . auto)
+                  (ekp-hyphenation . on)
+                  (ekp-hyphenation . off)
+                  (ekp-overlong-token-policy . emergency)
+                  (ekp-overlong-token-policy . overflow)
+                  (ekp-overlong-token-policy . natural)
+                  (ekp-buffer-measure . narrowest-window)
+                  (ekp-buffer-measure . (max . 24))
+                  (ekp-buffer-measure . 30)
+                  (ekp-emergency-stretch-pixel . nil)
+                  (ekp-emergency-stretch-pixel . 0)
+                  (ekp-emergency-stretch-pixel . 7)
+                  (ekp-buffer-mode-policy-alist
+                   . ((text-mode . ((ekp-emergency-stretch-pixel . 7)))))
+                  (ekp-token-break-policies
+                   . ((identifier . normal) (path . no-hyphen)))))
+    (should (safe-local-variable-p (car case) (cdr case))))
+  (dolist (case '((ekp-inline-code-policy . maybe)
+                  (ekp-buffer-measure . window)
+                  (ekp-buffer-measure . (max . "wide"))
+                  (ekp-buffer-measure . 0)
+                  (ekp-emergency-stretch-pixel . -1)
+                  (ekp-emergency-stretch-pixel . 1.5)
+                  (ekp-buffer-mode-policy-alist
+                   . ((text-mode . ((ekp-emergency-stretch-pixel . -1)))))
+                  (ekp-token-break-policies . ((identifier . execute)))
+                  (ekp-buffer-skip-faces . ((lambda () t)))
+                  (ekp-buffer-skip-predicate . ignore)
+                  (ekp-buffer-skip-predicate . (lambda (_) t))))
+    (should-not (safe-local-variable-p (car case) (cdr case)))))
+
+(ert-deftest ekp-buffer-test-emergency-stretch-policy-context-and-reflow ()
+  "Emergency stretch follows global/profile/local precedence and reflows once."
+  (let ((original-stretch (default-value 'ekp-emergency-stretch-pixel))
+        (original-profile (default-value 'ekp-buffer-mode-policy-alist)))
+    (unwind-protect
+        (progn
+          (should (memq #'ekp-buffer--policy-variable-changed
+                        (get-variable-watchers
+                         'ekp-emergency-stretch-pixel)))
+          (set-default-toplevel-value 'ekp-emergency-stretch-pixel 3)
+          (set-default-toplevel-value
+           'ekp-buffer-mode-policy-alist
+           '((text-mode . ((ekp-emergency-stretch-pixel . 7)))))
+          (ekp-buffer-test--with-text "emergency stretch context alpha beta"
+            (text-mode)
+            (should (= (plist-get (ekp-buffer--policy-context)
+                                  :emergency-stretch-pixel)
+                       7))
+            (setq-local ekp-emergency-stretch-pixel 11)
+            (should (= (plist-get (ekp-buffer--policy-context)
+                                  :emergency-stretch-pixel)
+                       11))
+            (kill-local-variable 'ekp-emergency-stretch-pixel)
+            (should (= (plist-get (ekp-buffer--policy-context)
+                                  :emergency-stretch-pixel)
+                       7))
+            (setq-default ekp-buffer-mode-policy-alist nil)
+            (should (= (plist-get (ekp-buffer--policy-context)
+                                  :emergency-stretch-pixel)
+                       3)))
+          (ekp-buffer-test--with-text "emergency stretch watcher alpha beta"
+            (text-mode)
+            (cl-letf (((symbol-function 'ekp-buffer--window-pixel)
+                       (lambda (&optional _) 30)))
+              (ekp-auto-justify-mode 1)
+              (unwind-protect
+                  (let ((calls 0)
+                        contexts
+                        (original-layout
+                         (symbol-function 'ekp-buffer--layout-plan))
+                        (original-reflow
+                         (symbol-function 'ekp-buffer--reflow)))
+                    (cl-letf (((symbol-function 'ekp-buffer--layout-plan)
+                               (lambda (source width context)
+                                 (push (copy-tree context) contexts)
+                                 (funcall original-layout
+                                          source width context)))
+                              ((symbol-function 'ekp-buffer--reflow)
+                               (lambda (&rest args)
+                                 (setq calls (1+ calls))
+                                 (apply original-reflow args))))
+                      (setq-default ekp-emergency-stretch-pixel 9)
+                      (should (= calls 0))
+                      (ekp-buffer-test--drain-policy-reflow)
+                      (should (= calls 1))
+                      (should (= (plist-get (car contexts)
+                                            :emergency-stretch-pixel)
+                                 9))))
+                (ekp-auto-justify-mode -1)))))
+      (set-default-toplevel-value 'ekp-emergency-stretch-pixel original-stretch)
+      (set-default-toplevel-value
+       'ekp-buffer-mode-policy-alist original-profile))))
+
+(ert-deftest ekp-buffer-test-g003-break-policy-region-commands ()
+  "Region commands write exact break-policy values and fail read-only first."
+  (dolist (command '(ekp-normal-break-region
+                    ekp-enable-hyphenation-region
+                    ekp-disable-hyphenation-region
+                    ekp-clear-break-policy-region))
+    (should (fboundp command)))
+  (ekp-buffer-test--with-text "alpha beta gamma"
+    (let ((commands '((ekp-normal-break-region . normal)
+                      (ekp-enable-hyphenation-region . hyphenate)
+                      (ekp-disable-hyphenation-region . no-hyphen)
+                      (ekp-clear-break-policy-region . nil)))
+          messages)
+      (dolist (entry commands)
+        (set-mark (point-min))
+        (goto-char (+ (point-min) 5))
+        (activate-mark)
+        (cl-letf (((symbol-function 'message)
+                   (lambda (format-string &rest args)
+                     (push (apply #'format format-string args) messages))))
+          (call-interactively (car entry)))
+        (should (eq (get-text-property (point-min) 'ekp-break-policy)
+                    (cdr entry))))
+      (should (cl-every
+               (lambda (text) (string-match-p "current buffer session" text))
+               messages))))
+  (ekp-buffer-test--with-text "read only"
+    (set-mark (point-min))
+    (goto-char (point-max))
+    (activate-mark)
+    (read-only-mode 1)
+    (should-error (call-interactively #'ekp-enable-hyphenation-region)
+                  :type 'buffer-read-only)))
+
+(defun ekp-buffer-test--manual-policy-command-clears-projection
+    (command property expected)
+  "Assert COMMAND invalidates a manual projection for PROPERTY."
+  (ekp-buffer-test--with-text
+      "alpha beta gamma delta epsilon zeta eta theta"
+    (let ((region-beg (+ (point-min) 6))
+          (region-end (+ (point-min) 16)))
+      (ekp-justify-region (point-min) (point-max) 20)
+      (should (= (length ekp-buffer--spans) 1))
+      (should ekp-buffer--filter-installed)
+      (let* ((span (car ekp-buffer--spans))
+             (source (ekp-layout-plan-string (ekp-buffer--span-plan span)))
+             (offset (- region-beg
+                        (marker-position (ekp-buffer--span-beg span)))))
+        (should-not (get-text-property offset property source)))
+      (set-mark region-beg)
+      (goto-char region-end)
+      (activate-mark)
+      (cl-letf (((symbol-function 'message) #'ignore))
+        (call-interactively command))
+      (should (eq (get-text-property region-beg property) expected))
+      (when ekp-buffer--spans
+        (let* ((span (car ekp-buffer--spans))
+               (source (ekp-layout-plan-string (ekp-buffer--span-plan span)))
+               (offset (- region-beg
+                          (marker-position (ekp-buffer--span-beg span)))))
+          (should (eq (get-text-property offset property source)
+                      expected))))
+      (should-not ekp-buffer--spans)
+      (should-not ekp-buffer--filter-installed)
+      (should-not (eq filter-buffer-substring-function
+                      #'ekp-buffer--filter-buffer-substring)))))
+
+(ert-deftest ekp-buffer-test-g003-manual-break-policy-invalidates-projection ()
+  "Manual break-policy changes clear intersecting stale projections."
+  (ekp-buffer-test--manual-policy-command-clears-projection
+   #'ekp-enable-hyphenation-region 'ekp-break-policy 'hyphenate))
+
+(ert-deftest ekp-buffer-test-g003-manual-no-break-invalidates-projection ()
+  "Manual no-break changes clear intersecting stale projections."
+  (ekp-buffer-test--manual-policy-command-clears-projection
+   #'ekp-no-break-region 'ekp-no-break t))
+
+(ert-deftest ekp-buffer-test-g003-measure-and-diagnose-contract ()
+  "Measure modes use mocked windows and diagnose exposes effective policy."
+  (with-temp-buffer
+    (let ((widths '((w1 . 16) (w2 . 40))))
+      (cl-letf (((symbol-function 'get-buffer-window-list)
+                 (lambda (&rest _) '(w1 w2)))
+                ((symbol-function 'ekp-buffer--window-pixel)
+                 (lambda (&optional window)
+                   (alist-get window widths))))
+        (dolist (case '((narrowest-window . 16)
+                        ((max . 12) . 12)
+                        ((max . 24) . 16)
+                        (30 . 30)))
+          (let ((ekp-buffer-measure (car case)))
+            (should (= (ekp-buffer--effective-width) (cdr case)))))
+        (let* ((ekp-buffer-measure 30)
+               (ekp-inline-code-policy 'no-hyphen)
+               (ekp-hyphenation 'auto)
+               (ekp-kinsoku-profile 'common)
+               (ekp-overlong-token-policy 'emergency)
+               diagnostic-message
+               (report
+                (cl-letf (((symbol-function 'message)
+                           (lambda (format-string &rest args)
+                             (setq diagnostic-message
+                                   (apply #'format format-string args)))))
+                  (ekp-diagnose))))
+          (dolist (key '(:requested :narrowest :effective :policy
+                         :conflicts :overflow-risk))
+            (should (plist-member report key)))
+          (should (equal (plist-get report :requested) 30))
+          (should (= (plist-get report :narrowest) 16))
+          (should (= (plist-get report :effective) 30))
+          (should (plist-get report :overflow-risk))
+          (should-not (plist-get report :conflicts))
+          (let ((policy (plist-get report :policy)))
+            (should (eq (plist-get policy :inline-code-policy)
+                        'no-hyphen))
+            (should (eq (plist-get policy :hyphenation) 'auto))
+            (should (eq (plist-get policy :kinsoku-profile) 'common))
+            (should (eq (plist-get policy :overlong-token-policy)
+                        'emergency)))
+          (dolist (fragment '("requested 30"
+                              "narrowest 16"
+                              "effective 30"
+                              "overflow risk"
+                              "0 conflicts"
+                              "inline-code no-hyphen"
+                              "hyphenation auto"
+                              "kinsoku common"
+                              "overlong emergency"))
+            (should (string-match-p (regexp-quote fragment)
+                                    diagnostic-message))))))))
+
+(ert-deftest ekp-buffer-test-g003-policy-watchers-schedule-one-reflow ()
+  "Global and local policy changes trigger one reflow; let bindings do not."
+  (let ((original-default (default-value 'ekp-inline-code-policy))
+        (original-profile (default-value 'ekp-buffer-mode-policy-alist)))
+    (unwind-protect
+        (progn
+          (ekp-buffer-test--with-text "alpha beta gamma delta"
+            (text-mode)
+            (cl-letf (((symbol-function 'ekp-buffer--window-pixel)
+                       (lambda (&optional _) 30)))
+              (ekp-auto-justify-mode 1)
+              (unwind-protect
+                  (let ((calls 0)
+                        contexts
+                        (original-layout
+                         (symbol-function 'ekp-buffer--layout-plan))
+                        (original-reflow
+                         (symbol-function 'ekp-buffer--reflow)))
+                    (goto-char (+ (point-min) 5))
+                    (set-marker (mark-marker) (+ (point-min) 11))
+                    (setq mark-active nil)
+                    (cl-letf (((symbol-function 'ekp-buffer--layout-plan)
+                               (lambda (source width context)
+                                 (push (copy-tree context) contexts)
+                                 (funcall original-layout
+                                          source width context)))
+                              ((symbol-function 'ekp-buffer--reflow)
+                               (lambda (&rest args)
+                                 (setq calls (1+ calls))
+                                 (apply original-reflow args))))
+                      (let ((source-before
+                             (substring-no-properties (buffer-string)))
+                            (modified-before (buffer-modified-p))
+                            (undo-before buffer-undo-list)
+                            (tick-before
+                             (buffer-chars-modified-tick))
+                            (overlay-count-before
+                             (length (overlays-in (point-min)
+                                                  (point-max))))
+                            (point-before (point))
+                            (mark-before (marker-position (mark-marker)))
+                            (mark-active-before mark-active)
+                            (generation-before ekp-buffer--generation))
+                        (setq-default ekp-inline-code-policy 'normal)
+                        (should (= calls 0))
+                        (ekp-buffer-test--drain-policy-reflow)
+                        (should (= calls 1))
+                        (should (> ekp-buffer--generation generation-before))
+                        (should (equal (substring-no-properties
+                                        (buffer-string))
+                                       source-before))
+                        (should (eq (buffer-modified-p) modified-before))
+                        (should (eq buffer-undo-list undo-before))
+                        (should (equal buffer-undo-list undo-before))
+                        (should (= (buffer-chars-modified-tick)
+                                   tick-before))
+                        (should (= (length (overlays-in (point-min)
+                                                        (point-max)))
+                                   overlay-count-before))
+                        (should (= (point) point-before))
+                        (should (= (marker-position (mark-marker))
+                                   mark-before))
+                        (should (eq mark-active mark-active-before))
+                        (should (eq (plist-get (car contexts)
+                                               :inline-code-policy)
+                                    'normal)))
+                      (let ((same-generation ekp-buffer--generation))
+                        (setq-default ekp-inline-code-policy 'normal)
+                        (should-not (timerp ekp-buffer--policy-reflow-timer))
+                        (should (= calls 1))
+                        (should (= ekp-buffer--generation same-generation)))
+                      (setq contexts nil)
+                      (let ((local-generation ekp-buffer--generation))
+                        (setq-local ekp-inline-code-policy 'no-hyphen)
+                        (should (= calls 1))
+                        (ekp-buffer-test--drain-policy-reflow)
+                        (should (= calls 2))
+                        (should (> ekp-buffer--generation local-generation))
+                        (should (eq (plist-get (car contexts)
+                                               :inline-code-policy)
+                                    'no-hyphen)))
+                      (let ((same-local-generation ekp-buffer--generation))
+                        (setq-local ekp-inline-code-policy 'no-hyphen)
+                        (when (timerp ekp-buffer--policy-reflow-timer)
+                          (ekp-buffer-test--drain-policy-reflow))
+                        (should-not (timerp ekp-buffer--policy-reflow-timer))
+                        (should (= calls 2))
+                        (should (= ekp-buffer--generation
+                                   same-local-generation)))
+                      (setq contexts nil)
+                      (let ((local-shield-generation
+                             ekp-buffer--generation)
+                            (local-shield-cache
+                             ekp-buffer--live-plan-cache)
+                            (local-shield-context
+                             (copy-tree (ekp-buffer--policy-context))))
+                        (setq-default ekp-inline-code-policy 'no-break)
+                        (when (timerp ekp-buffer--policy-reflow-timer)
+                          (ekp-buffer-test--drain-policy-reflow))
+                        (should-not (timerp ekp-buffer--policy-reflow-timer))
+                        (should (= calls 2))
+                        (should (= ekp-buffer--generation
+                                   local-shield-generation))
+                        (should (eq ekp-buffer--live-plan-cache
+                                    local-shield-cache))
+                        (should (equal (ekp-buffer--policy-context)
+                                       local-shield-context))
+                        (should (eq (plist-get local-shield-context
+                                               :inline-code-policy)
+                                    'no-hyphen)))
+                      (let ((let-generation ekp-buffer--generation))
+                        (let ((ekp-inline-code-policy 'normal))
+                          (ignore ekp-inline-code-policy))
+                        (should-not (timerp ekp-buffer--policy-reflow-timer))
+                        (should (= calls 2))
+                        (should (= ekp-buffer--generation let-generation)))))
+                (ekp-auto-justify-mode -1)))))
+          (setq-default ekp-inline-code-policy 'normal)
+          (setq-default
+           ekp-buffer-mode-policy-alist
+           '((text-mode . ((ekp-inline-code-policy . no-hyphen)))))
+          (ekp-buffer-test--with-text "profile alpha beta gamma"
+            (text-mode)
+            (cl-letf (((symbol-function 'ekp-buffer--window-pixel)
+                       (lambda (&optional _) 30)))
+              (ekp-auto-justify-mode 1)
+              (unwind-protect
+                  (let ((calls 0)
+                        contexts
+                        (original-layout
+                         (symbol-function 'ekp-buffer--layout-plan))
+                        (original-reflow
+                         (symbol-function 'ekp-buffer--reflow)))
+                    (cl-letf (((symbol-function 'ekp-buffer--layout-plan)
+                               (lambda (source width context)
+                                 (push (copy-tree context) contexts)
+                                 (funcall original-layout
+                                          source width context)))
+                          ((symbol-function 'ekp-buffer--reflow)
+                               (lambda (&rest args)
+                                 (setq calls (1+ calls))
+                                 (apply original-reflow args))))
+                      (let ((generation-before ekp-buffer--generation)
+                            (cache-before ekp-buffer--live-plan-cache)
+                            (context-before
+                             (copy-tree (ekp-buffer--policy-context))))
+                        (setq-default ekp-inline-code-policy 'no-break)
+                        (when (timerp ekp-buffer--policy-reflow-timer)
+                          (ekp-buffer-test--drain-policy-reflow))
+                        (should-not (timerp ekp-buffer--policy-reflow-timer))
+                        (should (= calls 0))
+                        (should (= ekp-buffer--generation
+                                   generation-before))
+                        (should (eq ekp-buffer--live-plan-cache
+                                    cache-before))
+                        (should (equal (ekp-buffer--policy-context)
+                                       context-before))
+                        (should (eq (plist-get context-before
+                                               :inline-code-policy)
+                                    'no-hyphen)))))
+                (ekp-auto-justify-mode -1)))))
+      (set-default-toplevel-value 'ekp-inline-code-policy original-default)
+      (set-default-toplevel-value
+       'ekp-buffer-mode-policy-alist original-profile)))
+
+(ert-deftest ekp-buffer-test-g003-policy-watchers-local-profile-transitions ()
+  "Local/profile effective policy transitions schedule post-set reflow."
+  (let ((original-default (default-value 'ekp-inline-code-policy))
+        (original-profile (default-value 'ekp-buffer-mode-policy-alist)))
+    (unwind-protect
+        (progn
+          (setq-default ekp-inline-code-policy 'normal)
+          (setq-default
+           ekp-buffer-mode-policy-alist
+           '((text-mode . ((ekp-inline-code-policy . no-hyphen)))))
+          (ekp-buffer-test--with-text "profile transition alpha beta"
+            (text-mode)
+            (cl-letf (((symbol-function 'ekp-buffer--window-pixel)
+                       (lambda (&optional _) 30)))
+              (ekp-auto-justify-mode 1)
+              (unwind-protect
+                  (let ((calls 0)
+                        contexts
+                        (original-layout
+                         (symbol-function 'ekp-buffer--layout-plan))
+                        (original-reflow
+                         (symbol-function 'ekp-buffer--reflow)))
+                    (cl-letf (((symbol-function 'ekp-buffer--layout-plan)
+                               (lambda (source width context)
+                                 (push (copy-tree context) contexts)
+                                 (funcall original-layout
+                                          source width context)))
+                              ((symbol-function 'ekp-buffer--reflow)
+                               (lambda (&rest args)
+                                 (setq calls (1+ calls))
+                                 (apply original-reflow args))))
+                      (setq-local ekp-inline-code-policy 'normal)
+                      (should (timerp ekp-buffer--policy-reflow-timer))
+                      (ekp-buffer-test--drain-policy-reflow)
+                      (should (= calls 1))
+                      (should (eq (plist-get (car contexts)
+                                             :inline-code-policy)
+                                  'normal))
+                      (setq contexts nil)
+                      (kill-local-variable 'ekp-inline-code-policy)
+                      (should (timerp ekp-buffer--policy-reflow-timer))
+                      (ekp-buffer-test--drain-policy-reflow)
+                      (should (= calls 2))
+                      (should (eq (plist-get (car contexts)
+                                             :inline-code-policy)
+                                  'no-hyphen))))
+                (ekp-auto-justify-mode -1)))))
+      (set-default-toplevel-value 'ekp-inline-code-policy original-default)
+      (set-default-toplevel-value
+       'ekp-buffer-mode-policy-alist original-profile))))
+
+(ert-deftest ekp-buffer-test-g003-natural-overlong-conflict-is-paragraph-local ()
+  "Natural overlong paragraphs stay unprojected and clear after fitting."
+  (let* ((ekp-overlong-token-policy 'natural)
+         (long-token "supercalifragilisticexpialidocious")
+         (text (concat long-token "\n汉字段落可以规划"))
+         (original (symbol-function 'ekp--measured-width)))
+    (cl-letf (((symbol-function 'ekp--measured-width)
+               (lambda (string)
+                 (let ((plain (substring-no-properties string)))
+                   (if (equal plain long-token)
+                       40
+                     (funcall original string))))))
+      (ekp-buffer-test--with-text text
+        (ekp-justify-region (point-min) (point-max) 8)
+        (should-not (get-text-property (point-min) 'ekp-justified))
+        (should (seq-some
+                 (lambda (conflict)
+                   (string-match-p "overlong-token-natural" (caddr conflict)))
+                 ekp-buffer--conflicts))
+        (goto-char (point-max))
+        (should (get-text-property (1- (point)) 'ekp-justified))
+        (ekp-unjustify-region (point-min) (point-max))
+        (setq ekp-buffer--conflicts nil)
+        (ekp-justify-region (point-min) (point-max) 80)
+        (should-not ekp-buffer--conflicts)
+        (should (equal (substring-no-properties (buffer-string)) text))))))
+
+(ert-deftest ekp-buffer-test-g003-live-identity-includes-policy-and-properties ()
+  "Live history keys include policy, measure, profile, and source props."
+  (dolist (symbol '(ekp-buffer-measure ekp-buffer-mode-policy-alist
+                    ekp-buffer-inline-faces))
+    (should (boundp symbol)))
+  (ekp-buffer-test--with-text ""
+    (text-mode)
+    (let ((ekp-inline-code-policy 'normal)
+          (ekp-buffer-measure 'narrowest-window)
+          (ekp-buffer-mode-policy-alist nil))
+      (setq ekp-buffer--live-plan-cache nil)
+      (let ((first (cdr (ekp-buffer--live-plan-entry
+                         "alpha beta gamma" 20))))
+        (should (eq first
+                    (cdr (ekp-buffer--live-plan-entry
+                          "alpha beta gamma" 20))))
+        (let ((ekp-inline-code-policy 'no-break))
+          (should-not
+           (eq first
+               (cdr (ekp-buffer--live-plan-entry
+                     "alpha beta gamma" 20)))))
+        (let ((ekp-buffer-measure 24))
+          (should-not
+           (eq first
+               (cdr (ekp-buffer--live-plan-entry
+                     "alpha beta gamma" 20)))))
+        (let ((ekp-buffer-mode-policy-alist
+               '((text-mode . ((ekp-buffer-inline-faces . (font-lock-string-face)))))))
+          (should-not
+           (eq first
+               (cdr (ekp-buffer--live-plan-entry
+                     "alpha beta gamma" 20)))))
+        (let ((annotated (copy-sequence "alpha beta gamma")))
+          (put-text-property 6 10 'ekp-break-policy 'no-hyphen annotated)
+          (should-not
+           (eq first
+               (cdr (ekp-buffer--live-plan-entry annotated 20)))))
+        (dotimes (index 20)
+          (ekp-buffer--live-plan-entry
+           (format "history %02d alpha beta" index) 20))
+        (should (= (length ekp-buffer--live-plan-cache) 16))))))
+
+(ert-deftest ekp-buffer-test-live-plan-key-owns-policy-strings ()
+  "Live plan keys must not retain mutable public policy strings."
+  (ekp-buffer-test--with-text ""
+    (text-mode)
+    (let* ((ekp-use-c-module nil)
+           (suffix (copy-sequence "uX"))
+           (line-start-extra (copy-sequence "《"))
+           (ekp-number-unit-suffixes (list suffix))
+           (ekp-token-break-policies '((number-unit . no-break)))
+           (ekp-kinsoku-profile 'custom)
+           (ekp-cjk-no-line-start-extra line-start-extra)
+           (text (copy-sequence "100uX alpha beta gamma delta"))
+           (width 16)
+           (calls 0)
+           (original (symbol-function 'ekp-buffer--layout-plan))
+           first key)
+      (setq ekp-buffer--live-plan-cache nil)
+      (cl-letf (((symbol-function 'ekp-buffer--layout-plan)
+                 (lambda (&rest arguments)
+                   (setq calls (1+ calls))
+                   (apply original arguments))))
+        (setq first (cdr (ekp-buffer--live-plan-entry text width)))
+        (setq key (caar ekp-buffer--live-plan-cache))
+        (should (seq-some (lambda (string) (equal string "uX"))
+                          (ekp-buffer-test--strings-in-tree key)))
+        (should (seq-some (lambda (string) (equal string "《"))
+                          (ekp-buffer-test--strings-in-tree key)))
+        (store-substring suffix 1 "Y")
+        (store-substring line-start-extra 0 "》")
+        (let ((changed (cdr (ekp-buffer--live-plan-entry text width))))
+          (should-not (eq changed first))
+          (should (= calls 2)))
+        (should (seq-some (lambda (string) (equal string "uX"))
+                          (ekp-buffer-test--strings-in-tree key)))
+        (should (seq-some (lambda (string) (equal string "《"))
+                          (ekp-buffer-test--strings-in-tree key)))))))
 
 (provide 'ekp-buffer-tests)
 

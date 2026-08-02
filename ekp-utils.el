@@ -202,7 +202,10 @@ Rules:
         (setq boxes (cons spaces boxes)))
        ;; Inside a no-break span: spacing is literal, glue would
        ;; stretch — preserve the run as a rigid space box.
-       ((text-property-not-all 0 (length spaces) 'ekp-no-break nil spaces)
+       ((or (text-property-not-all
+             0 (length spaces) 'ekp-no-break nil spaces)
+            (text-property-not-all
+             0 (length spaces) 'ekp--literal-spacing nil spaces))
         (setq boxes (cons spaces boxes)))
        ;; Latin-Latin with multiple spaces: preserve all but last
        ((> (length spaces) 1)

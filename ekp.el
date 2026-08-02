@@ -38,6 +38,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'ekp-utils)
 (require 'ekp-hyphen)
 
@@ -54,6 +55,80 @@
   :group 'text
   :prefix "ekp-"
   :link '(url-link "https://github.com/Kinneyzhang/emacs-kp"))
+
+(defcustom ekp-inline-code-policy 'no-hyphen
+  "Default break policy for automatic inline code spans.
+`normal' uses ordinary breaks and hyphenation.  `no-hyphen' keeps
+ordinary legal breaks but suppresses discretionary dictionary
+hyphens.  `no-break' makes fitting automatic spans rigid; overwide
+automatic spans downgrade to `no-hyphen'.  This option does not
+affect explicit `ekp-no-break' regions."
+  :type '(choice (const normal) (const no-hyphen) (const no-break))
+  :safe #'ekp--safe-break-policy-value-p
+  :group 'ekp)
+
+(defcustom ekp-hyphenation 'auto
+  "Global discretionary hyphenation policy.
+`auto' and `on' use the configured dictionary when available;
+missing dictionaries disable hyphenation without signaling.
+`off' disables discretionary hyphenation."
+  :type '(choice (const auto) (const on) (const off))
+  :safe #'ekp--safe-hyphenation-value-p
+  :group 'ekp)
+
+(defcustom ekp-token-break-policies
+  '((url . no-hyphen)
+    (path . no-hyphen)
+    (identifier . no-hyphen)
+    (number-unit . no-break))
+  "Break policies for bounded automatic token classifiers."
+  :type '(alist :key-type (choice (const url) (const path)
+                                  (const identifier) (const number-unit))
+                :value-type (choice (const normal) (const no-hyphen)
+                                    (const no-break)))
+  :safe #'ekp--safe-token-break-policies-p
+  :group 'ekp)
+
+(defcustom ekp-number-unit-suffixes
+  '("%" "‰" "°C" "°F" "px" "pt" "pc" "em" "rem" "ms" "s" "min" "h"
+    "Hz" "kHz" "MHz" "GHz" "B" "KB" "MB" "GB" "TB" "KiB" "MiB"
+    "GiB" "TiB" "μm" "mm" "cm" "m" "km" "mg" "g" "kg")
+  "Exact suffixes recognized by the compact number-unit classifier."
+  :type '(repeat string)
+  :safe (lambda (value)
+          (and (proper-list-p value) (seq-every-p #'stringp value)))
+  :group 'ekp)
+
+(defcustom ekp-kinsoku-profile 'common
+  "Kinsoku profile used when compiling paragraph break permissions."
+  :type '(choice (const common) (const zh) (const ja)
+                 (const off) (const custom))
+  :safe (lambda (value) (memq value '(common zh ja off custom)))
+  :group 'ekp)
+
+(defcustom ekp-overlong-token-policy 'emergency
+  "Policy for ordinary non-CJK tokens wider than the measure."
+  :type '(choice (const emergency) (const overflow) (const natural))
+  :safe (lambda (value) (memq value '(emergency overflow natural)))
+  :group 'ekp)
+
+(defun ekp--safe-break-policy-value-p (value)
+  "Return non-nil when VALUE is a documented break-policy value."
+  (memq value '(normal no-hyphen no-break)))
+
+(defun ekp--safe-hyphenation-value-p (value)
+  "Return non-nil when VALUE is a documented hyphenation value."
+  (memq value '(auto on off)))
+
+(defun ekp--safe-token-break-policies-p (value)
+  "Return non-nil when VALUE is a safe token-policy alist."
+  (and (proper-list-p value)
+       (seq-every-p
+        (lambda (entry)
+          (and (consp entry)
+               (memq (car entry) '(url path identifier number-unit))
+               (ekp--safe-break-policy-value-p (cdr entry))))
+        value)))
 
 (defcustom ekp-latin-lang "en_US"
   "Language code for hyphenation (e.g., \"en_US\", \"de_DE\")."
@@ -152,6 +227,20 @@ stretch).  nil derives 8× the Latin word-space ideal (≈2 em)."
   :type '(choice (const :tag "Auto (≈2 em)" nil) natnum)
   :group 'ekp)
 
+(defun ekp--safe-emergency-stretch-pixel-p (value)
+  "Return non-nil when VALUE is a safe emergency-stretch setting."
+  (or (null value) (and (integerp value) (>= value 0))))
+
+(defcustom ekp-emergency-stretch-pixel nil
+  "Fixed final-pass emergency stretch budget in pixels.
+nil derives a display-context-local value from the current font metrics.
+The value is a paragraph setting, not a fraction of the candidate line
+width; the strict DP pass uses zero and the final pass uses this fixed
+budget with ordinary badness, fitness, and demerits."
+  :type '(choice (const :tag "Auto (3 em)" nil) natnum)
+  :safe #'ekp--safe-emergency-stretch-pixel-p
+  :group 'ekp)
+
 (defcustom ekp-protrusion nil
   "Non-nil enables right-edge character protrusion (hanging punctuation).
 A line ending in punctuation lets part of that glyph hang past the
@@ -244,9 +333,16 @@ when non-zero the C module is bypassed automatically."
   ;; Natural pixel width of each source gap (indexed by right box).
   ;; Width-independent projection geometry is measured once per paragraph.
   (gap-naturals-memo nil)
+  ;; Structural policy intervals compiled into hyphenation and breaks.
+  (resolved-policies nil)
   ;; Glue params snapshot at para creation time (plist)
   glue-params
+  (layout-plan-cache nil :type hash-table)
   (dp-cache nil :type hash-table))
+
+(cl-defstruct (ekp--policy-interval (:constructor ekp--policy-interval-create))
+  "Resolved private policy interval before DP compilation."
+  start end break-policy hyphenation literal-spacing provenance category)
 
 (cl-defstruct (ekp-layout-gap (:constructor ekp-layout-gap--create))
   "One planned glue between two source boxes."
@@ -260,10 +356,71 @@ when non-zero the C module is bypassed automatically."
 
 (cl-defstruct (ekp-layout-plan (:constructor ekp-layout-plan--create))
   "Semantic KP layout independent of any output representation."
-  string line-pixel context para boxes offsets lines)
+  string line-pixel context para boxes offsets lines
+  (state 'planned) reason)
+
+(define-error 'ekp-backend-contract-error
+  "Malformed C backend result")
+
+(defun ekp--copy-layout-context-value (value)
+  "Return a consumer-owned copy of layout context VALUE."
+  (cond
+   ((stringp value)
+    (copy-sequence value))
+   ((vectorp value)
+    (let ((copy (copy-sequence value)))
+      (dotimes (i (length copy))
+        (aset copy i (ekp--copy-layout-context-value (aref copy i))))
+      copy))
+   ((consp value)
+    (cons (ekp--copy-layout-context-value (car value))
+          (ekp--copy-layout-context-value (cdr value))))
+   (t value)))
+
+(defun ekp--copy-layout-line (line)
+  "Return a consumer-owned copy of LINE and its mutable children."
+  (let ((copy (copy-ekp-layout-line line)))
+    (setf (ekp-layout-line-glues copy)
+          (copy-sequence (ekp-layout-line-glues line)))
+    (setf (ekp-layout-line-gaps copy)
+          (vconcat (mapcar #'copy-ekp-layout-gap
+                           (append (ekp-layout-line-gaps line) nil))))
+    (setf (ekp-layout-line-signature copy)
+          (copy-tree (ekp-layout-line-signature line)))
+    copy))
+
+(defun ekp--copy-layout-plan-for-consumer (plan)
+  "Return a consumer-owned copy of cached PLAN.
+`ekp-layout-plan-para' is intentionally shared: paragraph-cache
+ownership predates this semantic-plan cache, and append planning
+relies on that stable paragraph identity.  The plan and its mutable
+plan-owned payloads are copied at this boundary."
+  (let ((copy (copy-ekp-layout-plan plan)))
+    (setf (ekp-layout-plan-string copy)
+          (copy-sequence (ekp-layout-plan-string plan)))
+    (setf (ekp-layout-plan-context copy)
+          (ekp--copy-layout-context-value
+           (ekp-layout-plan-context plan)))
+    (setf (ekp-layout-plan-boxes copy)
+          (vconcat (mapcar #'copy-sequence
+                           (append (ekp-layout-plan-boxes plan) nil))))
+    (setf (ekp-layout-plan-offsets copy)
+          (vconcat (mapcar (lambda (offset)
+                             (cons (car offset) (cdr offset)))
+                           (append (ekp-layout-plan-offsets plan) nil))))
+    (setf (ekp-layout-plan-lines copy)
+          (vconcat (mapcar #'ekp--copy-layout-line
+                           (append (ekp-layout-plan-lines plan) nil))))
+    copy))
 
 (defvar ekp--para-cache nil
   "Cache: equal-keyed table, content key → ekp-para struct.")
+
+(defvar ekp--policy-analysis-cache nil
+  "Cache: base paragraph policy identity → width-tiered policy analysis.")
+
+(defvar ekp--policy-analysis-sensitive-p nil
+  "Non-nil when the most recent policy analysis depends on measure.")
 
 (defvar ekp--last-para nil
   "Fast path for the most recently resolved paragraph.
@@ -391,11 +548,21 @@ Returns (boxes-vector . hyphen-positions-vector)."
          (hyphenator 'unset)
          (idx 0) new-boxes hyphen-idxs)
     (dolist (box (append boxes nil))
-      (let ((parts nil))
-        (when (and (string-match word-re box)
+      (let ((parts nil)
+            (hyphenated-p nil))
+        (cond
+         ((and (text-property-not-all 0 (length box) 'ekp--no-hyphen nil box)
+               (setq parts (ekp--split-no-hyphen-box box)))
+          nil)
+         ((and (string-match word-re box)
                    ;; Never hyphenate inside a no-break span
                    (null (text-property-not-all 0 (length box)
-                                                'ekp-no-break nil box)))
+                                                'ekp-no-break nil box))
+                   (null (text-property-not-all 0 (length box)
+                                                'ekp--no-hyphen nil box))
+                   (or (memq ekp-hyphenation '(auto on))
+                       (text-property-not-all
+                        0 (length box) 'ekp--hyphenation nil box)))
           ;; Extract the groups BEFORE resolving the hyphenator:
           ;; dictionary compilation runs regexps of its own and
           ;; clobbers the match data.
@@ -408,18 +575,20 @@ Returns (boxes-vector . hyphen-positions-vector)."
                         (ekp-hyphen-create ekp-latin-lang)
                       (ekp-hyphen-dictionary-not-found nil))))
             (when hyphenator
+              (setq hyphenated-p t)
               (setq parts (ekp-hyphen-boxes hyphenator word))
               (when (> (length left) 0)
                 (setcar parts (concat left (car parts))))
               (when (> (length right) 0)
                 (setcar (last parts)
-                        (concat (car (last parts)) right))))))
+                        (concat (car (last parts)) right)))))))
         (if parts
             ;; Latin word: hyphenated into syllable boxes
             (let ((n (length parts)))
               (push parts new-boxes)
               (dotimes (i n)
-                (when (< i (1- n)) (push idx hyphen-idxs))
+                (when (and hyphenated-p (< i (1- n)))
+                  (push idx hyphen-idxs))
                 (cl-incf idx)))
           ;; Non-Latin box, or hyphenation unavailable
           (push (list box) new-boxes)
@@ -510,6 +679,516 @@ the deprecated ZWNBSP.  The zero-width ones attach to the preceding
 box; the visible ones are boxes of their own whose adjacent gaps are
 unbreakable and glue-free (the character supplies its own spacing).")
 
+(defconst ekp--private-policy-properties
+  '(ekp--break-policy ekp--hyphenation ekp--literal-spacing
+    ekp--policy-provenance ekp--automatic-no-break ekp--resolved-policy
+    ekp--no-hyphen ekp--token-category ekp--downgraded-no-break
+    ekp--face-break-policy)
+  "Implementation-private properties used only during analysis.")
+
+(defvar ekp--policy-measure nil
+  "Current measure available to width-dependent policy compilation.")
+
+(defvar ekp-cjk-no-line-start-extra)
+(defvar ekp-cjk-no-line-end-extra)
+
+(defun ekp--policy-signature ()
+  "Return public policy inputs that affect paragraph construction."
+  (ekp--copy-layout-context-value
+   (list ekp-inline-code-policy ekp-hyphenation
+         ekp-token-break-policies ekp-number-unit-suffixes
+         ekp-kinsoku-profile ekp-cjk-no-line-start-extra
+         ekp-cjk-no-line-end-extra ekp-overlong-token-policy)))
+
+(defun ekp--strip-private-policy-properties (string)
+  "Remove implementation-private policy properties from STRING."
+  (remove-text-properties
+   0 (length string)
+   (apply #'append (mapcar (lambda (prop) (list prop nil))
+                           ekp--private-policy-properties))
+   string)
+  string)
+
+(defun ekp--private-policy-properties-p (string)
+  "Return non-nil when STRING carries implementation-private policy properties."
+  (catch 'found
+    (dolist (interval (object-intervals string))
+      (let ((properties (nth 2 interval)))
+        (dolist (property ekp--private-policy-properties)
+          (when (plist-member properties property)
+            (throw 'found t)))))
+    nil))
+
+(defun ekp--clean-private-policy-source (string)
+  "Return STRING without private policy properties, copying only when needed."
+  (if (ekp--private-policy-properties-p string)
+      (ekp--strip-private-policy-properties (copy-sequence string))
+    string))
+
+(defun ekp--latin-like-token-p (token)
+  "Return non-nil when TOKEN is a bounded non-whitespace Latin-like token."
+  (and (> (length token) 0)
+       (not (string-match-p "\\s-" token))
+       (seq-every-p (lambda (char) (<= (char-width char) 1)) token)))
+
+(defun ekp--number-unit-token-p (token)
+  "Return non-nil when TOKEN is compact number plus configured unit."
+  (and (> (length token) 1)
+       (<= ?0 (aref token 0) ?9)
+       (seq-some
+        (lambda (unit)
+          (and (string-suffix-p unit token)
+               (string-match-p
+                "\\`[0-9]+\\(?:[.,][0-9]+\\)?\\'"
+                (substring token 0 (- (length token) (length unit))))))
+        ekp-number-unit-suffixes)))
+
+(defun ekp--identifier-char-p (char)
+  "Return non-nil when CHAR is a bounded identifier constituent."
+  (or (and (<= ?A char) (<= char ?Z))
+      (and (<= ?a char) (<= char ?z))
+      (and (<= ?0 char) (<= char ?9))))
+
+(defun ekp--identifier-start-char-p (char)
+  "Return non-nil when CHAR may start an automatic identifier token."
+  (or (and (<= ?A char) (<= char ?Z))
+      (and (<= ?a char) (<= char ?z))))
+
+(defun ekp--identifier-separator-end (token index)
+  "Return separator end index in TOKEN at INDEX, or nil."
+  (pcase (aref token index)
+    ((or ?_ ?.) (1+ index))
+    (?: (and (< (1+ index) (length token))
+             (= (aref token (1+ index)) ?:) (+ index 2)))
+    (?- (and (< (1+ index) (length token))
+             (= (aref token (1+ index)) ?>) (+ index 2)))))
+
+(defun ekp--identifier-break-indexes (token)
+  "Return legal identifier break indexes for TOKEN, or nil if invalid."
+  (let ((i 0) breaks valid)
+    (when (and (> (length token) 1)
+               (ekp--identifier-start-char-p (aref token 0))
+               (ekp--identifier-char-p (aref token (1- (length token)))))
+      (setq valid t)
+      (while (and valid (< i (length token)))
+        (let ((char (aref token i)))
+          (cond
+           ((ekp--identifier-char-p char)
+            (when (and (> i 0)
+                       (let ((prev (aref token (1- i))))
+                         (or (and (<= ?a prev ?z) (<= ?A char ?Z))
+                             (and (or (<= ?A prev ?Z) (<= ?a prev ?z))
+                                  (<= ?0 char ?9)))))
+              (push i breaks))
+            (setq i (1+ i)))
+           ((let ((end (ekp--identifier-separator-end token i)))
+              (if (and end (> i 0) (< end (length token))
+                       (ekp--identifier-char-p (aref token (1- i)))
+                       (ekp--identifier-char-p (aref token end)))
+                  (setq breaks (cons end breaks) i end)
+                (setq valid nil)))))))
+      (and valid breaks (nreverse breaks)))))
+
+(defun ekp--identifier-token-p (token)
+  "Return non-nil when TOKEN matches the bounded identifier grammar."
+  (not (null (ekp--identifier-break-indexes token))))
+
+(defun ekp--classify-token (token)
+  "Return TOKEN's automatic category, or nil."
+  (when (ekp--latin-like-token-p token)
+    (cond
+     ((or (string-prefix-p "www." token)
+          (string-match-p "\\`[[:alpha:]][[:alnum:].+-]*://" token))
+      'url)
+     ((or (string-match-p ".+/.+" token)
+          (string-match-p ".+\\\\.+" token)) 'path)
+     ((ekp--number-unit-token-p token) 'number-unit)
+     ((ekp--identifier-token-p token) 'identifier))))
+
+(defun ekp--token-policy (category)
+  "Return configured policy for token CATEGORY."
+  (or (cdr (assq category ekp-token-break-policies)) 'normal))
+
+(defun ekp--ordinary-overlong-token-p (string line-pixel)
+  "Return non-nil if STRING has an ordinary token over LINE-PIXEL."
+  (let ((pos 0) found)
+    (while (and (not found) (string-match "\\S-+" string pos))
+      (let* ((start (match-beginning 0))
+             (end (match-end 0))
+             (token (match-string 0 string)))
+        (setq found
+              (and (ekp--latin-like-token-p token)
+                   (not (text-property-not-all
+                         start end 'ekp-no-break nil string))
+                   (> (ekp--measured-width (substring string start end))
+                      line-pixel))))
+      (setq pos (match-end 0)))
+    found))
+
+(defun ekp--natural-overlong-token-p (string line-pixel)
+  "Return non-nil when STRING should bypass KP at LINE-PIXEL."
+  (and (eq ekp-overlong-token-policy 'natural)
+       (ekp--ordinary-overlong-token-p string line-pixel)))
+
+(defun ekp--put-analysis-policy (string start end policy provenance)
+  "Attach POLICY with PROVENANCE to STRING from START to END."
+  (put-text-property start end 'ekp--break-policy policy string)
+  (put-text-property start end 'ekp--policy-provenance provenance string)
+  (pcase policy
+    ('no-hyphen (put-text-property start end 'ekp--no-hyphen t string))
+    ('no-break (put-text-property start end 'ekp--automatic-no-break t string))))
+
+(defun ekp--clear-automatic-policy-properties (string start end)
+  "Clear automatic private policy markers in STRING from START to END."
+  (remove-text-properties
+   start end
+   '(ekp--break-policy nil ekp--hyphenation nil ekp--literal-spacing nil
+     ekp--policy-provenance nil ekp--automatic-no-break nil
+     ekp--resolved-policy nil ekp--no-hyphen nil ekp--token-category nil
+     ekp--downgraded-no-break nil)
+   string))
+
+(defun ekp--break-policy-rank (policy)
+  "Return restrictiveness rank for POLICY."
+  (pcase policy
+    ('no-break 3)
+    ('no-hyphen 2)
+    ('normal 1)
+    (_ 0)))
+
+(defun ekp--stricter-break-policy (left right)
+  "Return the stricter automatic policy from LEFT and RIGHT."
+  (if (> (ekp--break-policy-rank right)
+         (ekp--break-policy-rank left))
+      right
+    left))
+
+(defun ekp--token-width-if-needed (string start end token policy)
+  "Return TOKEN width in STRING from START to END when needed."
+  (when (and ekp--policy-measure
+             (ekp--latin-like-token-p token)
+             (not (text-property-not-all start end 'ekp-no-break nil string))
+             (or (eq ekp-overlong-token-policy 'overflow)
+                 (eq policy 'no-break)))
+    (ekp--measured-width (substring string start end))))
+
+(defun ekp--token-policy-specs (string)
+  "Return automatic policy specs for STRING from a single token scan."
+  (let ((pos 0) specs no-break-token-p latin-token-p)
+    (while (string-match "\\S-+" string pos)
+      (let* ((start (match-beginning 0))
+             (end (match-end 0))
+             (token (match-string 0 string))
+             (latin-p (and (ekp--latin-like-token-p token)
+                           (not (text-property-not-all
+                                 start end 'ekp-no-break nil string))))
+             (category (ekp--classify-token token))
+             (policy (and category (ekp--token-policy category)))
+             (width (ekp--token-width-if-needed
+                     string start end token policy))
+             (overwide (and width (> width ekp--policy-measure)))
+             downgraded)
+        (when latin-p
+          (setq latin-token-p t))
+        (when (eq policy 'no-break)
+          (setq no-break-token-p t))
+        (when (and (eq ekp-overlong-token-policy 'overflow) overwide)
+          (setq policy 'no-break))
+        (when (and policy (not (eq policy 'normal)))
+          (when (and (eq policy 'no-break)
+                     (not (eq ekp-overlong-token-policy 'overflow))
+                     overwide)
+            (setq policy 'no-hyphen)
+            (setq downgraded t))
+          (push (list start end policy category downgraded) specs)))
+      (setq pos (match-end 0)))
+    (list (nreverse specs) no-break-token-p latin-token-p)))
+
+(defun ekp--apply-token-spec (string spec)
+  "Apply automatic token SPEC to STRING and return its interval."
+  (pcase-let ((`(,start ,end ,policy ,category ,downgraded) spec))
+    (ekp--put-analysis-policy string start end policy 'token)
+    (put-text-property start end 'ekp--token-category category string)
+    (when downgraded
+      (put-text-property start end 'ekp--downgraded-no-break t string))
+    (ekp--policy-interval-create
+     :start start :end end :break-policy policy
+     :hyphenation (if (eq policy 'no-hyphen) 'off nil)
+     :literal-spacing nil :provenance 'token :category category)))
+
+(defun ekp--face-policy-ranges (string)
+  "Return automatic inline-face policy ranges in STRING."
+  (let ((pos 0)
+        (length (length string))
+        raw-no-break-p
+        ranges)
+    (while (< pos length)
+      (let* ((end (or (next-single-property-change
+                       pos 'ekp--face-break-policy string length)
+                      length))
+             (policy (get-text-property
+                      pos 'ekp--face-break-policy string)))
+        (when (eq policy 'no-break)
+          (setq raw-no-break-p t))
+        (when (and (eq policy 'no-break) ekp--policy-measure
+                   (> (ekp--measured-width
+                       (ekp--clean-private-policy-source
+                        (substring string pos end)))
+                      ekp--policy-measure))
+          (setq policy 'no-hyphen))
+        (when (and (ekp--safe-break-policy-value-p policy)
+                   (not (eq policy 'normal)))
+          (push (list pos end policy) ranges))
+        (setq pos end)))
+    (list (nreverse ranges) raw-no-break-p)))
+
+(defun ekp--region-policy-ranges (string)
+  "Return explicit break-policy ranges in STRING."
+  (seq-filter
+   #'identity
+   (mapcar
+    (lambda (iv)
+      (let ((policy (plist-get (nth 2 iv) 'ekp-break-policy)))
+        (and (memq policy '(normal hyphenate no-hyphen))
+             (list (nth 0 iv) (nth 1 iv) policy))))
+    (object-intervals string))))
+
+(defun ekp--policy-boundaries (length token-intervals face-ranges region-ranges)
+  "Return sorted boundaries for LENGTH.
+TOKEN-INTERVALS, FACE-RANGES, and REGION-RANGES supply policy spans."
+  (let ((points (list 0 length)))
+    (dolist (interval token-intervals)
+      (push (ekp--policy-interval-start interval) points)
+      (push (ekp--policy-interval-end interval) points))
+    (dolist (range (append face-ranges region-ranges))
+      (push (nth 0 range) points)
+      (push (nth 1 range) points))
+    (sort (delete-dups points) #'<)))
+
+(defun ekp--policy-at (position ranges)
+  "Return policy in RANGES active at POSITION."
+  (seq-some
+   (lambda (range)
+     (and (<= (nth 0 range) position)
+          (< position (nth 1 range))
+          (nth 2 range)))
+   ranges))
+
+(defun ekp--token-interval-at (position intervals)
+  "Return token interval from INTERVALS active at POSITION."
+  (seq-find
+   (lambda (interval)
+     (and (<= (ekp--policy-interval-start interval) position)
+          (< position (ekp--policy-interval-end interval))))
+   intervals))
+
+(defun ekp--downgraded-ranges (string)
+  "Return ranges in STRING carrying downgraded automatic no-break markers."
+  (seq-filter
+   #'identity
+   (mapcar
+    (lambda (iv)
+      (and (plist-get (nth 2 iv) 'ekp--downgraded-no-break)
+           (list (nth 0 iv) (nth 1 iv))))
+    (object-intervals string))))
+
+(defun ekp--range-active-p (position ranges)
+  "Return non-nil when POSITION is inside one of RANGES."
+  (seq-some
+   (lambda (range)
+     (and (<= (car range) position) (< position (cadr range))))
+   ranges))
+
+(defun ekp--apply-effective-policy
+    (string start end policy provenance category &optional downgraded)
+  "Apply resolved POLICY to STRING from START to END."
+  (ekp--put-analysis-policy string start end policy provenance)
+  (when (eq provenance 'face)
+    (put-text-property start end 'ekp--literal-spacing t string))
+  (when category
+    (put-text-property start end 'ekp--token-category category string))
+  (when downgraded
+    (put-text-property start end 'ekp--downgraded-no-break t string))
+  (ekp--policy-interval-create
+   :start start :end end :break-policy policy
+   :hyphenation (if (eq policy 'no-hyphen) 'off nil)
+   :literal-spacing (eq provenance 'face)
+   :provenance provenance :category category))
+
+(defun ekp--apply-merged-policies
+    (string token-intervals face-ranges region-ranges downgraded-ranges)
+  "Apply TOKEN-INTERVALS, FACE-RANGES, and REGION-RANGES to STRING."
+  (let ((boundaries (ekp--policy-boundaries
+                     (length string) token-intervals
+                     face-ranges region-ranges))
+        intervals
+        region-intervals)
+    (cl-loop for start in boundaries
+             for end in (cdr boundaries)
+             when (< start end)
+             do
+             (let* ((region (ekp--policy-at start region-ranges))
+                    (token (ekp--token-interval-at start token-intervals))
+                    (token-policy
+                     (and token
+                          (ekp--policy-interval-break-policy token)))
+                    (face (ekp--policy-at start face-ranges))
+                    (policy (or region
+                                (ekp--stricter-break-policy
+                                 token-policy face)))
+                    (provenance
+                     (cond (region 'region)
+                           ((and face
+                                 (>= (ekp--break-policy-rank face)
+                                     (ekp--break-policy-rank token-policy)))
+                            'face)
+                           (token 'token)))
+                    (category (and (not region) token
+                                   (ekp--policy-interval-category token)))
+                    (downgraded
+                     (and token
+                          (ekp--range-active-p start downgraded-ranges))))
+               (if region
+                   (progn
+                     (put-text-property
+                      start end 'ekp--policy-provenance 'region string)
+                     (pcase region
+                       ('hyphenate
+                        (put-text-property
+                         start end 'ekp--hyphenation 'on string)
+                        (push (ekp--policy-interval-create
+                               :start start :end end
+                               :break-policy region :hyphenation 'on
+                               :literal-spacing nil
+                               :provenance 'region :category nil)
+                              region-intervals))
+                       ('normal
+                        (push (ekp--policy-interval-create
+                               :start start :end end
+                               :break-policy region :hyphenation nil
+                               :literal-spacing nil
+                               :provenance 'region :category nil)
+                              region-intervals))
+                       ('no-hyphen
+                        (push (ekp--apply-effective-policy
+                               string start end region 'region nil)
+                              region-intervals))))
+                 (when (and policy (not (eq policy 'normal)))
+                   (push (ekp--apply-effective-policy
+                          string start end policy provenance category
+                          downgraded)
+                         intervals)))))
+    (append (nreverse intervals) (nreverse region-intervals))))
+
+(defun ekp--analyze-policies (string)
+  "Return (ANALYSIS . INTERVALS) for STRING."
+  (let* ((token-data (ekp--token-policy-specs string))
+         (face-data (ekp--face-policy-ranges string))
+         (token-specs (nth 0 token-data))
+         (face-ranges (nth 0 face-data))
+         (region-ranges (ekp--region-policy-ranges string)))
+    (setq ekp--policy-analysis-sensitive-p
+          (or (nth 1 face-data)
+              (nth 1 token-data)
+              (and (eq ekp-overlong-token-policy 'overflow)
+                   (nth 2 token-data))))
+    (if (and (null token-specs) (null face-ranges) (null region-ranges))
+      (cons string nil)
+    (let* ((analysis (copy-sequence string))
+           (token-intervals (mapcar
+                             (lambda (spec)
+                               (ekp--apply-token-spec analysis spec))
+                             token-specs))
+           (downgraded-ranges (ekp--downgraded-ranges analysis))
+           (intervals (ekp--apply-merged-policies
+                       (progn
+                         (ekp--clear-automatic-policy-properties
+                          analysis 0 (length analysis))
+                         analysis)
+                       token-intervals face-ranges region-ranges
+                       downgraded-ranges)))
+      (cons analysis intervals)))))
+
+(defun ekp--policy-analysis-base-key (string)
+  "Return measure-independent policy-analysis cache key for STRING."
+  (let ((source (ekp--clean-private-policy-source string))
+        key-source copied)
+    (setq key-source source)
+    (dolist (iv (object-intervals string))
+      (let ((plist (nth 2 iv)))
+        (when (plist-member plist 'ekp--face-break-policy)
+          (unless copied
+            (setq key-source (copy-sequence source)
+                  copied t))
+          (put-text-property
+           (nth 0 iv) (nth 1 iv) 'ekp--face-break-policy
+           (plist-get plist 'ekp--face-break-policy) key-source))))
+    (list key-source
+          (prin1-to-string (ekp--key-intervals key-source))
+          (ekp--policy-signature)
+          (ekp--width-context))))
+
+(defun ekp--cached-policy-analysis (string)
+  "Return cached full policy analysis for STRING at current measure."
+  (let* ((base-key (ekp--policy-analysis-base-key string))
+         (entry (and ekp--policy-analysis-cache
+                     (gethash base-key ekp--policy-analysis-cache)))
+         (measure ekp--policy-measure))
+    (cond
+     ((and entry (not (car entry))) (cdr entry))
+     ((and entry (gethash measure (cdr entry))))
+     (t
+      (let* ((ekp--policy-analysis-sensitive-p nil)
+             (analysis (ekp--analyze-policies string))
+             (sensitive ekp--policy-analysis-sensitive-p))
+        (unless ekp--policy-analysis-cache
+          (setq ekp--policy-analysis-cache
+                (make-hash-table :test 'equal :size 100)))
+        (when (>= (hash-table-count ekp--policy-analysis-cache)
+                  ekp-para-cache-limit)
+          (clrhash ekp--policy-analysis-cache))
+        (if sensitive
+            (let ((table (if (and entry (car entry))
+                             (cdr entry)
+                           (make-hash-table :test 'equal :size 4))))
+              (puthash measure analysis table)
+              (puthash base-key (cons t table) ekp--policy-analysis-cache))
+          (puthash base-key (cons nil analysis) ekp--policy-analysis-cache))
+        analysis)))))
+
+(defun ekp--split-at-indexes (string indexes)
+  "Split STRING at sorted character INDEXES, preserving properties."
+  (let ((start 0) parts)
+    (dolist (end indexes)
+      (when (> end start)
+        (push (substring string start end) parts))
+      (setq start end))
+    (when (< start (length string))
+      (push (substring string start) parts))
+    (nreverse parts)))
+
+(defun ekp--path-break-indexes (string &optional skip-first)
+  "Return legal path break indexes for STRING.
+When SKIP-FIRST is non-nil, do not break after the first separator."
+  (let (indexes seen)
+    (dotimes (i (length string))
+      (when (memq (aref string i) '(?/ ?\\))
+        (if (and skip-first (not seen))
+            (setq seen t)
+          (push (1+ i) indexes))))
+    (nreverse indexes)))
+
+(defun ekp--split-no-hyphen-box (box)
+  "Return no-hyphen BOX split at legal token boundaries, or nil."
+  (pcase (get-text-property 0 'ekp--token-category box)
+    ('path (ekp--split-at-indexes
+            box (ekp--path-break-indexes
+                 box (get-text-property 0 'ekp--downgraded-no-break box))))
+    ('url (ekp--split-at-indexes box (ekp--path-break-indexes box)))
+    ('identifier
+     (ekp--split-at-indexes box (ekp--identifier-break-indexes box)))
+    (_ nil)))
+
 (defconst ekp--no-line-start-chars ".,;:!?)]}%’”»›…·"
   "Halfwidth/neutral punctuation that must not start a line.
 Applies to boxes consisting solely of these characters (a lone comma
@@ -525,35 +1204,30 @@ are covered by the `cjk-open' class.")
 (defconst ekp--no-line-start-char-list (append ekp--no-line-start-chars nil))
 (defconst ekp--no-line-end-char-list (append ekp--no-line-end-chars nil))
 
-(defcustom ekp-cjk-no-line-start-extra
+(defconst ekp--ja-no-line-start-extra
   (concat "ぁぃぅぇぉっゃゅょゎゕゖァィゥェォッャュョヮヵヶ"
           "ㇰㇱㇲㇳㇴㇵㇶㇷㇸㇹㇺㇻㇼㇽㇾㇿ"
           "ーゝゞヽヾ々〻")
-  "CJK letters that must not start a line (JIS X 4051 kinsoku).
-Small kana, the prolonged sound mark ー and iteration marks are
-letters for spacing purposes but are line-start-prohibited in
-Japanese typesetting.  Stored as a string of characters."
+  "Immutable Japanese letters that must not start a line.")
+
+(defcustom ekp-cjk-no-line-start-extra ""
+  "Custom/Japanese CJK letters that must not start a line.
+Used only by the `custom' kinsoku profile.  The `ja' profile uses
+an immutable built-in Japanese addition set."
   :type 'string
+  :safe #'stringp
   :group 'ekp)
 
-(defvar ekp--extra-nls-table nil
-  "Char-table view of `ekp-cjk-no-line-start-extra' (fast lookup).")
+(defcustom ekp-cjk-no-line-end-extra ""
+  "Custom CJK characters that must not end a line.
+Used only by the `custom' kinsoku profile."
+  :type 'string
+  :safe #'stringp
+  :group 'ekp)
 
-(defun ekp--extra-nls-rebuild (chars)
-  "Rebuild `ekp--extra-nls-table' from the string CHARS."
-  (let ((table (make-char-table 'ekp-extra-nls)))
-    (dolist (c (append (if (stringp chars) chars "") nil))
-      (aset table c t))
-    (setq ekp--extra-nls-table table)))
-
-(ekp--extra-nls-rebuild ekp-cjk-no-line-start-extra)
-
-(add-variable-watcher
- 'ekp-cjk-no-line-start-extra
- (lambda (_sym new op _where)
-   (when (memq op '(set let unlet makunbound))
-     (ekp--extra-nls-rebuild new)
-     (setq ekp--last-para nil))))
+(defun ekp--char-in-string-p (char string)
+  "Return non-nil when CHAR occurs in STRING."
+  (and (stringp string) (memq char (append string nil))))
 
 (defun ekp--box-pure-set-p (box chars)
   "Non-nil when BOX is non-empty and every char is a member of CHARS."
@@ -568,16 +1242,29 @@ Japanese typesetting.  Stored as a string of characters."
 (defun ekp--box-no-line-start-p (box box-type)
   "Non-nil if BOX must not appear at the start of a line.
 BOX-TYPE is BOX's (start . end) type pair from `ekp--box-type'."
-  (or (eq (car box-type) 'cjk-close)
-      (and (> (length box) 0)
-           (aref ekp--extra-nls-table (aref box 0)))
-      (ekp--box-pure-set-p box ekp--no-line-start-char-list)))
+  (and (not (eq ekp-kinsoku-profile 'off))
+       (or (eq (car box-type) 'cjk-close)
+           (ekp--box-pure-set-p box ekp--no-line-start-char-list)
+           (and (> (length box) 0)
+                (eq ekp-kinsoku-profile 'ja)
+                (ekp--char-in-string-p
+                 (aref box 0) ekp--ja-no-line-start-extra))
+           (and (> (length box) 0)
+                (eq ekp-kinsoku-profile 'custom)
+                (ekp--char-in-string-p
+                 (aref box 0) ekp-cjk-no-line-start-extra)))))
 
 (defun ekp--box-no-line-end-p (box box-type)
   "Non-nil if BOX must not appear at the end of a line.
 BOX-TYPE is BOX's (start . end) type pair from `ekp--box-type'."
-  (or (eq (cdr box-type) 'cjk-open)
-      (ekp--box-pure-set-p box ekp--no-line-end-char-list)))
+  (and (not (eq ekp-kinsoku-profile 'off))
+       (or (eq (cdr box-type) 'cjk-open)
+           (ekp--box-pure-set-p box ekp--no-line-end-char-list)
+           (and (> (length box) 0)
+                (eq ekp-kinsoku-profile 'custom)
+                (ekp--char-in-string-p
+                 (aref box (1- (length box)))
+                 ekp-cjk-no-line-end-extra)))))
 
 (defun ekp--compute-glue-types (boxes boxes-types hyphen-positions)
   "Compute the glue-type vector for BOXES using BOXES-TYPES.
@@ -659,7 +1346,13 @@ left with no properties are dropped entirely."
             (push (cadr plist) filtered))
           (setq plist (cddr plist)))
         (when filtered
-          (push (list (nth 0 iv) (nth 1 iv) (nreverse filtered)) out))))
+          (let ((start (nth 0 iv))
+                (end (nth 1 iv))
+                (props (nreverse filtered)))
+            (if (and out (= (nth 1 (car out)) start)
+                     (equal (nth 2 (car out)) props))
+                (setcar (cdr (car out)) end)
+              (push (list start end props) out))))))
     (nreverse out)))
 
 (defvar ekp--box-width-cache (make-hash-table :test 'equal :size 4096)
@@ -704,30 +1397,40 @@ therefore must key every measurement and paragraph cache entry."
 
 (defun ekp--measured-width (str)
   "Pixel width of STR in the current display context, cached."
-  (let* ((ivs (ekp--key-intervals str))
+  (let* ((source (ekp--clean-private-policy-source str))
+         (ivs (ekp--key-intervals source))
          (ctx (ekp--width-context))
-         (key (cond ((and (null ivs) (null ctx)) str)
-                    ((null ctx) (cons str ivs))
-                    (t (list str ivs ctx)))))
+         (key (cond ((and (null ivs) (null ctx)) source)
+                    ((null ctx) (cons source ivs))
+                    (t (list source ivs ctx)))))
     (or (gethash key ekp--box-width-cache)
         (progn
           (when (>= (hash-table-count ekp--box-width-cache)
                     ekp--box-width-cache-limit)
             (clrhash ekp--box-width-cache))
-          (puthash key (ekp--string-pixel-width str)
+          (puthash key (ekp--string-pixel-width source)
                    ekp--box-width-cache)))))
 
-(defun ekp--para-key (string)
-  "Compute cache key for STRING.
+(defun ekp--resolved-emergency-stretch-pixel ()
+  "Return the fixed final-pass emergency stretch budget in pixels."
+  (or ekp-emergency-stretch-pixel
+      (* 3 (max 1 (ekp--measured-width "M")))))
+
+(defun ekp--para-key (string &optional policy-analysis)
+  "Compute cache key for STRING and optional POLICY-ANALYSIS.
 The key is a structure compared with `equal', so hash collisions
 cannot alias two different paragraphs.  It covers: characters, text
 properties, detected fonts, the hyphenation language, and the
-effective spacing signature \(nine explicit values or the auto CJK
-stretch default when the other defaults are derived per string)."
-  (let ((latin-font (ekp-latin-font string))
-        (cjk-font (ekp-cjk-font string)))
-    (list string
-          (prin1-to-string (ekp--key-intervals string))
+effective policy intervals, and the effective spacing signature \(nine
+explicit values or the auto CJK stretch default when the other defaults
+are derived per string)."
+  (let* ((source (ekp--clean-private-policy-source string))
+         (latin-font (ekp-latin-font source))
+         (cjk-font (ekp-cjk-font source))
+        (policy-analysis (or policy-analysis
+                             (ekp--analyze-policies string))))
+    (list source
+          (prin1-to-string (ekp--key-intervals source))
           latin-font cjk-font
           ;; Buffers with remapped faces (text-scale, themes) render
           ;; — and therefore measure — differently: never alias their
@@ -739,7 +1442,8 @@ stretch default when the other defaults are derived per string)."
           (and ekp-protrusion ekp-protrusion-ratios)
           ekp-parshape
           ekp-first-line-indent
-          ekp-cjk-no-line-start-extra
+          (ekp--policy-signature)
+          (cdr policy-analysis)
           (ekp--spacing-signature))))
 
 (defun ekp--measure-boxes (boxes uniform-props)
@@ -849,27 +1553,33 @@ MEASURE is the paragraph measure passed to the justify call.
           :alignment ekp-alignment
           :extra-stretch (if justify 0 (ekp--ragged-extra-stretch)))))
 
-(defun ekp--make-para (string)
-  "Create and fully initialize `ekp-para' for STRING."
+(defun ekp--make-para (string &optional policy-analysis)
+  "Create and fully initialize `ekp-para' for STRING.
+POLICY-ANALYSIS is a precomputed result from `ekp--analyze-policies'."
   ;; Ensure params: explicit params persist; otherwise derive defaults
   ;; from this string's font.
   (unless (and ekp--params-explicit (ekp--params-set-p))
     (ekp-param-set-default string))
   ;; Extract fonts
-  (let* ((latin-font (ekp-latin-font string))
-         (cjk-font (ekp-cjk-font string))
+  (let* ((source (ekp--clean-private-policy-source string))
+         (policy-analysis (or policy-analysis
+                              (ekp--analyze-policies string)))
+         (analysis-string (car policy-analysis))
+         (resolved-policies (cdr policy-analysis))
+         (latin-font (ekp-latin-font source))
+         (cjk-font (ekp-cjk-font source))
          ;; Split into boxes with hyphenation
-         (split-result (ekp--split-with-hyphen string))
+         (split-result (ekp--split-with-hyphen analysis-string))
          (boxes (car split-result))
          (hyphen-positions (cdr split-result))
          (n (length boxes))
          ;; Compute box properties
          (boxes-widths (ekp--measure-boxes
-                        boxes (null (cdr (object-intervals string)))))
+                        boxes (null (cdr (object-intervals source)))))
          (boxes-types (vconcat (mapcar #'ekp--box-type boxes)))
          (glues-types (ekp--compute-glue-types
                        boxes boxes-types hyphen-positions))
-         (hyphen-pixel (ekp--hyphen-width-for string))
+         (hyphen-pixel (ekp--hyphen-width-for source))
          ;; Prefix arrays
          (ideal-prefixs (make-vector (1+ n) 0))
          (min-prefixs (make-vector (1+ n) 0))
@@ -893,7 +1603,8 @@ MEASURE is the paragraph measure passed to the justify call.
     ;; Break permissions.  A gap is unbreakable when:
     ;; - kinsoku: the line would end with an opener or start with a
     ;;   closer (full- and halfwidth alike),
-    ;; - it lies strictly inside an `ekp-no-break' span, or
+    ;; - it lies strictly inside an `ekp-no-break' span,
+    ;; - it would move a literal source-space box to line start, or
     ;; - a no-break joiner character (NBSP & friends) touches it.
     ;; Unbreakable gaps carry no glue: punctuation hugs its content,
     ;; atoms stay rigid, NBSP supplies its own spacing.
@@ -902,7 +1613,14 @@ MEASURE is the paragraph measure passed to the justify call.
         (let* ((prev-box (aref boxes (1- k)))
                (curr-box (aref boxes k))
                (prev-last (aref prev-box (1- (length prev-box))))
-               (curr-first (aref curr-box 0)))
+               (curr-first (aref curr-box 0))
+               (literal-gap
+                (and (get-text-property (1- (length prev-box))
+                                        'ekp--literal-spacing prev-box)
+                     (get-text-property 0 'ekp--literal-spacing
+                                        curr-box)))
+               (literal-line-start-space
+                (and literal-gap (ekp--box-space-p curr-box))))
           (when (or (ekp--box-no-line-end-p prev-box
                                             (aref boxes-types (1- k)))
                     (ekp--box-no-line-start-p curr-box
@@ -910,13 +1628,23 @@ MEASURE is the paragraph measure passed to the justify call.
                     (and (get-text-property (1- (length prev-box))
                                             'ekp-no-break prev-box)
                          (get-text-property 0 'ekp-no-break curr-box))
+                    (and (get-text-property (1- (length prev-box))
+                                            'ekp--automatic-no-break prev-box)
+                         (get-text-property 0 'ekp--automatic-no-break
+                                            curr-box))
+                    literal-line-start-space
                     (memq prev-last ekp--no-break-joiner-chars)
                     (memq curr-first ekp--no-break-joiner-chars))
             (aset breaks-allowed k nil)
             (push k forbidden)
-            (unless (eq (aref glues-types k) 'nws)
+            (unless (or literal-gap (eq (aref glues-types k) 'nws))
               (aset glues-types k 'nws))))
         (setq k (1+ k))))
+    ;; Remove private analysis markers after they have been compiled
+    ;; into hyphen positions and break permissions.
+    (dotimes (i n)
+      (aset boxes i (ekp--strip-private-policy-properties
+                     (copy-sequence (aref boxes i)))))
     ;; Right-edge protrusion: tail-protrudes[k] = protrusion of the
     ;; last non-space box before gap k (renderer strips trailing
     ;; space boxes, so look through them).
@@ -973,7 +1701,7 @@ MEASURE is the paragraph measure passed to the justify call.
         (setq i (1- i))))
     (aset lead-spaces 0 0)
     (ekp-para--create
-     :string string
+     :string source
      :latin-font latin-font
      :cjk-font cjk-font
      :boxes boxes
@@ -997,6 +1725,7 @@ MEASURE is the paragraph measure passed to the justify call.
      :forbidden-positions (vconcat (nreverse forbidden))
      :tail-protrudes tail-protrudes
      :hyphen-protrude hyphen-protrude
+     :resolved-policies resolved-policies
      :glue-params (ekp--glue-params-snapshot)
      :dp-cache (make-hash-table :test 'equal :size 20))))
 
@@ -1280,9 +2009,11 @@ Return nil when the tokenizer prefix cannot be reused exactly."
 (defun ekp--get-para (string)
   "Get or create `ekp-para' struct for STRING.
 This is the main entry point for cached paragraph data."
-  (let ((key (ekp--para-key string)))
+  (let* ((policy-analysis (ekp--cached-policy-analysis string))
+         (key (ekp--para-key string policy-analysis))
+         (source (car key)))
     (if (and ekp--last-para
-             (eq (car ekp--last-para) string)
+             (eq (car ekp--last-para) source)
              (equal (nth 1 ekp--last-para) key))
         (nth 2 ekp--last-para)
       (unless ekp--para-cache
@@ -1292,10 +2023,11 @@ This is the main entry point for cached paragraph data."
                         (when (>= (hash-table-count ekp--para-cache)
                                   ekp-para-cache-limit)
                           (clrhash ekp--para-cache))
-                        (let ((new-para (ekp--make-para string)))
+                        (let ((new-para
+                               (ekp--make-para string policy-analysis)))
                           (puthash key new-para ekp--para-cache)
                           new-para)))))
-        (setq ekp--last-para (list string key para))
+        (setq ekp--last-para (list source key para))
         para))))
 
 ;;;###autoload
@@ -1304,6 +2036,7 @@ This is the main entry point for cached paragraph data."
 Run after font or theme changes that affect glyph widths."
   (interactive)
   (setq ekp--para-cache nil)
+  (setq ekp--policy-analysis-cache nil)
   (setq ekp--last-para nil)
   (clrhash ekp--box-width-cache))
 
@@ -1419,13 +2152,12 @@ space-box runs, and adds the hyphen width when the line hyphenates."
 ;; Design notes:
 ;; - All line metrics are O(1) via prefix arrays.
 ;; - Two-pass strategy: a strict Knuth-Plass pass runs first.  If the
-;;   paragraph end is unreachable (some region admits no valid line,
-;;   e.g. an unbreakable box wider than the line, or a rigid run that
-;;   cannot stretch), a second pass permits "emergency" single-box
-;;   breaks with huge demerits, guaranteeing that every input yields
-;;   output.  The C engine implements the identical strategy.
-;; - Emergency demerits = (line-penalty + 10000)² + rest², i.e. at
-;;   least as bad as the worst regular line.
+;;   paragraph end is unreachable, the final pass adds finite background
+;;   emergency stretch to every underfull candidate and still scores it
+;;   through the normal badness/demerits path.  If an overfull candidate
+;;   would otherwise remove the last surviving path, the final pass records
+;;   TeX's zero-increment artificial demerits break.  The C engine implements
+;;   the identical strategy.
 
 (defsubst ekp--dp-key (line-pixel)
   "Return the complete DP cache signature for LINE-PIXEL.
@@ -1438,7 +2170,8 @@ every remaining runtime input read by the Elisp and C DP engines."
         ekp-adjacent-fitness-penalty
         ekp-consecutive-hyphen-penalty
         ekp-last-line-short-penalty
-        ekp-last-line-min-ratio))
+        ekp-last-line-min-ratio
+        (ekp--resolved-emergency-stretch-pixel)))
 
 (defun ekp--dp-cache-elisp (para line-pixel)
   "Return and cache the dp-result plist for PARA at LINE-PIXEL.
@@ -1465,13 +2198,6 @@ pass, where line 0 starts at box 0."
       (ekp--copy-vector-prefix
        (aref previous index) length (1+ stable) initial)
     (make-vector length initial)))
-
-(defun ekp--dp-last-allowed-break (breaks end)
-  "Return the last permitted break in BREAKS at or before END."
-  (let ((position end))
-    (while (and (> position 0) (not (aref breaks position)))
-      (setq position (1- position)))
-    position))
 
 (defun ekp--dp-first-new-break (para stable)
   "Return PARA's first permitted break after STABLE."
@@ -1552,8 +2278,6 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
          (lead-spaces (ekp-para-lead-spaces para))
          (trail-spaces (ekp-para-trail-spaces para))
          (breaks-ok (ekp-para-breaks-allowed para))
-         (last-reused-break
-          (and reuse (ekp--dp-last-allowed-break breaks-ok stable)))
          (tail-protrudes (ekp-para-tail-protrudes para))
          (hyphen-protrude (ekp-para-hyphen-protrude para))
          ;; First-line indent shrinks line 0 only; a line starts at
@@ -1568,6 +2292,10 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
          (mws-shrink (plist-get params :mws-shrink))
          (cws-shrink (plist-get params :cws-shrink))
          (extra-stretch (or (plist-get params :extra-stretch) 0))
+         (emergency-stretch
+          (if allow-emergency
+              (ekp--resolved-emergency-stretch-pixel)
+            0))
          (reused-state (and reuse previous-state))
          (backptrs (ekp--dp-state-array
                     (1+ n) reused-state stable 0 nil))
@@ -1580,13 +2308,24 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
          (hyphen-counts (ekp--dp-state-array
                          (1+ n) reused-state stable 4 0))
          (fitness-classes (ekp--dp-state-array
-                           (1+ n) reused-state stable 5 1)))
+                           (1+ n) reused-state stable 5 1))
+         (artificial-candidates
+          (and allow-emergency (make-vector (1+ n) nil)))
+         (surviving-candidates
+          (and allow-emergency (make-bool-vector (1+ n) nil))))
     (aset demerits 0 0.0)
     (let ((iteration-start
            (if reuse
                (ekp--dp-reused-start para stable line-pixel)
              0)))
       (cl-loop for i from iteration-start below n do
+        (when (and allow-emergency
+                   (null (aref demerits i))
+                   (not (aref surviving-candidates i))
+                   (aref artificial-candidates i))
+          (ekp--dp-install-artificial
+           (aref artificial-candidates i) i
+           demerits backptrs rests gaps hyphen-counts fitness-classes))
         (when (aref demerits i)
           (let* ((prev-dem (aref demerits i))
                (prev-hyphen-count (aref hyphen-counts i))
@@ -1597,9 +2336,6 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
                (lead-glue-ideal (aref glue-ideals i))
                (lead-glue-min (- lead-glue-ideal (aref glue-shrinks i)))
                (lead-glue-max (+ lead-glue-ideal (aref glue-stretches i)))
-               (saw-allowed
-                (and reuse (< i stable)
-                     (> last-reused-break i)))
                (k (if (and reuse (< i stable))
                       (1+ stable)
                     (1+ i))))
@@ -1611,10 +2347,6 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
                   (setq k (1+ k))
               (let* ((is-last (= k n))
                      (single-box (= k (1+ i)))
-                     ;; No permitted break strictly inside [i, k): the
-                     ;; run is atomic and eligible for emergency
-                     ;; handling, like a single box.
-                     (atomic-run (not saw-allowed))
                      (end-with-hyphenp (aref hyph-flags (1- k)))
                      (hyph-w (if end-with-hyphenp hyphen-pixel 0))
                      ;; right-edge protrusion releases width at this k
@@ -1632,32 +2364,48 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
                               hyph-w))
                      (maxw (+ (- (aref max-prefixs k) mx-i lead-glue-max
                                  space-w)
-                              hyph-w extra-stretch)))
+                              hyph-w extra-stretch))
+                     (effective-maxw (+ maxw emergency-stretch)))
                 (cond
-                 ;; Line already too long: emergency-record atomic run,
-                 ;; then stop extending.
+                 ;; Remember a TeX-style zero-increment break in case every
+                 ;; active path would be lost at this overfull breakpoint.
                  ((or (> minw lw)
                       (and is-last (> ideal lw)))
-                  (when (and atomic-run allow-emergency)
-                    (ekp--dp-relax-emergency
-                     demerits backptrs rests gaps hyphen-counts
-                     fitness-classes i k prev-dem
-                     (- lw ideal) end-with-hyphenp
-                     prev-hyphen-count
-                     (unless single-box (ekp--gaps-between para i k))))
+                  (when allow-emergency
+                    (let ((current (aref artificial-candidates k)))
+                      (when (or (null current)
+                                (< prev-dem (aref current 0)))
+                        (aset artificial-candidates k
+                              (vector prev-dem i (- lw ideal)
+                                      (unless single-box
+                                        (ekp--gaps-between para i k))
+                                      end-with-hyphenp
+                                      prev-hyphen-count)))))
                   (throw 'break nil))
                  ;; Valid break point
-                 ((or (<= minw lw maxw)
+                 ((or (<= minw lw effective-maxw)
                       (and is-last (<= ideal lw)))
+                  (when allow-emergency
+                    (aset surviving-candidates k t))
                   (let* ((adjustment (- lw ideal))
                          dem line-gaps fitness new-hyphen)
                     (cond
-                     ;; Single box line: fixed flexibility of 1
+                     ;; Single box line: fixed flexibility in the strict pass;
+                     ;; final pass uses finite background emergency stretch.
                      (single-box
-                      (let* ((badness (ekp--compute-badness adjustment 1))
+                      (let* ((flexibility
+                              (if (and allow-emergency (> adjustment 0))
+                                  emergency-stretch
+                                1))
+                             (badness (ekp--compute-badness
+                                       adjustment flexibility))
                              (penalty (if end-with-hyphenp
                                           ekp-hyphen-penalty 0)))
-                        (setq fitness 1
+                        (setq fitness
+                              (if (and allow-emergency (> adjustment 0))
+                                  (ekp--compute-fitness-class
+                                   adjustment flexibility)
+                                1)
                               new-hyphen (if end-with-hyphenp
                                              (1+ prev-hyphen-count) 0)
                               line-gaps nil
@@ -1685,10 +2433,13 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
                                       (aref cws-prefixs j)))
                              (flexibility
                               (if (> adjustment 0)
-                                  (+ (* lcnt lws-stretch)
-                                     (* mcnt mws-stretch)
-                                     (* ccnt cws-stretch)
-                                     extra-stretch)
+                                  (let ((stretch (+ (* lcnt lws-stretch)
+                                                    (* mcnt mws-stretch)
+                                                    (* ccnt cws-stretch)
+                                                    extra-stretch)))
+                                    (if allow-emergency
+                                        (+ stretch emergency-stretch)
+                                      stretch))
                                 (+ (* lcnt lws-shrink)
                                    (* mcnt mws-shrink)
                                    (* ccnt cws-shrink))))
@@ -1712,18 +2463,20 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
                         (aset rests k adjustment)
                         (aset gaps k line-gaps)
                         (aset fitness-classes k fitness)
-                        (aset hyphen-counts k new-hyphen)))))
-                 ;; Invalid atomic run (rigid underfull): emergency
-                 ;; record so the DP cannot dead-end (2nd pass only).
-                 ((and atomic-run allow-emergency)
-                  (ekp--dp-relax-emergency
-                   demerits backptrs rests gaps hyphen-counts
-                   fitness-classes i k prev-dem
-                   (- lw ideal) end-with-hyphenp
-                   prev-hyphen-count
-                   (unless single-box (ekp--gaps-between para i k)))))
-                  (setq saw-allowed t)
-                  (setq k (1+ k))))))))))
+                        (aset hyphen-counts k new-hyphen)))
+                    nil))
+                 ;; Underfull candidates remain active even when their
+                 ;; badness is above this pass's finite fit threshold.
+                 (allow-emergency
+                  (aset surviving-candidates k t)))
+                (setq k (1+ k))))))))))
+    (when (and allow-emergency
+               (null (aref demerits n))
+               (not (aref surviving-candidates n))
+               (aref artificial-candidates n))
+      (ekp--dp-install-artificial
+       (aref artificial-candidates n) n
+       demerits backptrs rests gaps hyphen-counts fitness-classes))
     ;; Extract solution (nil when end unreachable in the strict pass)
     (when (aref demerits n)
       (let ((breaks (ekp--dp-trace-breaks backptrs n)))
@@ -1736,31 +2489,21 @@ PREVIOUS-STATE may reuse exact states through STABLE-END."
                              hyphen-counts fitness-classes
                              allow-emergency))))))
 
-(defun ekp--dp-relax-emergency (demerits backptrs rests gaps hyphen-counts
-                                         fitness-classes i k prev-dem rest
-                                         end-with-hyphenp prev-hyphen-count
-                                         &optional line-gaps)
-  "Record an emergency (over/underfull atomic-run) break at K from I.
-DEMERITS, BACKPTRS, RESTS, GAPS, HYPHEN-COUNTS and FITNESS-CLASSES are
-the DP state arrays, updated at K when this break beats the stored
-DEMERITS entry.  PREV-DEM is the demerits accumulated up to I; REST is
-line-pixel minus the line's ideal width (may be negative);
-END-WITH-HYPHENP and PREV-HYPHEN-COUNT track the hyphen run.
-LINE-GAPS is the (lws mws cws) gap-count list for multi-box runs
-\(nil for single boxes, which render via the single-box path).
-Only replaces an existing entry when strictly better."
-  (let ((total (+ prev-dem
-                  (expt (+ ekp-line-penalty ekp--infinite-badness) 2)
-                  (* (float rest) rest))))
-    (when (or (null (aref demerits k))
-              (< total (aref demerits k)))
-      (aset demerits k total)
-      (aset backptrs k i)
-      (aset rests k rest)
-      (aset gaps k line-gaps)
-      (aset fitness-classes k 3)
-      (aset hyphen-counts k
-            (if end-with-hyphenp (1+ prev-hyphen-count) 0)))))
+(defun ekp--dp-install-artificial
+    (candidate k demerits backptrs rests gaps hyphen-counts fitness-classes)
+  "Install TeX final-pass CANDIDATE at break K.
+CANDIDATE stores prior demerits, start, rest, gaps, hyphen flag, and
+prior hyphen count.  Artificial demerits add zero to the prior path;
+the overfull line keeps the tight fitness class computed by TeX.
+Update DEMERITS, BACKPTRS, RESTS, GAPS, HYPHEN-COUNTS, and
+FITNESS-CLASSES in place."
+  (aset demerits k (aref candidate 0))
+  (aset backptrs k (aref candidate 1))
+  (aset rests k (aref candidate 2))
+  (aset gaps k (aref candidate 3))
+  (aset fitness-classes k 0)
+  (aset hyphen-counts k
+        (if (aref candidate 4) (1+ (aref candidate 5)) 0)))
 
 (defun ekp--dp-trace-breaks (backptrs n)
   "Trace optimal break points back from N using the BACKPTRS array."
@@ -1819,12 +2562,26 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
          (mws-shrink (plist-get params :mws-shrink))
          (cws-shrink (plist-get params :cws-shrink))
          (extra-stretch (or (plist-get params :extra-stretch) 0))
+         (emergency-stretch
+          (if allow-emergency
+              (ekp--resolved-emergency-stretch-pixel)
+            0))
          ;; state: (pos . lines) -> [dem backptr fitness hyph rest gaps]
          (states (make-hash-table :test 'equal :size (* 4 (1+ n))))
-         (counts-at (make-vector (1+ n) nil)))
+         (counts-at (make-vector (1+ n) nil))
+         (artificial-candidates
+          (and allow-emergency (make-vector (1+ n) nil)))
+         (surviving-candidates
+          (and allow-emergency (make-bool-vector (1+ n) nil))))
     (puthash (cons 0 0) (vector 0.0 nil 1 0 nil nil) states)
     (push 0 (aref counts-at 0))
     (dotimes (i n)
+      (when (and allow-emergency
+                 (null (aref counts-at i))
+                 (not (aref surviving-candidates i))
+                 (aref artificial-candidates i))
+        (ekp--dp-loose-install-artificial
+         (aref artificial-candidates i) i states counts-at))
       (dolist (lc (aref counts-at i))
         (let* ((st (gethash (cons i lc) states))
                ;; per-line layout: line LC (0-based) may have its own width
@@ -1838,7 +2595,6 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                (lead-glue-ideal (aref glue-ideals i))
                (lead-glue-min (- lead-glue-ideal (aref glue-shrinks i)))
                (lead-glue-max (+ lead-glue-ideal (aref glue-stretches i)))
-               (saw-allowed nil)
                (k (1+ i)))
           (catch 'break
             (while (<= k n)
@@ -1847,7 +2603,6 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                   (setq k (1+ k))
               (let* ((is-last (= k n))
                      (single-box (= k (1+ i)))
-                     (atomic-run (not saw-allowed))
                      (end-with-hyphenp
                       (ekp--hyphenate-p hyphen-positions (1- k)))
                      (hyph-w (if end-with-hyphenp hyphen-pixel 0))
@@ -1867,39 +2622,49 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                      (maxw (+ (- (aref max-prefixs k) mx-i lead-glue-max
                                  space-w)
                               hyph-w extra-stretch))
+                     (effective-maxw (+ maxw emergency-stretch))
                      (adjustment (- lw ideal))
                      candidate)
                 (cond
                  ((or (> minw lw)
                       (and is-last (> ideal lw)))
-                  (when (and atomic-run allow-emergency)
-                    (setq candidate
-                          (list (+ (expt (+ ekp-line-penalty
-                                            ekp--infinite-badness) 2)
-                                   (* (float adjustment) adjustment))
-                                adjustment
-                                (unless single-box
-                                  (ekp--gaps-between para i k))
-                                3
-                                (if end-with-hyphenp
-                                    (1+ prev-hyphen-count) 0)))
-                    (ekp--dp-loose-relax states counts-at k (1+ lc) i
-                                         prev-dem candidate))
+                  (when allow-emergency
+                    (let ((current (aref artificial-candidates k)))
+                      (when (or (null current)
+                                (< prev-dem (aref current 0)))
+                        (aset artificial-candidates k
+                              (vector prev-dem i lc adjustment
+                                      (unless single-box
+                                        (ekp--gaps-between para i k))
+                                      end-with-hyphenp
+                                      prev-hyphen-count)))))
                   (throw 'break nil))
-                 ((or (<= minw lw maxw)
+                 ((or (<= minw lw effective-maxw)
                       (and is-last (<= ideal lw)))
+                  (when allow-emergency
+                    (aset surviving-candidates k t))
                   (setq candidate
                         (cond
                          (single-box
-                          (let* ((badness (ekp--compute-badness adjustment 1))
+                          (let* ((flexibility
+                                  (if (and allow-emergency (> adjustment 0))
+                                      emergency-stretch
+                                    1))
+                                 (badness (ekp--compute-badness
+                                           adjustment flexibility))
                                  (penalty (if end-with-hyphenp
                                               ekp-hyphen-penalty 0))
+                                 (fitness
+                                  (if (and allow-emergency (> adjustment 0))
+                                      (ekp--compute-fitness-class
+                                       adjustment flexibility)
+                                    1))
                                  (nh (if end-with-hyphenp
                                          (1+ prev-hyphen-count) 0)))
                             (list (ekp--compute-demerits
-                                   badness penalty prev-fitness 1
+                                   badness penalty prev-fitness fitness
                                    end-with-hyphenp prev-hyphen-count)
-                                  adjustment nil 1 nh)))
+                                  adjustment nil fitness nh)))
                          (is-last
                           (let* ((fill-ratio (/ (float ideal) lw))
                                  (badness (if (< fill-ratio
@@ -1916,10 +2681,13 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                                  (ccnt (nth 2 line-gaps))
                                  (flexibility
                                   (if (> adjustment 0)
-                                      (+ (* lcnt lws-stretch)
-                                         (* mcnt mws-stretch)
-                                         (* ccnt cws-stretch)
-                                         extra-stretch)
+                                      (let ((stretch (+ (* lcnt lws-stretch)
+                                                        (* mcnt mws-stretch)
+                                                        (* ccnt cws-stretch)
+                                                        extra-stretch)))
+                                        (if allow-emergency
+                                            (+ stretch emergency-stretch)
+                                          stretch))
                                     (+ (* lcnt lws-shrink)
                                        (* mcnt mws-shrink)
                                        (* ccnt cws-shrink))))
@@ -1936,22 +2704,17 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                                    end-with-hyphenp prev-hyphen-count)
                                   adjustment line-gaps fitness nh)))))
                   (ekp--dp-loose-relax states counts-at k (1+ lc) i
-                                       prev-dem candidate))
-                 ((and atomic-run allow-emergency)
-                  (setq candidate
-                        (list (+ (expt (+ ekp-line-penalty
-                                          ekp--infinite-badness) 2)
-                                 (* (float adjustment) adjustment))
-                              adjustment
-                              (unless single-box
-                                (ekp--gaps-between para i k))
-                              3
-                              (if end-with-hyphenp
-                                  (1+ prev-hyphen-count) 0)))
-                  (ekp--dp-loose-relax states counts-at k (1+ lc) i
-                                       prev-dem candidate)))
-                (setq saw-allowed t)
+                                       prev-dem candidate)
+                  nil)
+                 (allow-emergency
+                  (aset surviving-candidates k t)))
                 (setq k (1+ k)))))))))
+    (when (and allow-emergency
+               (null (aref counts-at n))
+               (not (aref surviving-candidates n))
+               (aref artificial-candidates n))
+      (ekp--dp-loose-install-artificial
+       (aref artificial-candidates n) n states counts-at))
     ;; Select final state: line count closest to (optimal + looseness).
     ;; nil when the end is unreachable (strict pass only).
     (when-let* ((end-counts (aref counts-at n)))
@@ -1984,6 +2747,23 @@ unreachable (only possible when ALLOW-EMERGENCY is nil)."
                   :breaks breaks
                   :cost best-dem
                   :line-count (length breaks))))))))
+
+(defun ekp--dp-loose-install-artificial (candidate k states counts-at)
+  "Install TeX final-pass CANDIDATE at loose-DP break K.
+Update the STATES table and COUNTS-AT index in place."
+  (let* ((lines (1+ (aref candidate 2)))
+         (key (cons k lines)))
+    (unless (gethash key states)
+      (push lines (aref counts-at k))
+      (puthash key
+               (vector (aref candidate 0)
+                       (aref candidate 1)
+                       0
+                       (if (aref candidate 5)
+                           (1+ (aref candidate 6)) 0)
+                       (aref candidate 3)
+                       (aref candidate 4))
+               states))))
 
 (defun ekp--dp-loose-relax (states counts-at k lines i prev-dem candidate)
   "Relax state (K . LINES) with CANDIDATE from position I.
@@ -2028,7 +2808,8 @@ HYPHEN-COUNT)."
                          (float ekp-last-line-short-penalty)
                          (if (eq ekp-alignment 'justify)
                            0
-                           (ekp--ragged-extra-stretch)))))
+                           (ekp--ragged-extra-stretch))
+                         (ekp--resolved-emergency-stretch-pixel))))
 
 (defun ekp--dp-cache-para (para line-pixel)
   "Return PARA's DP result at LINE-PIXEL, computing it when absent."
@@ -2058,7 +2839,8 @@ HYPHEN-COUNT)."
 Uses Knuth-Plass dynamic programming with demerits.
 If `ekp-use-c-module' is non-nil and the C module is available (and
 `ekp-looseness' is 0), the C module computes the DP."
-  (ekp--dp-cache-para (ekp--get-para string) line-pixel))
+  (let ((ekp--policy-measure line-pixel))
+    (ekp--dp-cache-para (ekp--get-para string) line-pixel)))
 
 (defun ekp--lines-data-from-breaks (para line-pixel breaks)
   "Compute (RESTS . GAPS) lists for BREAKS of PARA at LINE-PIXEL.
@@ -2089,6 +2871,39 @@ the reconstructed rests overfill the indented line."
                           :line-count (length breaks))))
     (puthash (ekp--dp-key line-pixel) dp-result (ekp-para-dp-cache para))
     dp-result))
+
+(defun ekp--c-breaks-valid-p (para breaks)
+  "Return non-nil when BREAKS are in range and increasing for PARA."
+  (and (proper-list-p breaks)
+       (let ((limit (length (ekp-para-boxes para)))
+             (previous 0)
+             (valid t))
+         (dolist (break breaks)
+           (unless (and (integerp break) (< previous break) (<= break limit))
+             (setq valid nil))
+           (when (integerp break)
+             (setq previous break)))
+         (and valid (= previous limit)))))
+
+(defun ekp--signal-backend-contract-error (detail result)
+  "Signal an explicit backend contract error for DETAIL and RESULT."
+  (signal 'ekp-backend-contract-error (list detail result)))
+
+(defun ekp--valid-c-result-or-signal (para result)
+  "Return (BREAKS . COST), :fallback, or signal for PARA C RESULT.
+Nil RESULT and nil breaks are documented soft failures and keep the
+Elisp fallback.  Any non-nil malformed result is a backend contract
+violation."
+  (cond
+   ((null result) :fallback)
+   ((not (consp result))
+    (ekp--signal-backend-contract-error 'malformed-result result))
+   ((null (car result)) :fallback)
+   ((not (numberp (cdr result)))
+    (ekp--signal-backend-contract-error 'nonnumeric-cost result))
+   ((not (ekp--c-breaks-valid-p para (car result)))
+    (ekp--signal-backend-contract-error 'malformed-breaks result))
+   (t result)))
 
 (defun ekp--prepare-para-for-c (para line-pixel)
   "Prepare PARA at LINE-PIXEL as a 15-element vector for the C batch API."
@@ -2130,17 +2945,17 @@ propagate because they indicate a broken backend contract."
                   (ekp-para-tail-protrudes para)
                   (ekp-para-hyphen-protrude para)
                   (cdr (ekp--line-spec para 0 line-pixel))))
-         (c-breaks (car result))
-         (c-cost (cdr result)))
-    (if (null c-breaks)
+         (checked (ekp--valid-c-result-or-signal para result)))
+    (if (eq checked :fallback)
         (ekp--dp-cache-elisp para line-pixel)
-      (ekp--store-c-result para line-pixel c-breaks c-cost))))
+      (ekp--store-c-result para line-pixel (car checked) (cdr checked)))))
 
 (defun ekp--dp-cache-batch (strings line-pixel)
   "Compute DP at LINE-PIXEL for multiple STRINGS via the C batch API.
 Returns list of dp-results in the same order as STRINGS.
 Only computes strings that aren't already cached."
-  (let* ((paras (mapcar #'ekp--get-para strings))
+  (let* ((ekp--policy-measure line-pixel)
+         (paras (mapcar #'ekp--get-para strings))
          (needs-compute '())  ; list of (index . para)
          (results (make-vector (length strings) nil)))
     (cl-loop for para in paras
@@ -2160,18 +2975,25 @@ Only computes strings that aren't already cached."
              ;; A nil whole-batch result falls back per paragraph.
              ;; Signals propagate as broken backend contracts.
              (batch-results (ekp-c-break-batch batch-input)))
+        (when (and batch-results
+                   (or (not (vectorp batch-results))
+                       (/= (length batch-results)
+                           (length needs-compute))))
+          (ekp--signal-backend-contract-error
+           'malformed-batch-results batch-results))
         (cl-loop for ip in needs-compute
                  for j from 0
                  for idx = (car ip)
                  for para = (cdr ip)
                  for res = (and batch-results (aref batch-results j))
-                 for breaks = (car res)
-                 for cost = (cdr res)
+                 for checked = (ekp--valid-c-result-or-signal para res)
                  do (aset results idx
-                          (if breaks
-                              (ekp--store-c-result para line-pixel breaks cost)
+                          (if (eq checked :fallback)
                             ;; C returned no result; fallback to Elisp.
-                            (ekp--dp-cache-elisp para line-pixel)))))
+                              (ekp--dp-cache-elisp para line-pixel)
+                            (ekp--store-c-result para line-pixel
+                                                 (car checked)
+                                                 (cdr checked))))))
       (append results nil))))
 
 (defun ekp-dp-data (string line-pixel &optional key)
@@ -2254,6 +3076,38 @@ Returns ((latin-adj . latin-extra) (mix-adj . mix-extra) (cjk-adj . cjk-extra)).
           (cons mix-adj mix-extra)
           (cons cjk-adj cjk-extra))))
 
+(defun ekp--distribute-emergency-stretch (para rest-pixel gaps-list)
+  "Distribute REST-PIXEL for PARA over stretchable GAPS-LIST.
+Use TeX glue-set proportions from PARA's actual stretch capacities."
+  (let* ((params (ekp-para-glue-params para))
+         (changes (mapcar (lambda (key) (plist-get params key))
+                          '(:lws-stretch :mws-stretch :cws-stretch)))
+         (weights (cl-mapcar #'* gaps-list changes))
+         (total (apply #'+ weights))
+         (amounts (make-vector 3 0)))
+    (when (> total 0)
+      (let ((remainders nil) (used 0) (index 0))
+        (dolist (weight weights)
+          (let* ((numerator (* rest-pixel weight))
+                 (base (/ numerator total)))
+            (aset amounts index base)
+            (cl-incf used base)
+            (push (cons (% numerator total) index) remainders)
+            (cl-incf index)))
+        (dolist (entry (seq-take
+                        (sort remainders
+                              (lambda (a b)
+                                (if (= (car a) (car b))
+                                    (< (cdr a) (cdr b))
+                                  (> (car a) (car b)))))
+                        (- rest-pixel used)))
+          (cl-incf (aref amounts (cdr entry))))))
+    (cl-loop for amount across amounts
+             for count in gaps-list
+             collect (if (> count 0)
+                         (cons (/ amount count) (% amount count))
+                       (cons 0 0)))))
+
 (defun ekp--fixed-line-glues (para types start end maximum trailing)
   "Return fixed glue pixels for PARA TYPES from START to END.
 Use maximum widths when MAXIMUM is non-nil and finish with TRAILING."
@@ -2279,13 +3133,16 @@ Use maximum widths when MAXIMUM is non-nil and finish with TRAILING."
     pixels))
 
 (defun ekp--adjusted-line-glues
-    (para types start end rest-pixel gaps-list)
+    (para types start end rest-pixel gaps-list &optional emergency-stretch)
   "Distribute REST-PIXEL over GAPS-LIST for PARA TYPES from START to END."
   (if (= rest-pixel 0)
       (ekp--fixed-line-glues para types start end nil 0)
     (let* ((stretch-p (> rest-pixel 0))
-           (distribution (ekp--distribute-gap-adjustment
-                          para (abs rest-pixel) gaps-list stretch-p))
+           (distribution (if emergency-stretch
+                             (ekp--distribute-emergency-stretch
+                              para rest-pixel gaps-list)
+                           (ekp--distribute-gap-adjustment
+                            para (abs rest-pixel) gaps-list stretch-p)))
            (shares (vconcat distribution))
            (params (ekp-para-glue-params para))
            (pixels (make-vector (1+ (- end start)) 0))
@@ -2377,11 +3234,25 @@ Reuse COMMON entries from PREVIOUS-LINES when provided."
                  para glues-types start end nil
                  (max 0 (- eff-pixel ideal-pixel))))
                ;; Emergency underfull line (can't stretch to width):
-               ;; set glues to max and pad with trailing filler.
+               ;; final pass may stretch real glue past nominal max.
                ((< max-pixel eff-pixel)
-                (ekp--fixed-line-glues
-                 para glues-types start end t
-                 (max 0 (- eff-pixel max-pixel))))
+                (let* ((line-gaps (nth i lines-gaps))
+                       (params (ekp-para-glue-params para))
+                       (stretch-capacity
+                        (and line-gaps
+                             (+ (* (nth 0 line-gaps)
+                                   (plist-get params :lws-stretch))
+                                (* (nth 1 line-gaps)
+                                   (plist-get params :mws-stretch))
+                                (* (nth 2 line-gaps)
+                                   (plist-get params :cws-stretch))))))
+                  (if (and stretch-capacity (> stretch-capacity 0))
+                      (ekp--adjusted-line-glues
+                       para glues-types start end
+                       (nth i lines-rests) line-gaps t)
+                    (ekp--fixed-line-glues
+                     para glues-types start end t
+                     (max 0 (- eff-pixel max-pixel))))))
                ;; Normal justified line
                (t
                 (ekp--adjusted-line-glues
@@ -2597,16 +3468,17 @@ LAST-LINE-P suppresses a terminal discretionary hyphen."
 
 (defun ekp--layout-context-snapshot (line-pixel)
   "Return every non-text input to a plan at LINE-PIXEL."
-  (list (ekp--dp-key line-pixel)
-        (copy-tree (ekp--width-context))
-        ekp-latin-lang
-        ekp-alignment
-        ekp-ragged-stretch-pixel
-        (and ekp-protrusion (copy-tree ekp-protrusion-ratios))
-        (copy-tree ekp-parshape)
-        ekp-first-line-indent
-        ekp-cjk-no-line-start-extra
-        (ekp--spacing-signature)))
+  (ekp--copy-layout-context-value
+   (list (ekp--dp-key line-pixel)
+         (ekp--width-context)
+         ekp-latin-lang
+         ekp-alignment
+         ekp-ragged-stretch-pixel
+         (and ekp-protrusion ekp-protrusion-ratios)
+         ekp-parshape
+         ekp-first-line-indent
+         (ekp--policy-signature)
+         (ekp--spacing-signature))))
 
 (defun ekp--layout-plan-from-para
     (string line-pixel para dp &optional previous stable)
@@ -2646,15 +3518,37 @@ Reuse PREVIOUS lines that end before STABLE when both are non-nil."
   "Return a semantic KP layout plan for STRING at LINE-PIXEL.
 The plan records source offsets, glue targets, breaks, indentation,
 and discretionary hyphens without choosing a display representation."
-  (let ((para (ekp--get-para string)))
-    (ekp--layout-plan-from-para
-     string line-pixel para (ekp--dp-cache-para para line-pixel))))
+  (let ((ekp--policy-measure line-pixel)
+        (source (ekp--clean-private-policy-source string)))
+    (if (ekp--natural-overlong-token-p string line-pixel)
+        (ekp-layout-plan--create
+         :string source :line-pixel line-pixel
+         :context (ekp--layout-context-snapshot line-pixel)
+         :para nil :boxes [] :offsets [] :lines []
+         :state 'natural :reason 'overlong-token)
+      (let* ((para (ekp--get-para string))
+             (dp (ekp--dp-cache-para para line-pixel))
+             (key (ekp--layout-context-snapshot line-pixel))
+             (cache (or (ekp-para-layout-plan-cache para)
+                        (setf (ekp-para-layout-plan-cache para)
+                              (make-hash-table :test 'equal :size 8))))
+             (hit (gethash key cache)))
+        (if hit
+            (ekp--copy-layout-plan-for-consumer hit)
+          (when (>= (hash-table-count cache) 8)
+            (clrhash cache))
+          (let ((plan (ekp--layout-plan-from-para
+                       source line-pixel para dp)))
+            (puthash key plan cache)
+            (ekp--copy-layout-plan-for-consumer plan)))))))
 
 (defun ekp-layout-plan-append (previous string line-pixel)
   "Return STRING's exact append plan by extending PREVIOUS, or nil.
 Only property-free, context-stable 1D layouts take this fast path."
-  (let ((old-para (and previous (ekp-layout-plan-para previous))))
+  (let ((old-para (and previous (ekp-layout-plan-para previous)))
+        (ekp--policy-measure line-pixel))
     (when (and old-para
+               (null (ekp-para-resolved-policies old-para))
                (equal (ekp-layout-plan-context previous)
                       (ekp--layout-context-snapshot line-pixel))
                (= ekp-looseness 0)
@@ -2664,6 +3558,7 @@ Only property-free, context-stable 1D layouts take this fast path."
       (when-let* ((append (ekp--append-para old-para string))
                   (para (car append))
                   (stable (cdr append))
+                  (_ (null (ekp-para-resolved-policies para)))
                   (dp (ekp--dp-cache-append
                        para old-para stable line-pixel)))
         (ekp--layout-plan-from-para
@@ -2750,7 +3645,9 @@ The `ekp-soft-hyphen' property marks it as synthesized, so
   "Render PLAN as the public reversible justified string."
   (let* ((string (ekp-layout-plan-string plan))
          (lines (ekp-layout-plan-lines plan)))
-    (if (= (length lines) 0)
+    (if (eq (ekp-layout-plan-state plan) 'natural)
+        string
+      (if (= (length lines) 0)
         (ekp--hide-string string)
       (let ((parts (list (ekp--hide-string
                           (substring string 0
@@ -2771,24 +3668,27 @@ The `ekp-soft-hyphen' property marks it as synthesized, so
           (push (ekp--hide-string
                  (substring string (ekp-layout-line-source-end last)))
                 parts))
-        (apply #'concat (nreverse parts))))))
+        (apply #'concat (nreverse parts)))))))
 
 (defun ekp--pixel-justify (string line-pixel)
   "Justify single-paragraph STRING to LINE-PIXEL, with render caching.
 The rendered string for a (paragraph, width) pair is deterministic,
 so it is stored in the paragraph's dp-cache entry and reused — resize
 sweeps that revisit a width pay nothing."
-  (let* ((para (ekp--get-para string))
-         (dp (ekp-dp-data string line-pixel))
-         (hit (plist-get dp :rendered)))
-    (or hit
-        (let ((rendered (ekp--pixel-justify-1 string line-pixel))
-              (cache (ekp-para-dp-cache para)))
-          ;; keep memory bounded during long resize sessions
-          (when (<= (hash-table-count cache) 64)
-            (puthash (ekp--dp-key line-pixel)
-                     (plist-put dp :rendered rendered) cache))
-          rendered))))
+  (if (ekp--natural-overlong-token-p string line-pixel)
+      string
+    (let* ((ekp--policy-measure line-pixel)
+           (para (ekp--get-para string))
+           (dp (ekp-dp-data string line-pixel))
+           (hit (plist-get dp :rendered)))
+      (or hit
+          (let ((rendered (ekp--pixel-justify-1 string line-pixel))
+                (cache (ekp-para-dp-cache para)))
+            ;; keep memory bounded during long resize sessions
+            (when (<= (hash-table-count cache) 64)
+              (puthash (ekp--dp-key line-pixel)
+                       (plist-put dp :rendered rendered) cache))
+            rendered)))))
 
 (defun ekp--pixel-justify-1 (string line-pixel)
   "Justify single-paragraph STRING to LINE-PIXEL.

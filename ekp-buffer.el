@@ -78,19 +78,110 @@ command and is not limited by this value."
   "Seconds of work allowed in one lazy reflow tick."
   :type 'number)
 
-(defconst ekp-buffer-org-skip-faces
-  '(org-block org-block-begin-line org-block-end-line org-code
-    org-verbatim org-table org-meta-line)
+(defconst ekp-buffer-org-block-faces
+  '(org-block org-block-begin-line org-block-end-line
+    org-table org-meta-line)
+  "Org block faces whose paragraphs stay verbatim.")
+
+(defconst ekp-buffer-org-inline-faces
+  '(org-code org-verbatim)
+  "Org inline faces that receive automatic inline break policy.")
+
+(defconst ekp-buffer-org-skip-faces ekp-buffer-org-block-faces
   "Reasonable `ekp-buffer-skip-faces' preset for Org buffers.")
 
-(defconst ekp-buffer-markdown-skip-faces
-  '(markdown-code-face markdown-inline-code-face markdown-pre-face
-    markdown-table-face)
+(defconst ekp-buffer-markdown-block-faces
+  '(markdown-code-face markdown-pre-face markdown-table-face)
+  "Markdown block faces whose paragraphs stay verbatim.")
+
+(defconst ekp-buffer-markdown-inline-faces
+  '(markdown-inline-code-face)
+  "Markdown inline faces that receive automatic inline break policy.")
+
+(defconst ekp-buffer-markdown-skip-faces ekp-buffer-markdown-block-faces
   "Reasonable `ekp-buffer-skip-faces' preset for Markdown buffers.")
+
+(defun ekp-buffer--safe-symbol-list-p (value)
+  "Return non-nil when VALUE is a closed list of symbols."
+  (and (proper-list-p value) (seq-every-p #'symbolp value)))
+
+(defun ekp-buffer--safe-measure-p (value)
+  "Return non-nil when VALUE is a documented measure mode."
+  (or (eq value 'narrowest-window)
+      (and (integerp value) (> value 0))
+      (and (consp value) (eq (car value) 'max)
+           (integerp (cdr value)) (> (cdr value) 0))))
+
+(defun ekp-buffer--safe-mode-policy-entry-p (entry)
+  "Return non-nil when ENTRY is a closed mode profile entry."
+  (and (consp entry)
+       (symbolp (car entry))
+       (proper-list-p (cdr entry))
+       (seq-every-p
+        (lambda (setting)
+          (and (consp setting)
+               (pcase (car setting)
+                 ('ekp-inline-code-policy
+                  (ekp--safe-break-policy-value-p (cdr setting)))
+                 ('ekp-hyphenation
+                  (ekp--safe-hyphenation-value-p (cdr setting)))
+                 ('ekp-overlong-token-policy
+                  (memq (cdr setting) '(emergency overflow natural)))
+                 ('ekp-emergency-stretch-pixel
+                  (ekp--safe-emergency-stretch-pixel-p (cdr setting)))
+                 ('ekp-kinsoku-profile
+                  (memq (cdr setting) '(common zh ja off custom)))
+                 ('ekp-cjk-no-line-start-extra
+                  (stringp (cdr setting)))
+                 ('ekp-cjk-no-line-end-extra
+                  (stringp (cdr setting)))
+                 ('ekp-number-unit-suffixes
+                  (and (proper-list-p (cdr setting))
+                       (seq-every-p #'stringp (cdr setting))))
+                 ('ekp-token-break-policies
+                  (ekp--safe-token-break-policies-p (cdr setting)))
+                 ('ekp-buffer-skip-faces
+                  (ekp-buffer--safe-symbol-list-p (cdr setting)))
+                 ('ekp-buffer-inline-faces
+                  (ekp-buffer--safe-symbol-list-p (cdr setting)))
+                 ('ekp-buffer-measure
+                  (ekp-buffer--safe-measure-p (cdr setting)))
+                 (_ nil))))
+        (cdr entry))))
+
+(defun ekp-buffer--safe-mode-policy-alist-p (value)
+  "Return non-nil when VALUE is a safe mode policy alist."
+  (and (proper-list-p value)
+       (seq-every-p #'ekp-buffer--safe-mode-policy-entry-p value)))
 
 (defcustom ekp-buffer-skip-faces nil
   "Faces whose paragraphs stay verbatim."
-  :type '(repeat face))
+  :type '(repeat face)
+  :safe #'ekp-buffer--safe-symbol-list-p)
+
+(defcustom ekp-buffer-inline-faces nil
+  "Faces whose exact spans use `ekp-inline-code-policy'."
+  :type '(repeat face)
+  :safe #'ekp-buffer--safe-symbol-list-p)
+
+(defcustom ekp-buffer-mode-policy-alist
+  `((org-mode . ((ekp-buffer-skip-faces . ,ekp-buffer-org-block-faces)
+                 (ekp-buffer-inline-faces . ,ekp-buffer-org-inline-faces)))
+    (markdown-mode
+     . ((ekp-buffer-skip-faces . ,ekp-buffer-markdown-block-faces)
+        (ekp-buffer-inline-faces . ,ekp-buffer-markdown-inline-faces))))
+  "Mode profiles consulted by automatic and manual buffer layout."
+  :type '(alist :key-type symbol :value-type sexp)
+  :safe #'ekp-buffer--safe-mode-policy-alist-p)
+
+(defcustom ekp-buffer-measure 'narrowest-window
+  "Measure used for automatic and default manual buffer layout.
+`narrowest-window' uses the narrowest live window displaying the
+buffer.  A positive integer is a fixed pixel width.  `(max . N)'
+caps the narrowest live window at N pixels."
+  :type '(choice (const narrowest-window) (integer :tag "Fixed pixels")
+                 (cons (const max) (integer :tag "Maximum pixels")))
+  :safe #'ekp-buffer--safe-measure-p)
 
 (defvar-local ekp-buffer-skip-predicate nil
   "Function called with a paragraph string that should stay verbatim.")
@@ -110,6 +201,9 @@ command and is not limited by this value."
 (defvar-local ekp-buffer--auto-width nil)
 (defvar-local ekp-buffer--resize-timer nil)
 (defvar-local ekp-buffer--composition-timer nil)
+(defvar-local ekp-buffer--policy-reflow-timer nil)
+(defvar-local ekp-buffer--policy-reflow-context nil)
+(defvar-local ekp-buffer--policy-context-snapshot nil)
 (defvar-local ekp-buffer--pending nil)
 (defvar-local ekp-buffer--chunk-timer nil)
 (defvar-local ekp-buffer--generation 0)
@@ -155,15 +249,127 @@ command and is not limited by this value."
 
 ;;; Setup
 
+(defconst ekp-buffer--policy-variables
+  '(ekp-inline-code-policy ekp-hyphenation ekp-token-break-policies
+    ekp-number-unit-suffixes
+    ekp-overlong-token-policy ekp-kinsoku-profile
+    ekp-emergency-stretch-pixel
+    ekp-cjk-no-line-start-extra ekp-cjk-no-line-end-extra
+    ekp-buffer-skip-faces ekp-buffer-inline-faces
+    ekp-buffer-mode-policy-alist ekp-buffer-measure)
+  "Variables that affect buffer layout policy or measure.")
+
+(defun ekp-buffer--matching-mode-profile ()
+  "Return the first matching mode policy profile for the current buffer."
+  (seq-some
+   (lambda (entry)
+     (and (derived-mode-p (car entry))
+          (cdr entry)))
+   ekp-buffer-mode-policy-alist))
+
+(defun ekp-buffer--profile-value (profile variable)
+  "Return VARIABLE's value from PROFILE, or nil if absent."
+  (assq variable profile))
+
+(defun ekp-buffer--effective-scalar (profile variable)
+  "Return VARIABLE for PROFILE after local, mode-profile, then global precedence."
+  (if (local-variable-p variable)
+      (symbol-value variable)
+    (let ((current (symbol-value variable))
+          (default (default-value variable))
+          (profile-value (ekp-buffer--profile-value profile variable)))
+      (cond
+       ((not (equal current default)) current)
+       (profile-value (cdr profile-value))
+       (t default)))))
+
+(defun ekp-buffer--merge-token-policies (profile)
+  "Return effective token policies after merging global, PROFILE, and local."
+  (let ((merged (copy-tree (default-value 'ekp-token-break-policies)))
+        (current ekp-token-break-policies)
+        (default (default-value 'ekp-token-break-policies)))
+    (dolist (entry (cdr (ekp-buffer--profile-value
+                         profile 'ekp-token-break-policies)))
+      (setf (alist-get (car entry) merged) (cdr entry)))
+    (when (or (local-variable-p 'ekp-token-break-policies)
+              (not (equal current default)))
+      (dolist (entry current)
+        (setf (alist-get (car entry) merged) (cdr entry))))
+    merged))
+
+(defun ekp-buffer--policy-context (&optional width)
+  "Return the effective policy context for the current buffer at WIDTH."
+  (let* ((profile (ekp-buffer--matching-mode-profile))
+         (emergency-stretch
+          (ekp-buffer--effective-scalar
+           profile 'ekp-emergency-stretch-pixel))
+         (resolved-emergency-stretch
+          (let ((ekp-emergency-stretch-pixel emergency-stretch))
+            (ekp--resolved-emergency-stretch-pixel))))
+    (ekp--copy-layout-context-value
+     (list :inline-code-policy
+           (ekp-buffer--effective-scalar profile 'ekp-inline-code-policy)
+           :hyphenation
+           (ekp-buffer--effective-scalar profile 'ekp-hyphenation)
+           :token-break-policies (ekp-buffer--merge-token-policies profile)
+           :number-unit-suffixes
+           (ekp-buffer--effective-scalar profile 'ekp-number-unit-suffixes)
+           :overlong-token-policy
+           (ekp-buffer--effective-scalar profile 'ekp-overlong-token-policy)
+           :emergency-stretch-pixel resolved-emergency-stretch
+           :kinsoku-profile
+           (ekp-buffer--effective-scalar profile 'ekp-kinsoku-profile)
+           :cjk-no-line-start-extra
+           (ekp-buffer--effective-scalar
+            profile 'ekp-cjk-no-line-start-extra)
+           :cjk-no-line-end-extra
+           (ekp-buffer--effective-scalar profile 'ekp-cjk-no-line-end-extra)
+           :block-faces
+           (ekp-buffer--effective-scalar profile 'ekp-buffer-skip-faces)
+           :inline-faces
+           (ekp-buffer--effective-scalar profile 'ekp-buffer-inline-faces)
+           :measure
+           (ekp-buffer--effective-scalar profile 'ekp-buffer-measure)
+           :width width))))
+
+(defmacro ekp-buffer--with-policy-context (context &rest body)
+  "Run BODY with CONTEXT bound as EKP's core policy environment."
+  (declare (indent 1))
+  `(let ((ekp-inline-code-policy
+          (plist-get ,context :inline-code-policy))
+         (ekp-hyphenation (plist-get ,context :hyphenation))
+         (ekp-token-break-policies
+          (plist-get ,context :token-break-policies))
+         (ekp-number-unit-suffixes
+          (plist-get ,context :number-unit-suffixes))
+         (ekp-overlong-token-policy
+          (plist-get ,context :overlong-token-policy))
+         (ekp-emergency-stretch-pixel
+          (plist-get ,context :emergency-stretch-pixel))
+         (ekp-kinsoku-profile (plist-get ,context :kinsoku-profile))
+         (ekp-cjk-no-line-start-extra
+          (plist-get ,context :cjk-no-line-start-extra))
+         (ekp-cjk-no-line-end-extra
+          (plist-get ,context :cjk-no-line-end-extra)))
+     ,@body))
+
+(defun ekp-buffer--face-member-p (face faces)
+  "Return non-nil when FACE intersects FACES."
+  (if (listp face)
+      (seq-intersection face faces)
+    (memq face faces)))
+
 ;;;###autoload
 (defun ekp-org-setup ()
   "Protect common Org structural faces in the current buffer."
-  (setq-local ekp-buffer-skip-faces ekp-buffer-org-skip-faces))
+  (setq-local ekp-buffer-skip-faces ekp-buffer-org-block-faces)
+  (setq-local ekp-buffer-inline-faces ekp-buffer-org-inline-faces))
 
 ;;;###autoload
 (defun ekp-markdown-setup ()
   "Protect common Markdown code faces in the current buffer."
-  (setq-local ekp-buffer-skip-faces ekp-buffer-markdown-skip-faces))
+  (setq-local ekp-buffer-skip-faces ekp-buffer-markdown-block-faces)
+  (setq-local ekp-buffer-inline-faces ekp-buffer-markdown-inline-faces))
 
 ;;; Width
 
@@ -208,40 +414,66 @@ command and is not limited by this value."
       (point))))
 
 (defun ekp-buffer--effective-width (&optional buffer)
-  "Return the authoritative width for BUFFER.
-The narrowest live window wins because text properties are buffer-wide."
-  (let ((windows (get-buffer-window-list
-                  (or buffer (current-buffer)) nil t)))
-    (if windows
-        (apply #'min (mapcar #'ekp-buffer--window-pixel windows))
-      (ekp-buffer--window-pixel))))
+  "Return BUFFER's effective `ekp-buffer-measure' width.
+The default uses the narrowest live window; fixed widths and `(max . N)'
+come from the active buffer policy."
+  (with-current-buffer (or buffer (current-buffer))
+    (let* ((windows (get-buffer-window-list (current-buffer) nil t))
+           (narrowest (if windows
+                          (apply #'min
+                                 (mapcar #'ekp-buffer--window-pixel windows))
+                        (ekp-buffer--window-pixel)))
+           (measure (plist-get (ekp-buffer--policy-context) :measure)))
+      (cond
+       ((eq measure 'narrowest-window) narrowest)
+       ((and (integerp measure) (> measure 0)) measure)
+       ((and (consp measure) (eq (car measure) 'max)
+             (integerp (cdr measure)) (> (cdr measure) 0))
+        (min narrowest (cdr measure)))
+       (t (error "Invalid ekp-buffer-measure: %S" measure))))))
+
+(defun ekp-buffer--measure-report (&optional buffer)
+  "Return measure diagnostics for BUFFER."
+  (with-current-buffer (or buffer (current-buffer))
+    (let* ((windows (get-buffer-window-list (current-buffer) nil t))
+           (narrowest (if windows
+                          (apply #'min
+                                 (mapcar #'ekp-buffer--window-pixel windows))
+                        (ekp-buffer--window-pixel)))
+           (context (ekp-buffer--policy-context))
+           (requested (plist-get context :measure))
+           (effective (ekp-buffer--effective-width)))
+      (list :requested requested
+            :narrowest narrowest
+            :effective effective
+            :overflow-risk (and (integerp effective)
+                                (> effective narrowest))))))
 
 ;;; Paragraphs and conflicts
 
-(defun ekp-buffer--face-hit-p (string)
-  "Return non-nil when STRING carries a configured skip face."
+(defun ekp-buffer--face-hit-p (string faces)
+  "Return non-nil when STRING carries one of FACES."
   (let ((pos 0) (length (length string)) hit)
     (while (and (< pos length) (not hit))
       (let ((face (get-text-property pos 'face string)))
-        (setq hit (if (listp face)
-                      (seq-intersection face ekp-buffer-skip-faces)
-                    (memq face ekp-buffer-skip-faces)))
+        (setq hit (ekp-buffer--face-member-p face faces))
         (setq pos (or (next-single-property-change
                        pos 'face string length)
                       length))))
     hit))
 
-(defun ekp-buffer--skip-paragraph-p (paragraph)
-  "Return non-nil when PARAGRAPH must stay verbatim."
-  (or (string-blank-p paragraph)
-      (text-property-not-all 0 (length paragraph)
-                             'ekp-verbatim nil paragraph)
-      (text-property-not-all 0 (length paragraph) 'field nil paragraph)
-      (text-property-not-all 0 (length paragraph) 'read-only nil paragraph)
-      (and ekp-buffer-skip-faces
-           (ekp-buffer--face-hit-p paragraph))
-      (and ekp-buffer-skip-predicate
-           (funcall ekp-buffer-skip-predicate paragraph))))
+(defun ekp-buffer--skip-paragraph-p (paragraph &optional context)
+  "Return non-nil when PARAGRAPH must stay verbatim under CONTEXT."
+  (let* ((context (or context (ekp-buffer--policy-context)))
+         (faces (plist-get context :block-faces)))
+    (or (string-blank-p paragraph)
+        (text-property-not-all 0 (length paragraph)
+                               'ekp-verbatim nil paragraph)
+        (text-property-not-all 0 (length paragraph) 'field nil paragraph)
+        (text-property-not-all 0 (length paragraph) 'read-only nil paragraph)
+        (and faces (ekp-buffer--face-hit-p paragraph faces))
+        (and ekp-buffer-skip-predicate
+             (funcall ekp-buffer-skip-predicate paragraph)))))
 
 (defun ekp-buffer--foreign-property-at-p (position property)
   "Return non-nil when PROPERTY at POSITION is not owned by EKP."
@@ -608,17 +840,53 @@ EFFECTIVE-END includes the source boundary owned by the line."
             (goto-char end)))))
     (nreverse ranges)))
 
+(defun ekp-buffer--annotate-inline-faces (text context)
+  "Annotate inline face spans on TEXT using CONTEXT."
+  (let ((faces (plist-get context :inline-faces))
+        (policy (plist-get context :inline-code-policy))
+        (pos 0)
+        (length (length text))
+        annotated)
+    (when (and faces (not (eq policy 'normal)))
+      (while (< pos length)
+        (let* ((face (get-text-property pos 'face text))
+               (next (or (next-single-property-change pos 'face text length)
+                         length)))
+          (when (ekp-buffer--face-member-p face faces)
+            (unless annotated
+              (setq annotated (copy-sequence text)))
+            (put-text-property
+             pos next 'ekp--face-break-policy policy annotated))
+          (setq pos next))))
+    (or annotated text)))
+
+(defun ekp-buffer--planning-text (text context)
+  "Return TEXT annotated with transient inline policy from CONTEXT."
+  (ekp-buffer--annotate-inline-faces text context))
+
+(defun ekp-buffer--layout-plan (text pixel context)
+  "Return layout plan for TEXT at PIXEL under CONTEXT."
+  (let ((planning-text (ekp-buffer--planning-text text context)))
+    (ekp-buffer--with-policy-context context
+      (let ((plan (ekp-layout-plan planning-text pixel)))
+        (setf (ekp-layout-plan-string plan) text)
+        plan))))
+
 (defun ekp-buffer--layout-paragraph (beg end pixel)
   "Project one hard paragraph from BEG to END at PIXEL."
   (if (and ekp-buffer--automatic-pass
            (> (- end beg) ekp-auto-justify-paragraph-limit))
       (ekp-buffer--record-conflict
        beg end "paragraph exceeds the automatic paragraph limit")
-    (let ((paragraph (buffer-substring beg end)))
-      (unless (ekp-buffer--skip-paragraph-p paragraph)
-        (let ((plan (ekp-layout-plan paragraph pixel)))
-          (when (ekp-buffer--projectable-p plan beg beg end)
-            (ekp-buffer--install-plan beg end pixel plan)))))))
+    (let* ((paragraph (buffer-substring beg end))
+           (context (ekp-buffer--policy-context pixel)))
+      (unless (ekp-buffer--skip-paragraph-p paragraph context)
+        (let ((plan (ekp-buffer--layout-plan paragraph pixel context)))
+          (if (eq (ekp-layout-plan-state plan) 'natural)
+              (ekp-buffer--record-conflict
+               beg end "overlong-token-natural")
+            (when (ekp-buffer--projectable-p plan beg beg end)
+              (ekp-buffer--install-plan beg end pixel plan))))))))
 
 (defun ekp-buffer--dwim-bounds ()
   "Return active region bounds or the hard paragraph at point."
@@ -636,13 +904,16 @@ EFFECTIVE-END includes the source boundary owned by the line."
        (list start finish
              (and current-prefix-arg
                   (prefix-numeric-value current-prefix-arg))))))
-  (setq pixel (or pixel (ekp-buffer--window-pixel)))
+  (setq pixel (or pixel (ekp-buffer--effective-width)))
   (let ((start (min beg end))
         (finish (max beg end)))
     (setq beg start
           end finish))
   (when (and font-lock-mode
-             (or ekp-buffer-skip-faces ekp-buffer-skip-predicate))
+             (let ((context (ekp-buffer--policy-context pixel)))
+               (or (plist-get context :block-faces)
+                   (plist-get context :inline-faces)
+                   ekp-buffer-skip-predicate)))
     (font-lock-ensure beg end))
   (let ((point-before (point))
         (mark-before (and (mark t) (copy-marker (mark t))))
@@ -759,19 +1030,75 @@ EFFECTIVE-END includes the source boundary owned by the line."
 
 ;;; Protection commands
 
+(defvar ekp-break-policy nil
+  "Text property controlling regional break policy.
+`normal' clears automatic token or face restrictions, `hyphenate'
+enables discretionary hyphenation, and `no-hyphen' suppresses it.
+This property is not a hard no-break switch; rigid atoms remain
+owned by the separate `ekp-no-break' text property.")
+
 (defun ekp-buffer--interactive-protection-args ()
   "Return region arguments for an interactive protection command."
   (barf-if-buffer-read-only)
   (list (region-beginning) (region-end) t))
 
+(defun ekp-buffer--after-region-policy-mutation (beg end)
+  "Refresh projections between BEG and END after a region policy mutation."
+  (if ekp-auto-justify-mode
+      (ekp-buffer--reflow-for-policy-change (current-buffer) t)
+    (ekp-buffer--clear-projection (min beg end) (max beg end))
+    (unless ekp-buffer--spans
+      (ekp-buffer--remove-integrations))))
+
 (defun ekp-buffer--set-protection (beg end property enabled label announce)
   "Set PROPERTY to ENABLED from BEG to END and optionally ANNOUNCE LABEL."
-  (if enabled
-      (add-text-properties beg end (list property t))
-    (remove-text-properties beg end (list property nil)))
+  (let ((ekp-buffer--inhibit t))
+    (if enabled
+        (add-text-properties beg end (list property t))
+      (remove-text-properties beg end (list property nil))))
+  (ekp-buffer--after-region-policy-mutation beg end)
   (when announce
     (message "EKP: %s on %d characters; current buffer session only"
              label (- end beg))))
+
+(defun ekp-buffer--set-break-policy (beg end policy label announce)
+  "Set `ekp-break-policy' POLICY from BEG to END."
+  (let ((ekp-buffer--inhibit t))
+    (if policy
+        (put-text-property beg end 'ekp-break-policy policy)
+      (remove-text-properties beg end '(ekp-break-policy nil))))
+  (ekp-buffer--after-region-policy-mutation beg end)
+  (when announce
+    (message "EKP: %s on %d characters; current buffer session only"
+             label (- end beg))))
+
+;;;###autoload
+(defun ekp-normal-break-region (beg end &optional announce)
+  "Mark BEG through END as ordinary break policy; ANNOUNCE reports it."
+  (interactive (ekp-buffer--interactive-protection-args))
+  (ekp-buffer--set-break-policy
+   beg end 'normal "Marked normal break policy" announce))
+
+;;;###autoload
+(defun ekp-enable-hyphenation-region (beg end &optional announce)
+  "Enable discretionary hyphenation in BEG through END; ANNOUNCE reports it."
+  (interactive (ekp-buffer--interactive-protection-args))
+  (ekp-buffer--set-break-policy
+   beg end 'hyphenate "Enabled hyphenation" announce))
+
+;;;###autoload
+(defun ekp-disable-hyphenation-region (beg end &optional announce)
+  "Disable discretionary hyphenation in BEG through END; ANNOUNCE reports it."
+  (interactive (ekp-buffer--interactive-protection-args))
+  (ekp-buffer--set-break-policy
+   beg end 'no-hyphen "Disabled hyphenation" announce))
+
+;;;###autoload
+(defun ekp-clear-break-policy-region (beg end &optional announce)
+  "Clear `ekp-break-policy' from BEG through END; ANNOUNCE reports it."
+  (interactive (ekp-buffer--interactive-protection-args))
+  (ekp-buffer--set-break-policy
+   beg end nil "Cleared break policy" announce))
 
 ;;;###autoload
 (defun ekp-no-break-region (beg end &optional announce)
@@ -990,10 +1317,12 @@ LINE-END lets insertion at the hard-line end belong to its last span."
 
 (defun ekp-buffer--live-marker-snapshot (base)
   "Return live marker offsets relative to BASE."
-  (mapcar
+  (delq nil
+        (mapcar
    (lambda (marker)
-     (cons marker (- (marker-position marker) base)))
-   (ekp-buffer--live-state-owned-markers)))
+     (when-let* ((position (marker-position marker)))
+       (cons marker (- position base))))
+   (ekp-buffer--live-state-owned-markers))))
 
 (defun ekp-buffer--start-live-edit (beg end bounds)
   "Start a stable edit transaction for BEG through END in BOUNDS."
@@ -1098,21 +1427,26 @@ LINE-END lets insertion at the hard-line end belong to its last span."
             (buffer-substring dirty-beg dirty-end)
             (substring source finish))))
 
-(defun ekp-buffer--live-context (width)
-  "Return non-text layout context for a live plan at WIDTH."
-  (list (ekp--dp-key width)
-        (copy-tree (ekp--width-context))
-        (mapcar (lambda (attribute)
-                  (face-attribute 'default attribute nil t))
-                '(:family :height :width :weight :slant))
-        ekp-latin-lang
-        ekp-alignment
-        ekp-ragged-stretch-pixel
-        (and ekp-protrusion (copy-tree ekp-protrusion-ratios))
-        (copy-tree ekp-parshape)
-        ekp-first-line-indent
-        ekp-cjk-no-line-start-extra
-        (ekp--spacing-signature)))
+(defun ekp-buffer--live-context (width &optional context)
+  "Return non-text layout context for a live plan at WIDTH.
+Optional CONTEXT supplies a precomputed policy context."
+  (let ((context (or context (ekp-buffer--policy-context width))))
+    (ekp-buffer--with-policy-context context
+      (ekp--copy-layout-context-value
+       (list (ekp--dp-key width)
+             (ekp--width-context)
+             (mapcar (lambda (attribute)
+                       (face-attribute 'default attribute nil t))
+                     '(:family :height :width :weight :slant))
+             ekp-latin-lang
+             ekp-alignment
+             ekp-ragged-stretch-pixel
+             (and ekp-protrusion ekp-protrusion-ratios)
+             ekp-parshape
+             ekp-first-line-indent
+             context
+             (ekp--policy-signature)
+             (ekp--spacing-signature))))))
 
 (defun ekp-buffer--live-key-equal-p (left right)
   "Return non-nil when live cache keys LEFT and RIGHT are equivalent."
@@ -1151,16 +1485,26 @@ LINE-END lets insertion at the hard-line end belong to its last span."
                         ekp-buffer--live-state))))
     (when (and old-key old-plan
                (equal (cadr key) (cadr old-key)))
-      (ekp-layout-plan-append old-plan text width))))
+      (let* ((context (ekp-buffer--policy-context width))
+             (planning-text (ekp-buffer--planning-text text context))
+             (plan (ekp-buffer--with-policy-context context
+                     (ekp-layout-plan-append
+                      old-plan planning-text width))))
+        (when plan
+          (setf (ekp-layout-plan-string plan) text))
+        plan))))
 
 (defun ekp-buffer--live-plan-entry (text width)
   "Return the cache entry for TEXT at WIDTH."
-  (let ((key (list text (ekp-buffer--live-context width))))
+  (let* ((context (ekp-buffer--policy-context width))
+         (key (list (copy-sequence text)
+                    (ekp-buffer--live-context width context))))
     (cons key
           (or (ekp-buffer--live-cache-get key)
               (ekp-buffer--live-cache-put
                key (or (ekp-buffer--live-append-plan key text width)
-                       (ekp-layout-plan text width)))))))
+                       (ekp-buffer--layout-plan
+                        text width context)))))))
 
 (defun ekp-buffer--single-line-live-p (text width)
   "Return non-nil if TEXT is conservatively known to fit WIDTH."
@@ -1401,34 +1745,40 @@ When COMPLETE is non-nil, project every semantic line."
     (beg end width text boundary complete)
   "Publish TEXT's stable prefix from BEG to END at WIDTH.
 BOUNDARY identifies the native row left natural unless COMPLETE is non-nil."
-  (cond
-   ((or (>= beg end) (ekp-buffer--skip-paragraph-p text))
-    (ekp-buffer--commit-natural-live-state beg end width text))
-   ((> (- end beg) ekp-auto-justify-paragraph-limit)
-    (ekp-buffer--record-conflict
-     beg end "paragraph exceeds the automatic paragraph limit")
-    (ekp-buffer--commit-natural-live-state beg end width text))
-   ((and (not complete)
-         (ekp-buffer--single-line-live-p text width))
-    (ekp-buffer--commit-natural-live-state beg end width text))
-   ((ekp-buffer--unsupported-live-text-p text)
-    (ekp-buffer--record-conflict
-     beg end "unsupported whitespace shrink")
-    (ekp-buffer--commit-natural-live-state beg end width text))
-   ((ekp-buffer--foreign-property beg end)
-    (ekp-buffer--record-conflict beg end "foreign property in live line")
-    (ekp-buffer--commit-natural-live-state beg end width text))
-   (t
-    (let* ((entry (ekp-buffer--live-plan-entry text width))
-           (key (car entry))
-           (plan (cdr entry)))
-      (if (ekp-buffer--unsupported-gap plan beg)
-          (progn
-            (ekp-buffer--record-conflict
-             beg end "unsupported live whitespace shrink")
-            (ekp-buffer--commit-natural-live-state beg end width text))
-        (ekp-buffer--project-live-plan
-         key plan beg end width boundary complete))))))
+  (let ((context (ekp-buffer--policy-context width)))
+    (cond
+     ((or (>= beg end) (ekp-buffer--skip-paragraph-p text context))
+      (ekp-buffer--commit-natural-live-state beg end width text))
+     ((> (- end beg) ekp-auto-justify-paragraph-limit)
+      (ekp-buffer--record-conflict
+       beg end "paragraph exceeds the automatic paragraph limit")
+      (ekp-buffer--commit-natural-live-state beg end width text))
+     ((and (not complete)
+           (ekp-buffer--single-line-live-p text width))
+      (ekp-buffer--commit-natural-live-state beg end width text))
+     ((ekp-buffer--unsupported-live-text-p text)
+      (ekp-buffer--record-conflict
+       beg end "unsupported whitespace shrink")
+      (ekp-buffer--commit-natural-live-state beg end width text))
+     ((ekp-buffer--foreign-property beg end)
+      (ekp-buffer--record-conflict beg end "foreign property in live line")
+      (ekp-buffer--commit-natural-live-state beg end width text))
+     (t
+      (let* ((entry (ekp-buffer--live-plan-entry text width))
+             (key (car entry))
+             (plan (cdr entry)))
+        (cond
+         ((eq (ekp-layout-plan-state plan) 'natural)
+          (ekp-buffer--record-conflict beg end "overlong-token-natural")
+          (ekp-buffer--commit-natural-live-state beg end width text))
+         ((ekp-buffer--unsupported-gap plan beg)
+            (progn
+              (ekp-buffer--record-conflict
+               beg end "unsupported live whitespace shrink")
+              (ekp-buffer--commit-natural-live-state beg end width text)))
+         (t
+          (ekp-buffer--project-live-plan
+           key plan beg end width boundary complete))))))))
 
 (defun ekp-buffer--publish-live-prefix (&optional boundary complete)
   "Publish one stable live plan through BOUNDARY.
@@ -1844,6 +2194,8 @@ ACTIVE-BEG through ACTIVE-END remains owned by the refreshed live state."
                      (point-min) (point-max) width active-beg active-end)
                   (ekp-buffer--lazy-reflow
                    width active-beg active-end)))))
+          (setq ekp-buffer--policy-context-snapshot
+                (copy-tree (ekp-buffer--policy-context)))
           (ekp-buffer--refresh-live-prefix boundary complete))))))
 
 (defun ekp-buffer--run-scheduled-reflow (buffer)
@@ -1867,6 +2219,83 @@ ACTIVE-BEG through ACTIVE-END remains owned by the refreshed live state."
                ekp-auto-justify-resize-delay nil
                #'ekp-buffer--run-scheduled-reflow
                (current-buffer)))))))
+
+(defun ekp-buffer--reflow-for-policy-change (buffer &optional force)
+  "Bump BUFFER generation and reflow once after a policy change.
+When FORCE is non-nil, reflow even if the global policy context is
+unchanged; region text properties are paragraph policy too."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when ekp-auto-justify-mode
+        (when (timerp ekp-buffer--policy-reflow-timer)
+          (cancel-timer ekp-buffer--policy-reflow-timer))
+        (let ((before-context ekp-buffer--policy-reflow-context)
+              (after-context (ekp-buffer--policy-context)))
+          (setq-local ekp-buffer--policy-reflow-timer nil)
+          (setq-local ekp-buffer--policy-reflow-context nil)
+          (if (and (not force) (equal before-context after-context))
+              (setq-local ekp-buffer--policy-context-snapshot
+                          (copy-tree after-context))
+            (let ((point-before (point))
+                  (mark-before (and (mark t) (copy-marker (mark t))))
+                  (mark-active-before mark-active)
+                  (modified-before (buffer-modified-p))
+                  (undo-before buffer-undo-list))
+              (unwind-protect
+                  (progn
+                    (cl-incf ekp-buffer--generation)
+                    (setq ekp-buffer--live-plan-cache nil)
+                    (ekp-buffer--reflow
+                     buffer (ekp-buffer--effective-width buffer))
+                    (goto-char (min point-before (point-max)))
+                    (when mark-before
+                      (set-marker (mark-marker)
+                                  (marker-position mark-before)))
+                    (setq mark-active mark-active-before)
+                    (set-buffer-modified-p modified-before)
+                    (setq buffer-undo-list undo-before))
+                (when mark-before (set-marker mark-before nil))))))))))
+
+(defun ekp-buffer--schedule-policy-reflow (buffer before-context)
+  "Schedule one post-set policy reflow for BUFFER from BEFORE-CONTEXT."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when ekp-auto-justify-mode
+        (unless (timerp ekp-buffer--policy-reflow-timer)
+          (setq-local ekp-buffer--policy-reflow-context
+                      (copy-tree before-context)))
+        (when (timerp ekp-buffer--policy-reflow-timer)
+          (cancel-timer ekp-buffer--policy-reflow-timer))
+        (setq-local
+         ekp-buffer--policy-reflow-timer
+         (run-with-timer
+          0 nil #'ekp-buffer--reflow-for-policy-change buffer))))))
+
+(defun ekp-buffer--watched-raw-noop-p (symbol new-value where)
+  "Return non-nil when setting SYMBOL to NEW-VALUE in WHERE is a raw no-op."
+  (if (bufferp where)
+      nil
+    (equal (default-value symbol) new-value)))
+
+(defun ekp-buffer--policy-variable-changed (symbol new-value operation where)
+  "Schedule reflow after SYMBOL is set to NEW-VALUE by OPERATION in WHERE."
+  (when (memq operation '(set makunbound))
+    (unless (ekp-buffer--watched-raw-noop-p symbol new-value where)
+      (if (bufferp where)
+          (with-current-buffer where
+            (ekp-buffer--schedule-policy-reflow
+             where (or ekp-buffer--policy-context-snapshot
+                       (ekp-buffer--policy-context))))
+        (dolist (buffer (buffer-list))
+          (with-current-buffer buffer
+            (ekp-buffer--schedule-policy-reflow
+             buffer (or ekp-buffer--policy-context-snapshot
+                        (ekp-buffer--policy-context)))))))))
+
+(dolist (variable ekp-buffer--policy-variables)
+  (unless (memq #'ekp-buffer--policy-variable-changed
+                (get-variable-watchers variable))
+    (add-variable-watcher variable #'ekp-buffer--policy-variable-changed)))
 
 (defun ekp-buffer--on-resize (window-or-frame)
   "Schedule reflow for the buffer shown by WINDOW-OR-FRAME."
@@ -1947,9 +2376,9 @@ ACTIVE-BEG through ACTIVE-END remains owned by the refreshed live state."
   (ekp-buffer--release-live-state)
   (pcase-let ((`(,beg . ,end)
                (ekp-buffer--para-bounds (cons (point) (point)))))
-    (ekp-justify-region
-     beg end (or ekp-buffer--auto-width
-                 (ekp-buffer--window-pixel)))))
+  (ekp-justify-region
+   beg end (or ekp-buffer--auto-width
+               (ekp-buffer--effective-width)))))
 
 (defvar-keymap ekp-auto-justify-mode-map
   :doc "Keymap for `ekp-auto-justify-mode'."
@@ -1962,6 +2391,11 @@ ACTIVE-BEG through ACTIVE-END remains owned by the refreshed live state."
     ["Unjustify Region or Paragraph" ekp-unjustify-region t]
     ["Justify Buffer" ekp-justify-buffer t]
     ["Unjustify Buffer" ekp-unjustify-buffer t]
+    "--"
+    ["Mark Region Normal Break" ekp-normal-break-region (use-region-p)]
+    ["Enable Region Hyphenation" ekp-enable-hyphenation-region (use-region-p)]
+    ["Disable Region Hyphenation" ekp-disable-hyphenation-region (use-region-p)]
+    ["Clear Region Break Policy" ekp-clear-break-policy-region (use-region-p)]
     "--"
     ["Mark Region No-Break" ekp-no-break-region (use-region-p)]
     ["Clear No-Break Region" ekp-allow-break-region (use-region-p)]
@@ -1993,10 +2427,6 @@ ACTIVE-BEG through ACTIVE-END remains owned by the refreshed live state."
   (let (enabled)
     (unwind-protect
         (progn
-          (unless (or ekp-buffer-skip-faces ekp-buffer-skip-predicate)
-            (cond
-             ((derived-mode-p 'org-mode) (ekp-org-setup))
-             ((derived-mode-p 'markdown-mode) (ekp-markdown-setup))))
           (ekp-buffer--enable-native-wrap)
           (setq ekp-buffer--auto-width (ekp-buffer--effective-width))
           (ekp-buffer--reflow (current-buffer) ekp-buffer--auto-width)
@@ -2010,7 +2440,8 @@ ACTIVE-BEG through ACTIVE-END remains owned by the refreshed live state."
 ;;;###autoload
 (define-minor-mode ekp-auto-justify-mode
   "Maintain a non-mutating KP display projection.
-Completed paragraphs use the authoritative narrowest-window width.
+Completed paragraphs use the effective `ekp-buffer-measure': narrowest
+window by default, a fixed width, or a `(max . N)' cap.
 Manual no-break and verbatim properties last only for the current buffer
 session."
   :lighter " EKP"
@@ -2025,11 +2456,16 @@ session."
     (cancel-timer ekp-buffer--resize-timer))
   (when (timerp ekp-buffer--composition-timer)
     (cancel-timer ekp-buffer--composition-timer))
+  (when (timerp ekp-buffer--policy-reflow-timer)
+    (cancel-timer ekp-buffer--policy-reflow-timer))
   (ekp-buffer--cancel-pending)
   (ekp-buffer--release-live-edit)
   (ekp-buffer--release-live-state)
   (setq ekp-buffer--resize-timer nil
         ekp-buffer--composition-timer nil
+        ekp-buffer--policy-reflow-timer nil
+        ekp-buffer--policy-reflow-context nil
+        ekp-buffer--policy-context-snapshot nil
         ekp-buffer--auto-width nil
         ekp-buffer--live-plan-cache nil)
   (ekp-buffer--clear-all)
@@ -2042,12 +2478,27 @@ session."
 (defun ekp-diagnose ()
   "Report the authoritative width and any skipped projection conflicts."
   (interactive)
-  (let ((width (ekp-buffer--effective-width))
-        (conflicts (length ekp-buffer--conflicts)))
+  (let* ((measure (ekp-buffer--measure-report))
+         (width (plist-get measure :effective))
+         (conflicts (length ekp-buffer--conflicts))
+         (policy (ekp-buffer--policy-context width)))
     (message
-     "EKP: authoritative width %dpx (narrowest window), %d conflict%s"
-     width conflicts (if (= conflicts 1) "" "s"))
-    (list :width width :conflicts ekp-buffer--conflicts)))
+     (concat "EKP: requested %S, narrowest %d, effective %d, "
+             "overflow risk %s, %d conflict%s; "
+             "inline-code %S, hyphenation %S, kinsoku %S, overlong %S")
+     (plist-get measure :requested)
+     (plist-get measure :narrowest)
+     width
+     (if (plist-get measure :overflow-risk) "yes" "no")
+     conflicts (if (= conflicts 1) "" "s")
+     (plist-get policy :inline-code-policy)
+     (plist-get policy :hyphenation)
+     (plist-get policy :kinsoku-profile)
+     (plist-get policy :overlong-token-policy))
+    (append measure
+            (list :width width
+                  :policy policy
+                  :conflicts ekp-buffer--conflicts))))
 
 (provide 'ekp-buffer)
 

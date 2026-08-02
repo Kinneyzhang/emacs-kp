@@ -2,6 +2,10 @@
 
 ## phase-kp-overhaul-20260726
 
+- 2026-08-02 complete fixed final-pass emergency stretch and TeX-style
+  active-path preservation (`task036`; `issue021` closed after user visual
+  confirmation):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_final_pass_emergency_stretch_20260802.md`
 - 2026-07-28 repository system audit:
   `.phrase/phases/phase-kp-overhaul-20260726/change_repository_audit_20260728.md`
 - 2026-07-28 complete DP cache signature (`task002`):
@@ -82,6 +86,18 @@
   projection reuse (`task030` implementation verified; locked
   source-instrumented 16 ms gate and `issue018` remain open):
   `.phrase/phases/phase-kp-overhaul-20260726/change_narrow_live_append_latency_20260730.md`
+- 2026-08-01 implement and developer-verify the rigid-inline-atom
+  emergency-break correction (`task033` complete; `issue021` awaits user
+  confirmation):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_overlong_no_break_atom_20260801.md`
+- 2026-08-01 implement configurable break policies, record G002-G008
+  implementation/GUI/performance/repository/cleanup/review-blocker evidence,
+  and close developer work for `task034` (`issue021` still awaits user visual
+  confirmation; final independent code review APPROVE and architecture CLEAR):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_configurable_break_policies_20260801.md`
+- 2026-08-02 record the failed line-width emergency-stretch attempt
+  (`task035` closed as falsified; superseded by completed `task036` above):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_final_pass_emergency_stretch_20260802.md`
 
 ## phase-doc-improvement-20260125
 - See `.phrase/phases/phase-doc-improvement-20260125/change_log.md`

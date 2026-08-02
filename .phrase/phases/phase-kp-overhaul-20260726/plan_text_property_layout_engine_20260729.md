@@ -38,6 +38,12 @@ hyphens.  No buffer path may use overlays.
   character-modified tick, point, mark, or external modification hooks.
 - Turning the mode off removes only EKP-owned projection properties and
   restores every pre-existing property exactly.
+- Final-pass emergency layout remains owned by core K-P. Ordinary underfull
+  candidates use finite emergency stretch and normal badness/demerits; the
+  final active path is preserved with TeX-style zero-increment artificial
+  demerits only when an overfull candidate would otherwise extinguish it.
+  The buffer renderer and policy compiler must not add CJK-orphan, unit,
+  hard-atom-adjacency, or screenshot-specific compensation.
 
 ## Architecture
 
@@ -259,6 +265,128 @@ rows are not the durable planning unit.
 - Result: core p50/p95 improved by 33.25%/34.09% to 15.318/27.687 ms;
   complete resize improved by 43.51%/41.03% to 15.900/27.487 ms. Exact
   frozen-C/Elisp parity and all automated, static, and GUI gates pass.
+
+### M12 — Rigid inline atom emergency breaking
+
+- Status: `task033` implemented and developer-verified as the earlier
+  rigid-atom repair. `task036` supersedes its ordinary-underfull emergency
+  model; `issue021` was closed after user-visible confirmation.
+- Reproduce the showcase's narrow CJK prefix plus `ekp-no-break` atom through
+  the public string and semantic-plan paths before changing the algorithm.
+- Historical task033 design: keep the strict K-P pass and the established
+  first-candidate emergency transition unchanged, then add a narrow
+  forbidden-run prefix fallback. The current task036 model replaces that
+  fallback with fixed final-pass emergency stretch plus content-independent
+  active-path preservation.
+- Preserve atom integrity, source text, Elisp/C parity, looseness/parshape
+  semantics, append correctness, and the buffer projection contract.
+- Gate: focused RED/GREEN core and buffer regressions, complete ERT in normal
+  and random order, isolated tests, C/Elisp fuzz, warning-as-error builds,
+  static/release checks, and clean static plus dynamic 280px GUI evidence.
+- Result: the failing boundary moved from 1 to the full prefix boundary 11 in
+  Elisp, C, and public buffer paths. Normal/random/isolated ERT pass 201/201,
+  fuzz passes 300/300, static and build gates pass, and reviewed
+  480→280→340→280 GUI evidence returns PASS.
+
+### M13 — Configurable break policies and orphan-glyph closure
+
+- Status: `task034` implementation, focused automated evidence, and G004 GUI
+  evidence are recorded. G005 repository-wide gates and G006 cleanup are
+  complete. `task034` is closed for developer work, `issue021` is closed
+  after user visual confirmation, and independent final code review returned
+  APPROVE with architecture status CLEAR.
+- Implement the locked A2/B2/C2/D1/E1/F1/G2/H1/I1/J1/K1/M1 contract:
+  inline code defaults to no-hyphen rather than no-break, known inline faces
+  are recognized through mode profiles, region policy outranks explicit
+  local values which outrank mode profiles and globals, block faces remain
+  verbatim, explicit no-break never downgrades, automatic no-break downgrades
+  to no-hyphen when overwide, inline and block faces use separate paths,
+  manual properties stay session-only, hyphenation defaults to auto,
+  URL/path/identifier default to no-hyphen, compact number-unit defaults to
+  no-break, kinsoku defaults to common, overlong tokens default to emergency,
+  and buffer measure defaults to the narrowest live window.
+- Keep the chosen architecture: resolve private structural policy intervals
+  before tokenization, compile them into existing hyphen positions and
+  forbidden-break vectors before DP, preserve the original source in the
+  semantic plan, and keep the C boundary at the current 15 arguments and
+  15-field batch payload unless architecture review is reopened.
+- Split block and inline ownership in `ekp-buffer`: `ekp-buffer-skip-faces`
+  remains paragraph-level verbatim, `ekp-buffer-inline-faces` annotates only
+  exact inline intervals, and `ekp-buffer-mode-policy-alist` is consulted
+  without auto-copying profile values into buffer locals.
+- Add public region controls for `ekp-break-policy`: normal, enable
+  hyphenation, disable hyphenation, and clear. Existing no-break/verbatim
+  commands remain the only hard-atom and paragraph-bypass controls.
+- Fix the remaining visible quality bug from the user's latest screenshot:
+  the 280px showcase path must not isolate any pathological single-CJK source
+  line around inline code, including `行`, `内`, or `永`, when a legal
+  non-emergency alternative exists.
+- Gate: follow the RALPLAN test specification R1-R8 plus GUI verification.
+  Required evidence includes focused RED/GREEN ERT, full normal/permuted/
+  isolated ERT, 300-case property fuzz, C/Elisp parity, warning-as-error
+  Elisp compilation, C builds/tests, checkdoc/package/static/release gates,
+  and reviewed fullscreen single-window screenshots for inline wrapping,
+  no orphan glyph, explicit no-break, block verbatim, measure modes, and
+  overlong-token modes.
+- Current evidence: G002 records core policy compilation, C parity, 300-case
+  fuzz, byte compilation, checkdoc, C build, and focused policy/cache gates.
+  G003 records buffer/profile/local/region controls, diagnostics, generation
+  reflow, source/editor invariants, focused core/buffer suites, byte
+  compilation, and checkdoc. G004 records GUI verifier ERT 7/7 and a clean
+  single-window run at `/tmp/ekp-g004-evidence.Tp77dW` with 12/12 checkpoints,
+  no failed assertions, 25.75s/206-frame recording, no black segments,
+  automatic inline wrapping 3→2→3 lines across 280→340→280, source-space
+  internal inline breaks, explicit hard atom, block verbatim, C active, and
+  no stale policy projection after the no-hyphen→normal transition.
+- Final evidence: G005 recorded repository-wide default/seeded/isolated ERT,
+  property fuzz, warning-clean Elisp/C builds, checkdoc/package/release/
+  dictionary/static gates, performance checks, and full diff review. G006
+  cleanup touched only `ekp.el` and `ekp-buffer.el`; targeted cleanup suites
+  passed 6/6 and 3/3, full core ERT passed 125/125, full buffer ERT passed
+  120/120, and byte compilation, diff-check, and C build gates passed. G006
+  was then review-blocked on nested semantic-plan cache aliasing and malformed
+  non-nil C fallback semantics. G007 resolved those first blockers: cached
+  semantic plans return consumer-owned copies of plan-owned mutable payloads
+  while intentionally sharing `para`; malformed non-nil C single/batch output
+  signals `ekp-backend-contract-error`, with nil-result Elisp fallback and
+  the 15-argument/15-field ABI unchanged. G007 final review found one
+  remaining string-leaf context alias; G008 resolves it by recursively
+  copying cons/vector/string context payloads both for snapshot/cache-key
+  creation and returned plans. Fresh G008 gates record formal resize parity
+  true, ERT 268/268, fuzz 300/300, release pass, core p50/p95
+  23.266/36.363ms, resize p50/p95 23.761/36.889ms, and byte-compiled current
+  public path p99 below 16ms with zero GC. After review remediation made all
+  changed tests warning-clean and synchronized the eighth C setter parameter,
+  final independent code review returned APPROVE and architecture review
+  returned CLEAR.
+
+### M14 — Final-pass emergency stretch
+
+- Status: `task035` was falsified; `task036` is implemented and its developer
+  gates pass. `issue021` is closed after user-visible confirmation.
+- Correct the core K-P owner, not the renderer or policy compiler. Strict
+  pass behavior remains unchanged.
+- In the final pass, ordinary underfull candidates receive finite background
+  emergency stretch and still compute adjustment ratio, badness, fitness, and
+  demerits. Separately, when an overfull candidate would otherwise eliminate
+  the final active path to a breakpoint and no non-overfull candidate survives
+  there, install the best provisional path with tight fitness and zero
+  incremental demerits, matching TeX's `artificial_demerits` purpose.
+- Do not add CJK-orphan, unit, or screenshot-specific penalties. Unit suffix
+  configuration remains only a token-classification input, not a layout
+  scoring rule.
+- Gate: focused core/public-buffer/C parity tests and GUI-oracle checks must
+  reject any isolated CJK source line in the showcase paragraph at checked
+  widths. Final fullscreen visual review remains required before closing
+  `issue021`.
+- Result: the Elisp 1D, looseness/parshape, and C paths share the same rule;
+  explicit atom interiors remain unbreakable but adjacent legal boundaries
+  remain legal; the public 15-field/15-argument C contract is unchanged.
+  Focused regressions pass 8/8, the emergency selector passes 10/10, the
+  core/buffer/GUI oracle passes 8/8, full ERT passes 288/288, seeded and
+  isolated core suites pass 279/279, fuzz passes 300/300, all build/static/
+  release gates pass, performance gates pass, and reviewed dynamic GUI
+  evidence at `/tmp/ekp-g009-evidence-retry.UOpPNp` returns PASS.
 
 ## Stop Gates
 

@@ -17,15 +17,31 @@
                         "bcdfghjklmnpqrstvwxz" "word!" "(paren)" "don't"
                         "test," "end." "«quoted»" "naïve" "Ｆｕｌｌ" "１２３"))
 (defconst fuzz--puncts '("，" "。" "、" "《" "》" "「" "」" "！" "？"))
+(defconst fuzz--policy-tokens
+  '("https://example.test/a_b" "src/core/file_name.el"
+    "processKeyword42" "3.14MB" "100px"))
+
+(defun fuzz--maybe-policy-propertize (token)
+  "Return TOKEN with deterministic public policy annotations sometimes."
+  (pcase (fuzz--rand 8)
+    (0 (propertize token 'ekp-break-policy 'normal))
+    (1 (propertize token 'ekp-break-policy 'hyphenate))
+    (2 (propertize token 'ekp-break-policy 'no-hyphen))
+    (3 (propertize token 'ekp-no-break t))
+    (4 (propertize token 'face 'ekp-fuzz-inline-code))
+    (_ token)))
 
 (defun fuzz--gen-string ()
   "Random mixed paragraph of 5-60 tokens."
   (let ((n (+ 5 (fuzz--rand 56))) (parts nil))
     (dotimes (_ n)
-      (pcase (fuzz--rand 10)
+      (pcase (fuzz--rand 11)
         ;; latin word
-        ((or 0 1 2 3) (push (nth (fuzz--rand (length fuzz--words)) fuzz--words) parts)
-                      (push " " parts))
+        ((or 0 1 2 3)
+         (push (fuzz--maybe-policy-propertize
+                (nth (fuzz--rand (length fuzz--words)) fuzz--words))
+               parts)
+         (push " " parts))
         ;; CJK run
         ((or 4 5 6 7) (let ((len (1+ (fuzz--rand 6)))
                             (start (fuzz--rand (- (length fuzz--cjk) 7))))
@@ -33,7 +49,13 @@
         ;; CJK punct
         (8 (push (nth (fuzz--rand (length fuzz--puncts)) fuzz--puncts) parts))
         ;; spaces / zwsp
-        (9 (push (if (= 0 (fuzz--rand 3)) "​" "  ") parts))))
+        (9 (push (if (= 0 (fuzz--rand 3)) "​" "  ") parts))
+        ;; built-in policy token categories
+        (10 (push (fuzz--maybe-policy-propertize
+                   (nth (fuzz--rand (length fuzz--policy-tokens))
+                        fuzz--policy-tokens))
+                  parts)
+            (push " " parts))))
     (string-trim (apply #'concat (nreverse parts)))))
 
 (defun fuzz--content (s)

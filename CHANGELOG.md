@@ -8,6 +8,18 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- Malformed non-nil C backend results no longer fall back to Elisp. Nil whole
+  results and nil per-item breaks remain soft failures; malformed single or
+  batch output now signals `ekp-backend-contract-error`, so a broken backend
+  cannot silently produce a different layout.
+- An overwide `ekp-no-break` inline atom no longer collapses its preceding
+  CJK text into one-glyph emergency lines. The final pass now gives ordinary
+  underfull candidates finite background emergency stretch and lets normal
+  badness/fitness/demerits choose the layout. If an overfull candidate would
+  otherwise extinguish every active path, TeX-style artificial demerits
+  preserve the best provisional path with zero incremental cost. The rule is
+  content-independent and identical in the Elisp 1D, looseness/parshape, and
+  C engines.
 - C-backed core layout and complete resize/reflow now reuse prepared
   paragraph, DP, and gap geometry and avoid duplicate projection
   publication. The four-round same-machine gate records p95 values of
@@ -148,6 +160,12 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Internal
 
+- Cached semantic layout plans now return consumer-owned copies of all
+  plan-owned mutable payloads: strings, context, boxes, offsets, line/glue/
+  gap records, and signatures. Layout context snapshots and returned contexts
+  recursively copy conses, vectors, and strings, so mutable policy inputs
+  cannot alias the cache key. The paragraph object remains intentionally
+  shared for stable append identity.
 - DP reuse identity, edge-space exclusion, and the lossless marker
   vocabulary now each have one directly tested rule owner. The consolidation
   removes formula/property-list drift without adding modules or hot-loop

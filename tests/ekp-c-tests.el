@@ -86,6 +86,24 @@
   (should-error (ekp-c-set-penalties "10" 50 100 0.5)
                 :type 'ekp-c-invalid-input))
 
+(ert-deftest ekp-c-test-penalties-accept-emergency-stretch-eighth-param ()
+  "The direct C setter accepts a non-negative emergency stretch parameter."
+  (skip-unless (ekp-c-tests--available))
+  (should (ekp-c-set-penalties 10 50 100 0.5 100 50 0 7)))
+
+(ert-deftest ekp-c-test-penalties-reject-invalid-emergency-stretch ()
+  "Invalid emergency stretch inputs use the module input condition."
+  (skip-unless (ekp-c-tests--available))
+  (should-error (ekp-c-set-penalties 10 50 100 0.5 100 50 0 -1)
+                :type 'ekp-c-invalid-input)
+  (should-error (ekp-c-set-penalties 10 50 100 0.5 100 50 0 "wide")
+                :type 'ekp-c-invalid-input))
+
+(ert-deftest ekp-c-test-penalties-keep-legacy-four-arg-call ()
+  "The direct C setter remains compatible with the legacy 4-arg call."
+  (skip-unless (ekp-c-tests--available))
+  (should (ekp-c-set-penalties 10 50 100 0.5)))
+
 (ert-deftest ekp-c-test-module-build-uses-argv-in-directory ()
   "Interactive builds must not interpolate a module path into a shell."
   (let (process-arguments process-directory)

@@ -183,6 +183,7 @@ typedef struct {
     int32_t consecutive;
     double last_short;
     int32_t extra_stretch;
+    int32_t emergency_stretch;
 } penalty_config_t;
 
 static const char *parse_penalties(emacs_env *env, ptrdiff_t nargs,
@@ -192,7 +193,8 @@ static const char *parse_penalties(emacs_env *env, ptrdiff_t nargs,
         !i32_value_p(env, args[2]) || !finite_number_p(env, args[3]) ||
         (nargs > 4 && !i32_value_p(env, args[4])) ||
         (nargs > 5 && !finite_number_p(env, args[5])) ||
-        (nargs > 6 && !i32_value_p(env, args[6])))
+        (nargs > 6 && !i32_value_p(env, args[6])) ||
+        (nargs > 7 && !i32_value_p(env, args[7])))
         return "EKP C penalties require finite signed 32-bit numbers";
 
     out->line = clamp32(env->extract_integer(env, args[0]));
@@ -209,9 +211,12 @@ static const char *parse_penalties(emacs_env *env, ptrdiff_t nargs,
             : (double)env->extract_integer(env, args[5]);
     out->extra_stretch = nargs > 6
         ? clamp32(env->extract_integer(env, args[6])) : 0;
+    out->emergency_stretch = nargs > 7
+        ? clamp32(env->extract_integer(env, args[7])) : 0;
 
     if (out->last_ratio < 0.0 || out->last_ratio > 1.0 ||
-        out->last_short < 0.0 || out->extra_stretch < 0)
+        out->last_short < 0.0 || out->extra_stretch < 0 ||
+        out->emergency_stretch < 0)
         return "EKP C ratios and stretch values are outside valid ranges";
     return NULL;
 }
@@ -239,6 +244,7 @@ static emacs_value Fekp_c_set_penalties(emacs_env *env, ptrdiff_t nargs,
     ekp_global->consec_hyphen_penalty = config.consecutive;
     ekp_global->last_line_short_penalty = config.last_short;
     ekp_global->extra_stretch = config.extra_stretch;
+    ekp_global->emergency_stretch = config.emergency_stretch;
 
     return env->intern(env, "t");
 }
@@ -758,7 +764,7 @@ int emacs_module_init(struct emacs_runtime *runtime)
     defun(env, "ekp-c-cleanup", 0, 0, Fekp_c_cleanup,
           "Cleanup EKP C module resources.");
 
-    defun(env, "ekp-c-set-penalties", 4, 7, Fekp_c_set_penalties,
+    defun(env, "ekp-c-set-penalties", 4, 8, Fekp_c_set_penalties,
           "Set Knuth-Plass algorithm penalties.\n\n\
 LINE-PENALTY: base penalty per line break (default 10)\n\
 HYPHEN-PENALTY: penalty for hyphenated breaks (default 50)\n\
@@ -766,9 +772,11 @@ FITNESS-PENALTY: penalty for adjacent line tightness mismatch (default 100)\n\
 LAST-LINE-RATIO: minimum fill ratio for last line (default 0.5)\n\
 CONSEC-HYPHEN-PENALTY: multiplier for consecutive hyphen runs (default 100)\n\
 LAST-LINE-SHORT-PENALTY: multiplier for short last lines (default 50.0)\n\
-EXTRA-STRETCH: per-line non-justify flexibility in pixels (default 0)\n\n\
+EXTRA-STRETCH: per-line non-justify flexibility in pixels (default 0)\n\
+EMERGENCY-STRETCH: fixed final-pass emergency stretch in pixels (default 0)\n\n\
 (fn LINE-PENALTY HYPHEN-PENALTY FITNESS-PENALTY LAST-LINE-RATIO \
-&optional CONSEC-HYPHEN-PENALTY LAST-LINE-SHORT-PENALTY EXTRA-STRETCH)");
+&optional CONSEC-HYPHEN-PENALTY LAST-LINE-SHORT-PENALTY EXTRA-STRETCH \
+EMERGENCY-STRETCH)");
 
     defun(env, "ekp-c-break-with-arrays", 15, 15, Fekp_c_break_with_arrays,
           "Break lines using Elisp's pre-computed prefix arrays (preferred API).\n\n\

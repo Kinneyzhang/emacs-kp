@@ -26,7 +26,7 @@ typesetting, entirely inside Emacs.
 - **Text properties preserved** — faces, colors and other properties
   survive justification; inserted hyphens inherit the face of the word
   they break.
-- **Robust on hard input** — unbreakable overlong tokens (URLs, long
+- **Robust on hard input** — unprotected overlong tokens (URLs, long
   words at narrow widths) degrade to emergency breaks instead of losing
   text; every input produces output.
 - **Optional C module** — a dynamic module runs the DP in C with a
@@ -173,15 +173,17 @@ blocking input in an unbounded Knuth-Plass pass; `M-x ekp-diagnose` reports
 the reason.  Run `M-x ekp-refill-paragraph` when you explicitly want the
 unbounded full-quality pass for that paragraph.
 
-Mode presets for verbatim protection — one call each:
+Mode presets for explicit local protection — one call each:
 
 ```elisp
 (add-hook 'org-mode-hook      #'ekp-org-setup)
 (add-hook 'markdown-mode-hook #'ekp-markdown-setup)
 ```
 
-`ekp-auto-justify-mode` also applies the matching preset automatically
-in Org and Markdown buffers when you have not configured your own.
+`ekp-auto-justify-mode` consults `ekp-buffer-mode-policy-alist`
+automatically in Org and Markdown buffers.  It does not copy profile
+values into buffer-local variables unless you explicitly call the setup
+functions above.
 
 ### Protecting code and other verbatim text
 
@@ -190,10 +192,22 @@ in Org and Markdown buffers when you have not configured your own.
   `ekp-buffer-skip-faces` (e.g. `org-block`, `markdown-code-face`), or
   matched by the buffer-local function `ekp-buffer-skip-predicate`
   pass through completely untouched.
-- Inline level: spans carrying `ekp-no-break`
+- Automatic inline level: faces listed in `ekp-buffer-inline-faces`
+  (Org `org-code`/`org-verbatim`, Markdown inline code by default through
+  mode profiles) use `ekp-inline-code-policy`.  The default `no-hyphen`
+  keeps source spaces literal and suppresses dictionary hyphenation, but it
+  may still wrap at legal source boundaries.  Automatic `no-break` spans
+  downgrade to `no-hyphen` when wider than the effective measure.
+- Explicit hard atom level: spans carrying `ekp-no-break`
   (`M-x ekp-no-break-region`) become rigid atoms — never broken,
   never hyphenated, spacing kept literal — ideal for inline code,
-  product names, or numbers with units.
+  product names, or numbers with units.  An atom wider than the measure stays
+  intact but is not guaranteed a line of its own: the final pass may place it
+  on one overflow line with preceding ordinary content. Ordinary underfull
+  candidates use fixed emergency stretch and normal K-P costs. If an
+  overfull candidate would otherwise extinguish every active final-pass path,
+  the core preserves the last path with TeX-style artificial demerits. There
+  is no CJK-orphan, unit, or screenshot-specific rule.
 
 Manual properties are deliberately **current-buffer-session only**:
 plain-text saving and reopening do not persist them. Use
@@ -234,6 +248,40 @@ is delivered via protrusion instead; left-edge protrusion is likewise
 not renderable (text cannot start before the line origin).
 
 ## Configuration
+
+### Break policy and measure
+
+The break-policy defaults are intended to make code readable without making
+every code-looking span a hard atom:
+
+| Option | Default | Scope | Effect |
+|:-------|:--------|:------|:-------|
+| `ekp-inline-code-policy` | `no-hyphen` | global, profile, local | `normal`, `no-hyphen`, or automatic fitting `no-break` for inline-face spans |
+| `ekp-hyphenation` | `auto` | global, profile, local, region via command | `auto`/`on` use dictionaries when available; `off` suppresses discretionary hyphens |
+| `ekp-token-break-policies` | URL/path/identifier `no-hyphen`, number-unit `no-break` | global, profile, local | per-token automatic policies; local/profile values merge by token category |
+| `ekp-number-unit-suffixes` | common CSS, time, data, frequency, and metric units | global, profile, local | suffixes recognized by the compact number-unit classifier |
+| `ekp-kinsoku-profile` | `common` | global, profile, local | `common`, `zh`, `ja`, `off`, or `custom` CJK line-start/end prohibitions |
+| `ekp-cjk-no-line-start-extra` / `ekp-cjk-no-line-end-extra` | `""` | global, profile, local | additions used by the `custom` profile |
+| `ekp-overlong-token-policy` | `emergency` | global, profile, local | `emergency`, `overflow`, or `natural` for ordinary overlong Latin-like tokens |
+| `ekp-buffer-measure` | `narrowest-window` | global, profile, local | `narrowest-window`, fixed pixel integer, or `(max . PIXELS)` |
+| `ekp-buffer-skip-faces` | profile-dependent | global, profile, local | paragraph-level verbatim faces |
+| `ekp-buffer-inline-faces` | profile-dependent | global, profile, local | exact inline spans using `ekp-inline-code-policy` |
+| `ekp-buffer-mode-policy-alist` | Org and Markdown profiles | global/local safe value | mode profiles consulted by automatic and manual buffer layout |
+
+Effective precedence is deterministic: explicit region text properties
+first, then explicit buffer/file/dir-local values, then the first matching
+major-mode profile, then global defaults.  `ekp-break-policy` region values
+are `normal`, `hyphenate`, and `no-hyphen`; they override automatic token
+or inline policies for the exact region but never create a hard atom.
+`ekp-no-break` remains the only explicit hard-atom property and wins over
+every automatic policy.
+
+All listed variables have closed safe-local predicates where file/dir local
+configuration is supported.  `ekp-diagnose` reports the requested measure,
+the narrowest live window, the effective measure, overflow risk, conflict
+count, and the active inline/hyphenation/kinsoku/overlong policy summary.
+The EKP menu exposes diagnose plus region commands for normal break,
+hyphenation on, hyphenation off, clear break policy, no-break, and verbatim.
 
 ### Hyphenation language
 
