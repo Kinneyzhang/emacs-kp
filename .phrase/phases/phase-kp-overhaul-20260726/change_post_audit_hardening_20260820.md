@@ -64,7 +64,7 @@
   57.063 ms Elisp append-DP; raw JSONL is nonempty and parity/zero-work/GC/
   conflict/non-regression remain true. No production optimization is claimed
   yet because the measured DP/append owners require an exact redesign.
-- **Commit:** Pending measurement commit.
+- **Commit:** `db6e6b9`.
 
 ## Verification
 
