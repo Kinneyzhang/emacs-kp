@@ -826,7 +826,7 @@
         (should-not (get-text-property
                      (1- (point)) 'ekp-buffer--display))))))
 
-(ert-deftest ekp-buffer-test-live-backward-wrap-crossing-commits-once ()
+(ert-deftest ekp-buffer-test-live-backward-wrap-crossing-stays-local ()
   "Deleting into the previous native row keeps the live transaction local."
   (let ((text
          "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu")
