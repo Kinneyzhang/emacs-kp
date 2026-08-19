@@ -1,9 +1,9 @@
 # Issue: Native Soft Wrap 2026-07-29
 
-## issue015 [ ] Narrow split windows truncate live text
+## issue015 [x] Narrow split windows truncate live text
 
-- **Status:** Implemented and independently verified; user confirmation
-  remains required.
+- **Status:** Closed by user re-audit on 2026-08-13. Implementation and
+  independent verification were complete.
 - **Summary:** With `ekp-auto-justify-mode` enabled in a narrow
   side-by-side window, typing past the right edge horizontally scrolls the
   line and displays a `$` truncation indicator instead of naturally
@@ -44,8 +44,7 @@
   naturally advancing from one to two visual rows in a 44-column split,
   with `hscroll=0`, exact source text, zero overlays, and zero live
   replacing breaks.
-- **User Confirmation:** Pending after delivery.
-- **Resolved At:** Unresolved.
-- **Resolved By:** Implementation complete; issue stays open until
-  user-visible confirmation.
-- **Commit:** Pending.
+- **User Confirmation:** Provided by user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; implementation complete.
+- **Commit:** — (documentation-only closure).

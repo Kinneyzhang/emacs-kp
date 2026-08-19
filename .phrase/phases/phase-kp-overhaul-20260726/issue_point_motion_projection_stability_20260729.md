@@ -1,10 +1,10 @@
 # Issue: Point-Motion Projection Stability 2026-07-29
 
-## issue017 [ ] Point-only motion changes an already published live projection
+## issue017 [x] Point-only motion changes an already published live projection
 
-- **Status:** The zero-work point-motion invariant remains current.
-  `issue019`/`task031` supersede frontier-owned immediate publication and
-  extend the invariant across hard-line/paragraph navigation.
+- **Status:** Closed by user re-audit on 2026-08-13. The zero-work
+  point-motion invariant remains current; `issue019`/`task031` supersede
+  frontier-owned immediate publication and extend it across navigation.
 - **Summary:** `task028` correctly made one whole hard line the planning
   unit, but it also made transient point position the persistent live
   projection boundary. Moving point across semantic plan lines therefore
@@ -75,8 +75,7 @@
   - Independent architecture review is CLEAR. Independent code review
     reports zero blockers; its only residual is the separate narrow-width
     append latency tracked by `issue018`/`task030`.
-- **User Confirmation:** Pending. Keep this issue open until the user
-  confirms the editing experience.
-- **Resolved At:** Unresolved.
-- **Resolved By:** Pending.
-- **Commit:** Pending.
+- **User Confirmation:** Provided by user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; runtime work previously implemented.
+- **Commit:** — (documentation-only closure).

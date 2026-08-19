@@ -1,9 +1,9 @@
 # Issue: Natural Live Editing 2026-07-29
 
-## issue014 [ ] Near-edge editing publishes premature KP layout
+## issue014 [x] Near-edge editing publishes premature KP layout
 
-- **Status:** Implemented and independently verified; user-visible
-  confirmation is pending.
+- **Status:** Closed by user re-audit on 2026-08-13. Implementation and
+  independent verification were complete.
 - **Summary:** With `ekp-auto-justify-mode` enabled, typing near the right
   edge can publish several visual KP breaks and a discretionary hyphen
   while the user is still composing the current hard paragraph. The result
@@ -48,7 +48,7 @@
   mixed-text wrap, exact deletion restoration, and the sole full-KP
   transition after hard newline; every immediate and redisplay checkpoint
   passes, with zero live owned breaks and no black recording segment.
-- **User Confirmation:** Pending after the visible fix is delivered.
-- **Resolved At:** Unresolved.
-- **Resolved By:** Implementation complete; awaiting user confirmation.
-- **Commit:** Pending.
+- **User Confirmation:** Provided by user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; implementation complete.
+- **Commit:** — (documentation-only closure).

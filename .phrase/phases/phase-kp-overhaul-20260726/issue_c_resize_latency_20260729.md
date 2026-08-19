@@ -1,8 +1,9 @@
 # Issue: C Resize Latency 2026-07-29
 
-## issue020 [ ] C-backed resize reflow still takes roughly 60–70 ms
+## issue020 [x] C-backed resize reflow still takes roughly 60–70 ms
 
-- **Status:** Developer verification complete; user confirmation pending.
+- **Status:** Closed by user re-audit on 2026-08-13. Developer verification
+  was complete.
 - **Summary:** Resizing with the C dynamic module enabled was observed at
   roughly 60–70 ms. That number covered more than the C algorithm: the
   buffer path also rebuilt layout input, crossed the Emacs-module boundary,
@@ -49,7 +50,7 @@
   changes, 14 checkpoints, no failed assertion or pixel overflow, and a
   maximum EKP mutator time of 22.989 ms; one 74.099 ms total sample contains
   58.792 ms of Emacs GC and 15.307 ms of EKP work.
-- **User Confirmation:** Required after implementation evidence is delivered.
-- **Resolved At:** Unresolved.
-- **Resolved By:** Pending.
-- **Commit:** Pending.
+- **User Confirmation:** Provided by user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; developer verification complete.
+- **Commit:** — (documentation-only closure).

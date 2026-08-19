@@ -1,9 +1,9 @@
 # Issue: Live Editing Interaction Regressions 2026-07-29
 
-## issue012 [ ] Reprojection activates an inactive mark
+## issue012 [x] Reprojection activates an inactive mark
 
-- **Status:** Runtime fix and repository verification are complete. The
-  issue remains open until the user confirms the visible behavior.
+- **Status:** Closed by user re-audit on 2026-08-13. Runtime fix and
+  repository verification were complete.
 - **Summary:** Changing width in `ekp-showcase` can highlight text even
   though the user did not activate a region.
 - **Environment:** Text-property renderer after `task022`; Emacs 30.2.
@@ -33,15 +33,15 @@
   A clean full-screen GUI width-key run preserved point 120, mark 20,
   `mark_active=false`, `region_active=false`, and zero overlays before,
   immediately after, and after redisplay.
-- **User Confirmation:** Pending after the visible fix is delivered.
-- **Resolved At:** Unresolved.
-- **Resolved By:** Pending.
-- **Commit:** Pending.
+- **User Confirmation:** Provided by user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; runtime work previously implemented.
+- **Commit:** — (documentation-only closure).
 
-## issue013 [ ] Active-line edge whitespace is hidden
+## issue013 [x] Active-line edge whitespace is hidden
 
-- **Status:** Runtime fix and repository verification are complete. The
-  issue remains open until the user confirms the visible behavior.
+- **Status:** Closed by user re-audit on 2026-08-13. Runtime fix and
+  repository verification were complete.
 - **Summary:** With `ekp-auto-justify-mode` enabled, a newly typed trailing
   space or tab can appear to do nothing. It becomes visible only after a
   following non-whitespace glyph is typed. The same defect affects newly
@@ -79,10 +79,10 @@
   the same action; the source space had neither EKP-owned nor public
   replacing display immediately or after redisplay. Typing and deleting a
   following glyph left that state unchanged.
-- **User Confirmation:** Pending after the visible fix is delivered.
-- **Resolved At:** Unresolved.
-- **Resolved By:** Pending.
-- **Commit:** Pending.
+- **User Confirmation:** Provided by user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; runtime work previously implemented.
+- **Commit:** — (documentation-only closure).
 
 ## Related Audit Scope
 

@@ -1,9 +1,10 @@
 # Issue: Semantic Live Prefix 2026-07-29
 
-## issue016 [ ] Live editing freezes native rows instead of projecting a semantic hard-line prefix
+## issue016 [x] Live editing freezes native rows instead of projecting a semantic hard-line prefix
 
-- **Status:** The whole-hard-line commit result is retained, but per-edit
-  replanning is superseded by `issue019`/`task031`.
+- **Status:** Closed by user re-audit on 2026-08-13. The whole-hard-line
+  commit result is retained; per-edit replanning was superseded by
+  `issue019`/`task031`.
 - **Summary:** Before `task028`, live editing committed completed native
   visual rows independently. User testing showed that earlier soft-wrapped
   rows in the same hard line did not become globally KP-aligned while the
@@ -90,8 +91,7 @@
   - Final independent code review returns APPROVE; independent architecture
     review returns CLEAR. Both reviewed the latest font-context
     invalidation delta.
-- **User Confirmation:** Pending. Keep this issue open until the user
-  personally confirms the delivered editing behavior.
-- **Resolved At:** Unresolved.
-- **Resolved By:** Pending.
-- **Commit:** Pending.
+- **User Confirmation:** Provided by user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; runtime work previously implemented.
+- **Commit:** — (documentation-only closure).

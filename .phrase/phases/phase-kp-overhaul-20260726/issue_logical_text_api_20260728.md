@@ -1,10 +1,9 @@
 # Issue: Logical Text API Boundary 2026-07-28
 
-## issue011 [ ] Direct Elisp buffer APIs observe physical layout text
+## issue011 [x] Direct Elisp buffer APIs observe physical layout text
 
-- **Status:** Runtime fix and complete repository gate implemented by
-  `task019`–`task022`. The issue remains open only until the user accepts
-  the visible behavior.
+- **Status:** Closed by user re-audit on 2026-08-13. Runtime fix and
+  complete repository gate were implemented by `task019`–`task022`.
 - **Summary:** The former buffer renderer wrote synthesized glue spaces,
   soft newlines, discretionary hyphens, and hidden payload text into the
   real buffer. Boundary adapters made save/copy/search appear logical, but
@@ -122,10 +121,11 @@
   excluded overlays, selected text properties, identified `min-width`,
   `space-width`, and `line-prefix`, requested a non-polluting hyphen
   implementation, then explicitly requested complete implementation under
-  the persistent goal model. Final visible-behavior acceptance is pending.
-- **Resolved At:** Unresolved.
-- **Resolved By:** Pending.
-- **Commit:** Pending.
+  the persistent goal model. Final visible-behavior acceptance was provided
+  by the user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; runtime work previously implemented.
+- **Commit:** — (documentation-only closure).
 - **Related:** `ekp.el`, `ekp-buffer.el`, `task017`–`task022`,
   `spec_text_property_layout_engine_20260729.md`,
   `tech-refer_text_property_layout_20260729.md`,

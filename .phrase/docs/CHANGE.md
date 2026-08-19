@@ -2,6 +2,9 @@
 
 ## phase-kp-overhaul-20260726
 
+- 2026-08-13 close issues awaiting user-visible confirmation (`issue011`–
+  `issue017`, `issue019`, `issue020`; `issue018`/`task030` remain open):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_close_user_confirmation_20260813.md`
 - 2026-08-02 complete fixed final-pass emergency stretch and TeX-style
   active-path preservation (`task036`; `issue021` closed after user visual
   confirmation):

@@ -1,9 +1,9 @@
 # Issue: Stable Live Edit Transaction 2026-07-29
 
-## issue019 [ ] Per-edit frontier replanning destabilizes live projection and cannot restore reversible edits exactly
+## issue019 [x] Per-edit frontier replanning destabilizes live projection and cannot restore reversible edits exactly
 
-- **Status:** Implemented and developer-verified by `task031`; awaiting the
-  required user-visible confirmation.
+- **Status:** Closed by user re-audit on 2026-08-13. Implementation was
+  developer-verified by `task031`.
 - **Summary:** The current live path makes one `frontier` simultaneously own
   the latest edit, the natural suffix, and projection reuse. Before every
   edit it clears the touched projected line and every following line; after
@@ -66,7 +66,7 @@
   checkpoints, no failed assertion, a completed run-end, and no black
   segment or visual noise. Same-row and point-motion benchmark scenarios
   perform zero plans; 291 appends now contain only 15 structural plans.
-- **User Confirmation:** Required after temporal GUI evidence is delivered.
-- **Resolved At:** Unresolved.
-- **Resolved By:** `task031` developer verification; user confirmation pending.
-- **Commit:** Pending.
+- **User Confirmation:** Provided by user re-audit on 2026-08-13.
+- **Resolved At:** 2026-08-13.
+- **Resolved By:** User re-audit closure; `task031` developer verification.
+- **Commit:** — (documentation-only closure).
