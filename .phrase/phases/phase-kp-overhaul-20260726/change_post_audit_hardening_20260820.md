@@ -40,6 +40,18 @@
   `task030` remain open.
 - **Commit:** `6a8c7e0`.
 
+## 2026-08-20 — Record source-fresh performance boundary
+
+- **Add** `postmortem/20260820-source-fresh-live-commit-gate.md` to explain
+  why the stale-bytecode evaluator result was invalid and why the corrected
+  source gate remains an open `task030` performance target.
+- **Evidence:** width-80/two-row/GC-excluded source candidate p95/p99 are
+  23.294 ms (C) and 78.593 ms (Elisp), with parity, zero-work, GC,
+  conflict, and non-regression checks true. The high-row full matrix was
+  stopped after a source DP cell exceeded two minutes of CPU; it is not
+  claimed as complete evidence.
+- **Commit:** Pending documentation commit.
+
 ## Verification
 
 - Source-first normal ERT: 295/295.
