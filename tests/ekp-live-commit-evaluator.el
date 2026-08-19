@@ -49,6 +49,8 @@
 (defvar ekp-live-commit-evaluator--plan-ms 0.0)
 (defvar ekp-live-commit-evaluator--para-ms 0.0)
 (defvar ekp-live-commit-evaluator--dp-ms 0.0)
+(defvar ekp-live-commit-evaluator--append-ms 0.0)
+(defvar ekp-live-commit-evaluator--append-dp-ms 0.0)
 (defvar ekp-live-commit-evaluator--module-ms 0.0)
 (defvar ekp-live-commit-evaluator--install-ms 0.0)
 (defvar ekp-live-commit-evaluator--clear-ms 0.0)
@@ -95,6 +97,8 @@
         ekp-live-commit-evaluator--plan-ms 0.0
         ekp-live-commit-evaluator--para-ms 0.0
         ekp-live-commit-evaluator--dp-ms 0.0
+        ekp-live-commit-evaluator--append-ms 0.0
+        ekp-live-commit-evaluator--append-dp-ms 0.0
         ekp-live-commit-evaluator--module-ms 0.0
         ekp-live-commit-evaluator--install-ms 0.0
         ekp-live-commit-evaluator--clear-ms 0.0
@@ -147,13 +151,17 @@
       crossed)))
 
 (defun ekp-live-commit-evaluator--append-wrapper (function)
-  "Return a FUNCTION wrapper that records append-plan hits."
+  "Return a FUNCTION wrapper that times and records append-plan hits."
   (lambda (&rest arguments)
     (cl-incf ekp-live-commit-evaluator--append-calls)
-    (let ((plan (apply function arguments)))
-      (when plan
-        (cl-incf ekp-live-commit-evaluator--append-hits))
-      plan)))
+    (let ((started (float-time)))
+      (prog1
+          (let ((plan (apply function arguments)))
+            (when plan
+              (cl-incf ekp-live-commit-evaluator--append-hits))
+            plan)
+        (cl-incf ekp-live-commit-evaluator--append-ms
+                 (* 1000.0 (- (float-time) started)))))))
 
 (defun ekp-live-commit-evaluator--instrument (function)
   "Call FUNCTION with live-commit layer instrumentation installed."
@@ -162,6 +170,7 @@
         (append-plan (symbol-function 'ekp-layout-plan-append))
         (para (symbol-function 'ekp--get-para))
         (dp (symbol-function 'ekp--dp-cache-para))
+        (append-dp (symbol-function 'ekp--dp-cache-append))
         (module (symbol-function 'ekp-c-break-with-arrays))
         (install (symbol-function 'ekp-buffer--install-live-prefix))
         (suffix (symbol-function 'ekp-buffer--clear-live-suffix))
@@ -187,6 +196,9 @@
          ((symbol-function 'ekp--dp-cache-para)
           (ekp-live-commit-evaluator--timed-wrapper
            'ekp-live-commit-evaluator--dp-ms nil dp))
+         ((symbol-function 'ekp--dp-cache-append)
+          (ekp-live-commit-evaluator--timed-wrapper
+           'ekp-live-commit-evaluator--append-dp-ms nil append-dp))
          ((symbol-function 'ekp-c-break-with-arrays)
           (ekp-live-commit-evaluator--timed-wrapper
            'ekp-live-commit-evaluator--module-ms
@@ -243,6 +255,8 @@
          (plan_ms . ,ekp-live-commit-evaluator--plan-ms)
          (para_ms . ,ekp-live-commit-evaluator--para-ms)
          (dp_ms . ,ekp-live-commit-evaluator--dp-ms)
+         (append_ms . ,ekp-live-commit-evaluator--append-ms)
+         (append_dp_ms . ,ekp-live-commit-evaluator--append-dp-ms)
          (module_ms . ,ekp-live-commit-evaluator--module-ms)
          (publication_ms
           . ,(+ ekp-live-commit-evaluator--install-ms
@@ -471,6 +485,10 @@
                                   baseline 'para_ms))
                    (dp . ,(ekp-live-commit-evaluator--statistics
                            baseline 'dp_ms))
+                   (append . ,(ekp-live-commit-evaluator--statistics
+                               baseline 'append_ms))
+                   (append_dp . ,(ekp-live-commit-evaluator--statistics
+                                  baseline 'append_dp_ms))
                    (module . ,(ekp-live-commit-evaluator--statistics
                                baseline 'module_ms))
                    (publication
@@ -487,6 +505,10 @@
                                    candidate 'para_ms))
                     (dp . ,(ekp-live-commit-evaluator--statistics
                             candidate 'dp_ms))
+                    (append . ,(ekp-live-commit-evaluator--statistics
+                                candidate 'append_ms))
+                    (append_dp . ,(ekp-live-commit-evaluator--statistics
+                                   candidate 'append_dp_ms))
                     (module . ,(ekp-live-commit-evaluator--statistics
                                 candidate 'module_ms))
                     (publication

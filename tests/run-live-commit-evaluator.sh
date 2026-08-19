@@ -27,9 +27,11 @@ test -f "$BASELINE_ROOT/dictionaries/hyph_en_US.dic"
 
 make -C "$ROOT/ekp_c" clean all PROFILE=portable
 mkdir -p "$RAW"
-BASELINE_JSONL="$RAW/baseline.jsonl"
-CANDIDATE_JSONL="$RAW/candidate.jsonl"
+RUN_RAW=$(mktemp -d "$RAW/run.XXXXXX")
+BASELINE_JSONL="$RUN_RAW/baseline.jsonl"
+CANDIDATE_JSONL="$RUN_RAW/candidate.jsonl"
 REPORT="$GOAL/latest-report.json"
+REPORT_TMP="$REPORT.tmp.$$"
 : >"$BASELINE_JSONL"
 : >"$CANDIDATE_JSONL"
 
@@ -59,12 +61,23 @@ while test "$round" -le "$ROUNDS"; do
   round=$((round + 1))
 done
 
-EKP_LIVE_COMMIT_MODE=compare \
-EKP_LIVE_COMMIT_BASELINE_JSONL="$BASELINE_JSONL" \
-EKP_LIVE_COMMIT_CANDIDATE_JSONL="$CANDIDATE_JSONL" \
-EKP_LIVE_COMMIT_REPORT="$REPORT" \
-  "$EMACS_BIN" -Q --batch -L "$ROOT" -L "$ROOT/tests" \
-    -l "$ROOT/tests/ekp-live-commit-evaluator.el"
+if EKP_LIVE_COMMIT_MODE=compare \
+   EKP_LIVE_COMMIT_BASELINE_JSONL="$BASELINE_JSONL" \
+   EKP_LIVE_COMMIT_CANDIDATE_JSONL="$CANDIDATE_JSONL" \
+   EKP_LIVE_COMMIT_REPORT="$REPORT_TMP" \
+   "$EMACS_BIN" -Q --batch -L "$ROOT" -L "$ROOT/tests" \
+     -l "$ROOT/tests/ekp-live-commit-evaluator.el"; then
+    compare_status=0
+  else
+    compare_status=$?
+  fi
+
+if test -f "$REPORT_TMP"; then
+  mv "$REPORT_TMP" "$REPORT"
+fi
+printf '%s\n' "live-commit-evaluator: raw samples stored in $RUN_RAW"
+
+test "$compare_status" -eq 0 || exit "$compare_status"
 
 if test "${EKP_LIVE_COMMIT_SKIP_AUDIT:-0}" = 1; then
   printf '%s\n' "live-commit-evaluator: performance and parity gates pass"

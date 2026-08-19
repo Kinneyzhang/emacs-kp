@@ -20,17 +20,20 @@ cannot satisfy the source gate.
 
 The corrected width-80, two-row, GC-excluded matrix preserves layout parity,
 zero-work ordinary keys, valid GC exclusion, conflict freedom, and
-non-regression. Its source candidate p95/p99 are 23.294 ms for C and 78.593
-ms for Elisp, so the evaluator correctly remains red. The public source
-benchmark independently records C append/hard-boundary p99 near 19.9/30.7 ms
-and Elisp near 49.3/50.8 ms; byte-compiled production remains below 16 ms.
+non-regression. Its source candidate total p95/p99 are 23.217/23.217 ms for
+C and 79.724/79.724 ms for Elisp, so the evaluator correctly remains red.
+The newly measured append owners account for C at 17.161 ms append and
+1.187 ms append-DP p95, and Elisp at 73.293 ms append and 57.063 ms
+append-DP p95. The public source benchmark independently records C
+append/hard-boundary p99 near 19.9/30.7 ms and Elisp near 49.3/50.8 ms;
+byte-compiled production remains below 16 ms.
 
-Profiling attributes the Elisp structural cost primarily to the incremental
-1D DP pass and the C cost to live-plan construction/publication around the
-native call. No single cache-key or validation call owns enough time to make
-a safe one-line optimization. A broad DP or projection rewrite would need a
-new red/green parity matrix and architecture decision; it is not smuggled into
-this correctness hardening change.
+The evaluator now attributes the Elisp structural cost primarily to the
+incremental 1D DP pass and the C cost to live-plan construction around the
+native call. No cache-key or validation call owns enough time to make a safe
+one-line optimization. A broad DP or projection rewrite would need a new
+red/green parity matrix and architecture decision; it is not smuggled into
+this measurement change.
 
 ## Consequences
 
@@ -40,6 +43,9 @@ this correctness hardening change.
 - The next performance task must optimize a measured structural owner while
   preserving exact C/Elisp parity, source-clean projection, and zero-work
   point motion.
+- Every run now keeps nonempty baseline/candidate JSONL under a unique raw
+  directory and replaces the report only after comparison, so interruption
+  cannot erase the last evidence.
 
 ## Rollback
 

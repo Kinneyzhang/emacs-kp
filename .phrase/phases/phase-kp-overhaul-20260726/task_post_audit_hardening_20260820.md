@@ -55,3 +55,7 @@
   - `issue028` is part of this task: each baseline/candidate evaluator round
     must explicitly load source files from its own code root, never rely on
     local `.elc` precedence.
+  - The evaluator now records `append_ms` and `append_dp_ms` and preserves
+    nonempty raw JSONL per run. Current source-fresh p95 is 17.161/1.187 ms
+    for C append/append-DP and 73.293/57.063 ms for Elisp; choose a
+    production optimization only after this attribution remains stable.

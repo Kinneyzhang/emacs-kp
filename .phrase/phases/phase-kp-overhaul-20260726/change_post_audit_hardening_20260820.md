@@ -52,6 +52,20 @@
   claimed as complete evidence.
 - **Commit:** `60b299b` and `postmortem` follow-up commit.
 
+## 2026-08-20 — Attribute incremental append cost and preserve raw evidence
+
+- **Modify** `tests/ekp-live-commit-evaluator.el` to time
+  `ekp-layout-plan-append` and `ekp--dp-cache-append` separately in each raw
+  sample and report them beside total/publication timings.
+- **Modify** `tests/run-live-commit-evaluator.sh` to write each run into a
+  unique raw directory and atomically replace the report after comparison.
+- **Evidence:** source-fresh width-80/two-row/GC-excluded candidate p95 is
+  17.161 ms C append / 1.187 ms C append-DP, and 73.293 ms Elisp append /
+  57.063 ms Elisp append-DP; raw JSONL is nonempty and parity/zero-work/GC/
+  conflict/non-regression remain true. No production optimization is claimed
+  yet because the measured DP/append owners require an exact redesign.
+- **Commit:** Pending measurement commit.
+
 ## Verification
 
 - Source-first normal ERT: 295/295.
