@@ -2,8 +2,8 @@
 
 ## phase-kp-overhaul-20260726
 
-- 2026-08-20 lock post-audit hardening goals and tasks (`task037`–`task042`,
-  `task030` continuation; `issue022`–`issue028` opened):
+- 2026-08-20 plan and implement post-audit hardening (`task037`–`task042`,
+  `task030` source-fresh evaluator continuation; `issue022`–`issue028`):
   `.phrase/phases/phase-kp-overhaul-20260726/change_post_audit_hardening_20260820.md`
 - 2026-08-13 close issues awaiting user-visible confirmation (`issue011`–
   `issue017`, `issue019`, `issue020`; `issue018`/`task030` remain open):

@@ -17,4 +17,4 @@
   pass.
 - **Resolved At:** Pending user-visible confirmation.
 - **Resolved By:** Developer implementation and verification.
-- **Commit:** Pending hardening commit.
+- **Commit:** `6a8c7e0`.

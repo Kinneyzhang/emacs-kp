@@ -17,4 +17,4 @@
   live benchmark are complete; full locked matrix remains the task030 gate.
 - **Resolved At:** 2026-08-20.
 - **Resolved By:** Developer evaluator verification.
-- **Commit:** Pending hardening commit.
+- **Commit:** `6a8c7e0`.

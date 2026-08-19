@@ -17,4 +17,4 @@
   suite pass.
 - **Resolved At:** 2026-08-20.
 - **Resolved By:** Developer implementation and lifecycle verification.
-- **Commit:** Pending hardening commit.
+- **Commit:** `6a8c7e0`.

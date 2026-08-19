@@ -38,6 +38,7 @@
   selected baseline/candidate root (`task030`, `issue028`). The corrected
   narrowed matrix still exceeds the source 16 ms target, so `issue018` and
   `task030` remain open.
+- **Commit:** `6a8c7e0`.
 
 ## Verification
 
