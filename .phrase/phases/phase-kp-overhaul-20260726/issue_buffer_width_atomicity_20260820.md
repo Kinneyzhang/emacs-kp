@@ -17,7 +17,7 @@
 - **Fix:** `ekp-justify-region` now validates the width before font-lock or
   projection clearing.
 - **Verification:** Red/green focused ERT 1/1 and source-first full ERT
-  294/294.
+  295/295.
 - **Resolved At:** Pending user-visible confirmation.
 - **Resolved By:** Developer implementation and verification.
 - **Commit:** `6a8c7e0`.

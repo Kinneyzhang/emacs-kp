@@ -4,15 +4,16 @@
   `ekp-justify-region` requests failure-atomic. Add red tests for zero,
   negative, non-integer, and projection-preservation cases.
   - Source: post-audit buffer probe and `plan_post_audit_hardening_20260820.md`.
-  - Validation: focused buffer ERT 4/4 plus source-preferred full ERT 294/294.
+  - Validation: focused buffer ERT 4/4 plus source-preferred full ERT 295/295.
 
 - task038 [x] Resolve backward-delete live projection semantics. Add a public
   edit-path regression at the narrowest reproducible width and update the
   live-layout spec/postmortem with the accepted invariant.
   - Source: `postmortem/20260730-incremental-live-append-ownership.md` and
     `plan_post_audit_hardening_20260820.md`.
-  - Validation: focused live-edit ERT 4/4, randomized ERT 294/294, and
-    source-first isolated ERT 294/294 process runs.
+  - Validation: focused live-edit ERT 4/4, randomized ERT 295/295, and
+    source-first isolated ERT 294/294 process runs plus focused isolated
+    coverage of the later batch-position test.
 
 - task039 [x] Make hyphenation locale resolution try the exact normalized
   locale registry before short-code fallback. Add equivalent BCP-47/underscore
@@ -20,7 +21,7 @@
   - Source: `ekp-hyphen.el`, `plan_dictionary_governance_20260728.md`, and
     the post-audit locale probe.
   - Validation: focused dictionary ERT 11/11, manifest check, and full ERT
-    294/294.
+    295/295.
 
 - task040 [x] Validate C hyphen and forbidden position vectors for the exact
   exclusive break-index domain, monotonic ordering, and duplicate policy
@@ -37,7 +38,7 @@
   - Source: `888a401`, `plan_test_isolation_20260728.md`, and the post-audit
     clean-source failure.
   - Validation: source loader symbol checks, clean-source showcase 3/3,
-    normal/random/isolated 294-test inventories, and GUI contract checks.
+    normal/random/isolated 295-test inventories, and GUI contract checks.
 
 - task042 [x] Remove manual buffer integrations when no spans remain and
   auto-mode does not own the lifecycle. Preserve composition with foreign

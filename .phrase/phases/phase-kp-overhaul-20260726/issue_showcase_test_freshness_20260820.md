@@ -18,7 +18,7 @@
 - **Fix:** The automatic inline face is restored; one source loader uses
   `load-file` for every production/test source and all runners select the
   complete ERT registry.
-- **Verification:** Source-first showcase 3/3, normal/random/isolated 294-test
+- **Verification:** Source-first showcase 3/3, normal/random/isolated 295-test
   inventories, and GUI contract checks pass.
 - **Resolved At:** Pending user-visible confirmation.
 - **Resolved By:** Developer implementation and verification.

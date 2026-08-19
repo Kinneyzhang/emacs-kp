@@ -42,10 +42,11 @@
 
 ## Verification
 
-- Source-first normal ERT: 294/294.
-- Source-first seeded random ERT: 294/294, including all nine GUI verifier
+- Source-first normal ERT: 295/295.
+- Source-first seeded random ERT: 295/295, including all nine GUI verifier
   tests previously omitted by the name filter.
-- Per-test isolated ERT: 294/294 process runs logged `0 unexpected`.
+- Per-test isolated ERT: 294/294 process runs logged `0 unexpected`; the
+  later batch-position test is covered by focused isolated C ERT.
 - C focused ERT: 15/15; C portable build warning-clean; source fuzz:
   300/300 with zero failures; checkdoc, release, dictionary, and shell gates
   pass.
