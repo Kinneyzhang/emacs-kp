@@ -50,7 +50,7 @@
   conflict, and non-regression checks true. The high-row full matrix was
   stopped after a source DP cell exceeded two minutes of CPU; it is not
   claimed as complete evidence.
-- **Commit:** Pending documentation commit.
+- **Commit:** `60b299b` and `postmortem` follow-up commit.
 
 ## Verification
 
