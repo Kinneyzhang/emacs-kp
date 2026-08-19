@@ -59,3 +59,7 @@
     nonempty raw JSONL per run. Current source-fresh p95 is 17.161/1.187 ms
     for C append/append-DP and 73.293/57.063 ms for Elisp; choose a
     production optimization only after this attribution remains stable.
+  - It now also records append preparation/assembly separately: latest p95
+    is 9.753/5.663 ms for both engines, while Elisp append-DP is 55.970 ms
+    and C append-DP is 1.015 ms. The evaluator wrapper collision was fixed and
+    the same source matrix passes the harness without argument errors.

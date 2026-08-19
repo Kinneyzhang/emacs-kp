@@ -66,6 +66,18 @@
   yet because the measured DP/append owners require an exact redesign.
 - **Commit:** `db6e6b9`.
 
+## 2026-08-20 — Split append preparation, assembly, and DP timings
+
+- **Modify** the evaluator to time `ekp--append-para` and
+  `ekp--layout-plan-from-para` independently, fixing a wrapper-name collision
+  found by the first red run.
+- **Evidence:** latest source-fresh candidate p95 is C append/append-DP
+  16.953/1.015 ms and Elisp append/append-DP 71.896/55.970 ms; both engines
+  spend about 9.753 ms in append preparation and 5.663 ms in plan assembly.
+  The report remains red, raw JSONL is nonempty, and the wrapper itself now
+  passes the same matrix without argument errors.
+- **Commit:** Pending measurement commit.
+
 ## Verification
 
 - Source-first normal ERT: 295/295.

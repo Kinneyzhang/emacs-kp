@@ -35,6 +35,11 @@ one-line optimization. A broad DP or projection rewrite would need a new
 red/green parity matrix and architecture decision; it is not smuggled into
 this measurement change.
 
+The finer attribution separates the latest source-fresh append p95 into
+`append_para`/`append_plan`: C 9.753/5.663 ms and Elisp 9.753/5.663 ms. The
+Elisp `append_dp` remains 55.970 ms; C `append_dp` remains 1.015 ms. This is
+why a C-only change cannot close the locked gate.
+
 ## Consequences
 
 - `issue028` is closed as an evaluator-integrity defect.
