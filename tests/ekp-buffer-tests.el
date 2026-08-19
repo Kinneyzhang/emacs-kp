@@ -827,7 +827,7 @@
                      (1- (point)) 'ekp-buffer--display))))))
 
 (ert-deftest ekp-buffer-test-live-backward-wrap-crossing-commits-once ()
-  "Deleting into the previous native row publishes one atomic plan."
+  "Deleting into the previous native row keeps the live transaction local."
   (let ((text
          "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu")
         (calls 0)
@@ -845,8 +845,8 @@
                      (setq calls (1+ calls))
                      (apply original arguments))))
           (call-interactively #'delete-backward-char)
-          (should (= calls 1))
-          (should-not ekp-buffer--live-edit)
+          (should (= calls 0))
+          (should ekp-buffer--live-edit)
           (should (equal (substring-no-properties (buffer-string))
                          (concat text " xy"))))))))
 
@@ -2420,6 +2420,42 @@ keeps the buffer justified, and leaves it unmodified."
     (read-only-mode 1)
     (should-error (call-interactively #'ekp-justify-region)
                   :type 'buffer-read-only)))
+
+(ert-deftest ekp-buffer-test-justify-invalid-width-preserves-projection ()
+  "Invalid manual widths signal before clearing an existing projection."
+  (ekp-buffer-test--with-text "invalid width must preserve this projection"
+    (ekp-justify-region (point-min) (point-max) 20)
+    (let ((before (buffer-substring (point-min) (point-max)))
+          (spans ekp-buffer--spans))
+      (dolist (width '(0 -1 1.5 "80"))
+        (should-error (ekp-justify-region (point-min) (point-max) width)
+                      :type 'user-error)
+        (should (equal-including-properties
+                 (buffer-substring (point-min) (point-max)) before))
+        (should (eq ekp-buffer--spans spans))))))
+
+(ert-deftest ekp-buffer-test-justify-empty-removes-unused-integrations ()
+  "Manual justification does not retain hooks when no span was installed."
+  (ekp-buffer-test--with-text ""
+    (ekp-justify-region (point-min) (point-max) 20)
+    (should-not ekp-buffer--spans)
+    (should-not ekp-buffer--filter-installed)
+    (should-not (memq #'ekp-buffer--before-change
+                      before-change-functions))
+    (should-not (memq #'ekp-buffer--after-layout-change
+                      after-change-functions))))
+
+(ert-deftest ekp-buffer-test-justify-foreign-only-removes-unused-integrations ()
+  "A foreign-only paragraph does not retain manual EKP integrations."
+  (ekp-buffer-test--with-text "foreign ownership keeps this paragraph natural"
+    (put-text-property (point-min) (point-max) 'display "foreign")
+    (ekp-justify-region (point-min) (point-max) 20)
+    (should-not ekp-buffer--spans)
+    (should-not ekp-buffer--filter-installed)
+    (should-not (memq #'ekp-buffer--before-change
+                      before-change-functions))
+    (should-not (memq #'ekp-buffer--after-layout-change
+                      after-change-functions))))
 
 ;;;; Commands and mode integration
 

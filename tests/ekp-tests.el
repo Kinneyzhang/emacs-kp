@@ -279,7 +279,16 @@ Used to verify no content is lost by justification."
 (ert-deftest ekp-test-hyphen-lang-fallback ()
   "Short language codes resolve to a dictionary."
   (should (ekp-hyphen-create "en"))
-  (should-error (ekp-hyphen-create "zz_XX")))
+  (dolist (locale '("zz_XX" "zz-XX"))
+    (should-error (ekp-hyphen-create locale)
+                  :type 'ekp-hyphen-dictionary-not-found)))
+
+(ert-deftest ekp-test-hyphen-normalized-locale-prefers-exact-dictionary ()
+  "Equivalent locale spellings resolve before the short-code fallback."
+  (dolist (locale '("de_CH" "de-CH" "de_ch" "DE-CH"))
+    (should (equal (file-name-nondirectory
+                    (ekp-hyphen--resolve-lang locale))
+                   "hyph_de_CH.dic"))))
 
 (ert-deftest ekp-test-hyphen-alternative-languages-fail-closed ()
   "Replacement-pattern dictionaries must not degrade to plain Liang breaks.
@@ -302,6 +311,8 @@ DP represents break-specific replacement widths."
   ;; Esperanto also contains slash-prefixed patterns whose libhyphen
   ;; meaning is not representable as an ordinary Liang pattern.
   (should-error (ekp-hyphen-create "eo")
+                :type 'ekp-hyphen-unsupported-pattern)
+  (should-error (ekp-hyphen-create "hu-HU")
                 :type 'ekp-hyphen-unsupported-pattern))
 
 (ert-deftest ekp-test-hyphen-alternative-error-reaches-public-dispatch ()

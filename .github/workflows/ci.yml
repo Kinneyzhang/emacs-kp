@@ -167,8 +167,5 @@ jobs:
         shell: pwsh
         run: >
           emacs -Q --batch -L . -L tests
-          -l tests/ekp-tests.el
-          -l tests/ekp-buffer-tests.el
-          -l tests/ekp-gui-tests.el
-          -l tests/ekp-c-tests.el
+          --eval "(load-file \"tests/load-project-source.el\")"
           -f ert-run-tests-batch-and-exit

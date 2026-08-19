@@ -30,6 +30,9 @@
 (defconst ekp-live-commit-evaluator--maximum-regression 15.0)
 (defconst ekp-live-commit-evaluator--default-gc-threshold
   gc-cons-threshold)
+(defconst ekp-live-commit-evaluator--source-files
+  '("ekp-utils.el" "ekp-hyphen.el" "ekp.el" "ekp-buffer.el")
+  "Production source files loaded explicitly for every measured root.")
 (defconst ekp-live-commit-evaluator--corpus
   (concat
    " extraordinary editing continues smoothly 中文拉丁混排"
@@ -52,6 +55,14 @@
 (defvar ekp-live-commit-evaluator--transaction-ms 0.0)
 (defvar ekp-live-commit-evaluator--signature-ms 0.0)
 (defvar ekp-live-commit-evaluator--cache-ms 0.0)
+
+(defun ekp-live-commit-evaluator--load-source-root ()
+  "Load every production file from `EKP_LIVE_COMMIT_CODE_ROOT'."
+  (let ((root (getenv "EKP_LIVE_COMMIT_CODE_ROOT")))
+    (unless root
+      (error "EKP_LIVE_COMMIT_CODE_ROOT is required for measurement"))
+    (dolist (file ekp-live-commit-evaluator--source-files)
+      (load-file (expand-file-name file root)))))
 
 (defun ekp-live-commit-evaluator--env-number (name fallback)
   "Return numeric environment variable NAME, or FALLBACK."
@@ -692,6 +703,7 @@
 
 (if (equal (getenv "EKP_LIVE_COMMIT_MODE") "compare")
     (ekp-live-commit-evaluator--compare)
+  (ekp-live-commit-evaluator--load-source-root)
   (ekp-live-commit-evaluator--write-record
    (ekp-live-commit-evaluator--measure-round)))
 

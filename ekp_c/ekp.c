@@ -94,6 +94,22 @@ static ptrdiff_t paragraph_field_length(int field, ptrdiff_t prefix_len)
     }
 }
 
+static bool strictly_increasing_positions_p(emacs_env *env, emacs_value vector,
+                                             int32_t minimum, int32_t maximum)
+{
+    ptrdiff_t length = env->vec_size(env, vector);
+    int32_t previous = minimum - 1;
+
+    for (ptrdiff_t i = 0; i < length; i++) {
+        int32_t position = clamp32(env->extract_integer(
+            env, env->vec_get(env, vector, i)));
+        if (position < minimum || position > maximum || position <= previous)
+            return false;
+        previous = position;
+    }
+    return true;
+}
+
 static const char *validate_paragraph_shapes(emacs_env *env, emacs_value *args)
 {
     static const int vectors[] = {0, 1, 2, 3, 4, 5, 6, 9, 10, 11, 12};
@@ -134,6 +150,11 @@ static const char *validate_paragraph_values(emacs_env *env, emacs_value *args)
     if (env->extract_integer(env, args[7]) < 0 ||
         env->extract_integer(env, args[13]) < 0)
         return "EKP C hyphen width and protrusion must be nonnegative";
+    int32_t box_count = clamp32(env->vec_size(env, args[0]) - 1);
+    if (!strictly_increasing_positions_p(env, args[6], 0, box_count - 1))
+        return "EKP C hyphen positions must be unique sorted box indices";
+    if (!strictly_increasing_positions_p(env, args[11], 1, box_count))
+        return "EKP C forbidden positions must be unique sorted gap indices";
     return NULL;
 }
 

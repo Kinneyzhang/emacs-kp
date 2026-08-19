@@ -42,6 +42,7 @@ run_round()
   EKP_LIVE_COMMIT_LABEL=$label \
   EKP_LIVE_COMMIT_ROUND=$round \
   EKP_LIVE_COMMIT_OUTPUT=$output \
+  EKP_LIVE_COMMIT_CODE_ROOT=$code_root \
     "$EMACS_BIN" -Q --batch -L "$code_root" -L "$ROOT/tests" \
       -l "$ROOT/tests/ekp-live-commit-evaluator.el"
 }

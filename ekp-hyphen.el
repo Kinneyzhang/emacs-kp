@@ -73,22 +73,29 @@ LEFT/RIGHT: minimum chars before first / after last break."
 
 ;;; Dictionary Loading
 
+(defun ekp-hyphen--normalize-lang (lang)
+  "Return the normalized registry key for LANG."
+  (downcase (replace-regexp-in-string "-" "_" lang)))
+
 (defun ekp-hyphen-load-languages (dir)
   "Scan DIR for .dic files, populate language registry."
   (dolist (file (directory-files dir t "\\.dic\\'"))
     (let* ((name (file-name-nondirectory file))
            (lang (replace-regexp-in-string "\\(^hyph_\\|\\.dic$\\)" "" name))
+           (normalized (ekp-hyphen--normalize-lang lang))
            (short (car (split-string lang "_"))))
       (puthash lang file ekp-hyphen--langs)
+      (puthash normalized file ekp-hyphen--langs)
       (unless (gethash short ekp-hyphen--langs-short)
         (puthash short file ekp-hyphen--langs-short)))))
 
 (defun ekp-hyphen--resolve-lang (lang)
   "Resolve LANG to dictionary path, trying exact then short forms."
   (or (gethash lang ekp-hyphen--langs)
-      (let* ((norm (downcase (replace-regexp-in-string "-" "_" lang)))
+      (let* ((norm (ekp-hyphen--normalize-lang lang))
              (parts (split-string norm "_"))
              found)
+        (setq found (gethash norm ekp-hyphen--langs))
         (while (and parts (not found))
           (setq found (gethash (string-join parts "_")
                                ekp-hyphen--langs-short)

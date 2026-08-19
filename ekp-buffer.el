@@ -905,6 +905,7 @@ EFFECTIVE-END includes the source boundary owned by the line."
              (and current-prefix-arg
                   (prefix-numeric-value current-prefix-arg))))))
   (setq pixel (or pixel (ekp-buffer--effective-width)))
+  (ekp--validate-width pixel)
   (let ((start (min beg end))
         (finish (max beg end)))
     (setq beg start
@@ -925,7 +926,9 @@ EFFECTIVE-END includes the source boundary owned by the line."
           (setq ekp-buffer--conflicts nil)
           (dolist (range (ekp-buffer--paragraph-ranges beg end))
             (ekp-buffer--layout-paragraph (car range) (cdr range) pixel))
-          (ekp-buffer--install-integrations)
+          (if (or ekp-auto-justify-mode ekp-buffer--spans)
+              (ekp-buffer--install-integrations)
+            (ekp-buffer--remove-integrations))
           (goto-char point-before)
           (when mark-before
             (set-marker (mark-marker) (marker-position mark-before)))
@@ -1939,7 +1942,7 @@ When START and FINISH are non-nil, copy only that source interval."
          (native (and end (ekp-buffer--native-row-start end))))
     (and start end
          (if native
-             (/= native start)
+             (> native start)
            (and (< start end)
                 (> (ekp--measured-width
                     (ekp-buffer--logical-substring start end))

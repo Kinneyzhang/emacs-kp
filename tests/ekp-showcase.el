@@ -47,10 +47,9 @@
         (mixed (concat "中英混排是 Emacs 里最常见的场景: The quick brown fox "
                        "jumps over the lazy dog, 而 internationalization "
                        "这样的长词在窄栏会按 Liang 模式断词。自动行内代码 "
-                       "(ekp-pixel-justify paragraph-text target-width 'justify nil)"
-                       ;; (propertize
-                       ;;  "(ekp-pixel-justify paragraph-text target-width 'justify nil)"
-                       ;;             'face 'ekp-showcase-inline-code)
+                       (propertize
+                        "(ekp-pixel-justify paragraph-text target-width 'justify nil)"
+                        'face 'ekp-showcase-inline-code)
                        " 可以在合法空白边界附近换行,但不会插入"
                        " discretionary hyphen。"))
         (atoms (concat "行内原子演示:手动硬原子 "

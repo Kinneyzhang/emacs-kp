@@ -9,19 +9,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 case "$ORDER" in
   "")
     exec "$EMACS" -Q --batch -L "$ROOT" -L "$ROOT/tests" \
-         -l "$ROOT/tests/ekp-tests.el" \
-         -l "$ROOT/tests/ekp-buffer-tests.el" \
-         -l "$ROOT/tests/ekp-gui-tests.el" \
-         -l "$ROOT/tests/ekp-c-tests.el" \
+         -l "$ROOT/tests/load-project-source.el" \
          -f ert-run-tests-batch-and-exit
     ;;
   --random-order)
     exec "$EMACS" -Q --batch -L "$ROOT" -L "$ROOT/tests" \
-         -l "$ROOT/tests/ekp-tests.el" \
-         -l "$ROOT/tests/ekp-buffer-tests.el" \
-         -l "$ROOT/tests/ekp-gui-tests.el" \
-         -l "$ROOT/tests/ekp-c-tests.el" \
-         -l "$ROOT/tests/run-tests-random-order.el" \
+         -l "$ROOT/tests/load-project-source.el" \
          -f ekp-tests-run-random-order
     ;;
   *)

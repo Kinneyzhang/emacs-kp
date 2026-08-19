@@ -26,7 +26,7 @@
   (interactive)
   (let* ((seed (string-to-number (or (getenv "EKP_TEST_SEED") "20260728")))
          (tests
-          (ert-select-tests "^ekp-\\(?:test\\|[[:alnum:]-]+-test\\)-" t))
+          (ert-select-tests t t))
          (names (mapcar #'ert-test-name tests))
          (selector
           (cons 'member (ekp-tests--permuted-names names seed))))

@@ -30,6 +30,12 @@
         [0] [0] [0] [] 0 10
         [0 0] [0 0] [] [0 0] 0 10))
 
+(defun ekp-c-tests--position-args ()
+  "Return valid direct C arguments with several position slots."
+  (list [0 10 20 30] [0 10 20 30] [0 10 20 30]
+        [0 0 0] [0 0 0] [0 0 0] [0 2] 0 15
+        [0 0 0 0] [0 0 0 0] [1 3] [0 0 0 0] 0 15))
+
 (ert-deftest ekp-c-test-rejects-non-vector-schema-field ()
   "Schema errors signal the module's explicit input condition."
   (skip-unless (ekp-c-tests--available))
@@ -60,6 +66,33 @@
   (let ((args (ekp-c-tests--valid-args)))
     (setf (nth 3 args) ["not-an-integer"])
     (should-error (apply #'ekp-c-break-with-arrays args)
+                  :type 'ekp-c-invalid-input)))
+
+(ert-deftest ekp-c-test-rejects-invalid-break-position-vectors ()
+  "Position vectors must be in range, strictly sorted, and unique."
+  (skip-unless (ekp-c-tests--available))
+  (dolist (case '((6 [-1]) (6 [3]) (6 [2 1]) (6 [1 1])
+                  (11 [0]) (11 [4]) (11 [2 1]) (11 [2 2])))
+    (let ((args (ekp-c-tests--position-args)))
+      (setf (nth (car case) args) (cadr case))
+      (should-error (apply #'ekp-c-break-with-arrays args)
+                    :type 'ekp-c-invalid-input))))
+
+(ert-deftest ekp-c-test-accepts-position-boundaries ()
+  "Valid edge positions preserve the direct API result contract."
+  (skip-unless (ekp-c-tests--available))
+  (let* ((args (ekp-c-tests--position-args))
+         (result (apply #'ekp-c-break-with-arrays args)))
+    (should (consp result))
+    (should (listp (car result)))
+    (should (numberp (cdr result)))))
+
+(ert-deftest ekp-c-test-batch-rejects-invalid-position-vectors ()
+  "Batch preflight applies the same position contract to every paragraph."
+  (skip-unless (ekp-c-tests--available))
+  (let ((args (ekp-c-tests--position-args)))
+    (setf (nth 11 args) [0])
+    (should-error (ekp-c-break-batch (vector (vconcat args)))
                   :type 'ekp-c-invalid-input)))
 
 (ert-deftest ekp-c-test-batch-rejects-short-paragraph-vector ()
