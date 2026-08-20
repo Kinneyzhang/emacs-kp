@@ -67,3 +67,15 @@ structure/ownership boundary under a new architecture decision.
 Revert the evaluator source bootstrap and its test-gate documentation only;
 runtime layout behavior and valid C/API contracts are independent of this
 decision.
+
+## Resolution update — 2026-08-20
+
+The user-selected native automatic live-append backend is now enabled by
+default for prepared 1D append DP, while full/string dispatch remains governed
+by `ekp-use-c-module`. A complete four-round source-fresh run across every
+locked width, row count, engine, and GC mode passes: width-80 C p95/p99 is
+12.010/14.622 ms and the Elisp-configured live path is 10.980/11.194 ms.
+Ordinary-key p99 is 0.551 ms; parity, zero-work, GC, conflict, and
+non-regression checks are green. `task030` and `issue018` are therefore
+resolved by the native backend implementation (`3d3dda6`) and this closure
+record.

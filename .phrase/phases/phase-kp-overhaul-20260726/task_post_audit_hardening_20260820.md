@@ -4,14 +4,14 @@
   `ekp-justify-region` requests failure-atomic. Add red tests for zero,
   negative, non-integer, and projection-preservation cases.
   - Source: post-audit buffer probe and `plan_post_audit_hardening_20260820.md`.
-  - Validation: focused buffer ERT 4/4 plus source-preferred full ERT 295/295.
+  - Validation: focused buffer ERT 4/4 plus source-preferred full ERT 296/296.
 
 - task038 [x] Resolve backward-delete live projection semantics. Add a public
   edit-path regression at the narrowest reproducible width and update the
   live-layout spec/postmortem with the accepted invariant.
   - Source: `postmortem/20260730-incremental-live-append-ownership.md` and
     `plan_post_audit_hardening_20260820.md`.
-  - Validation: focused live-edit ERT 4/4, randomized ERT 295/295, and
+  - Validation: focused live-edit ERT 4/4, randomized ERT 296/296, and
     source-first isolated ERT 294/294 process runs plus focused isolated
     coverage of the later batch-position test.
 
@@ -21,7 +21,7 @@
   - Source: `ekp-hyphen.el`, `plan_dictionary_governance_20260728.md`, and
     the post-audit locale probe.
   - Validation: focused dictionary ERT 11/11, manifest check, and full ERT
-    295/295.
+    296/296.
 
 - task040 [x] Validate C hyphen and forbidden position vectors for the exact
   exclusive break-index domain, monotonic ordering, and duplicate policy
@@ -38,7 +38,7 @@
   - Source: `888a401`, `plan_test_isolation_20260728.md`, and the post-audit
     clean-source failure.
   - Validation: source loader symbol checks, clean-source showcase 3/3,
-    normal/random/isolated 295-test inventories, and GUI contract checks.
+    normal/random/isolated 296-test inventories, and GUI contract checks.
 
 - task042 [x] Remove manual buffer integrations when no spans remain and
   auto-mode does not own the lifecycle. Preserve composition with foreign
@@ -48,7 +48,7 @@
   - Validation: focused integration ERT 4/4 and full source-first buffer
     suite.
 
-- task030 [ ] Re-profile and, if still necessary, optimize the remaining
+- task030 [x] Re-profile and, if still necessary, optimize the remaining
   source-instrumented narrow live-append structural commit path after
   task037–task042. Keep exact parity, source-clean projection, and zero-work
   point motion as hard constraints; close only on the locked 16 ms gate.
@@ -67,8 +67,8 @@
     `ekp-auto-justify-native-append`: loaded C DP is used only for prepared
     auto live append, while full/string `ekp-use-c-module=nil` remains pure
     Elisp and unavailable native modules fall back exactly. The source
-    append-DP p95 drops from roughly 56 ms to roughly 2.1 ms in the bounded
-    all-width/row run; preparation and assembly remain the active budget
-    owners. Width-80 C candidate p95/p99 is 14.190/16.495 ms, so the locked
-    16 ms gate remains open rather than being marked complete on a noisy
-    single-round result.
+    append-DP p95 drops from roughly 56 ms to roughly 2.2 ms in the complete
+    all-width/row run; preparation and assembly remain exact. The formal
+    four-round source-fresh evaluator passes with width-80 C p95/p99
+    12.010/14.622 ms and Elisp-configured live p95/p99 10.980/11.194 ms,
+    closing the locked 16 ms gate.

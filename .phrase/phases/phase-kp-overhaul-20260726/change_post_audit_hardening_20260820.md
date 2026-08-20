@@ -96,6 +96,23 @@
   16 ms target, so `issue018/task030` stays open.
 - **Commit:** `3d3dda6`.
 
+## 2026-08-20 — Close the locked source-fresh live-append gate
+
+- **Verify** the complete four-round evaluator after the native backend change:
+  every baseline/candidate round loads its own source root across 64/80/96/
+  128/160 px, 2/4/8/16-row fixtures, C/Elisp engines, and default/excluded
+  GC.
+- **Evidence:** width-80 candidate C p95/p99 is 12.010/14.622 ms and the
+  Elisp-configured live path (native append backend) is 10.980/11.194 ms;
+  paired improvements are 77.72/74.03% and 94.19/94.57%. Ordinary-key p99 is
+  0.551 ms. Layout parity, zero-work, GC exclusion, conflict-free, and
+  all-width non-regression checks are true. The evaluator then passes full
+  source-first ERT 296/296, fuzz 300/300, and release checks.
+- **Result:** Mark `task030` and `issue018` resolved; retain the raw samples
+  under `.omx/goals/performance/narrow-live-commit/raw/run.bxULD9` and the
+  JSON report at `.omx/goals/performance/narrow-live-commit/latest-report.json`.
+- **Commit:** this closure-record commit.
+
 ## Verification
 
 - Source-first normal ERT: 296/296.
@@ -106,7 +123,6 @@
 - C focused ERT: 15/15; C portable build warning-clean; source fuzz:
   300/300 with zero failures; checkdoc, release, dictionary, and shell gates
   pass.
-- Corrected source evaluator: parity, zero-work, GC, conflicts, and width
-  non-regression pass. The bounded all-width/row source round still reports
-  C p99 16.495 ms at width 80, so the performance issue is intentionally not
-  closed.
+- Complete source evaluator: parity, zero-work, GC, conflicts, and width
+  non-regression pass; width-80 C/Elisp p99 is 14.622/11.194 ms. The formal
+  performance issue is closed.

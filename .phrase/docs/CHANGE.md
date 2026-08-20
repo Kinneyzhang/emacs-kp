@@ -8,6 +8,9 @@
 - 2026-08-20 select and implement native automatic live-append backend
   (`task030`; `ekp-auto-justify-native-append`):
   `.phrase/phases/phase-kp-overhaul-20260726/adr_native_live_append_backend_20260820.md`
+- 2026-08-20 close the complete source-fresh live-append performance gate
+  (`task030`, `issue018`):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_post_audit_hardening_20260820.md`
 - 2026-08-13 close issues awaiting user-visible confirmation (`issue011`–
   `issue017`, `issue019`, `issue020`; `issue018`/`task030` remain open):
   `.phrase/phases/phase-kp-overhaul-20260726/change_close_user_confirmation_20260813.md`
