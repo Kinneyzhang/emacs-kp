@@ -11,6 +11,7 @@
 (require 'json)
 
 (defvar ekp-use-c-module)
+(defvar ekp-auto-justify-native-append)
 (defvar ekp-buffer--conflicts)
 (defvar ekp-auto-justify-paragraph-limit)
 (declare-function ekp-auto-justify-mode "ekp-buffer")
@@ -327,7 +328,11 @@
 (defun ekp-live-commit-evaluator--metadata (engine gc-mode width rows)
   "Return sample metadata for ENGINE, GC-MODE, WIDTH, and ROWS."
   `((engine . ,engine) (gc_mode . ,gc-mode)
-    (width . ,width) (rows . ,rows)))
+    (width . ,width) (rows . ,rows)
+    (live_append_backend
+     . ,(if (bound-and-true-p ekp-auto-justify-native-append)
+            "native-c"
+          engine))))
 
 (defun ekp-live-commit-evaluator--collect (metadata)
   "Collect a fixed structural-commit sample count for METADATA."

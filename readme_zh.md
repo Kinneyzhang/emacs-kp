@@ -74,6 +74,12 @@ Elisp 与 C 两个引擎的输出**完全一致**;未启用模块或 C 返回 ni
 Elisp。已启用模块若 signal,则作为后端契约错误直接呈现。若磁盘上的
 模块版本旧于 Elisp 代码的要求,加载会拒绝并提示重新编译。
 
+自动 live append 另有 `ekp-auto-justify-native-append` 开关,默认开启。
+当兼容模块已经加载时,auto-mode 可让已准备好的 append DP 走 native,
+即使 `ekp-use-c-module` 为 nil；完整字符串/buffer 排版仍遵守
+`ekp-use-c-module`。将该开关设为 nil 可强制 live append 使用纯 Elisp；
+模块不可用时会自动回退。
+
 ## 交互使用(buffer 与 region)
 
 `ekp-buffer.el` 把字符串 API 变成 buffer 级命令:

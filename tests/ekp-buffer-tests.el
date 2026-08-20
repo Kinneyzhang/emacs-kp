@@ -826,6 +826,34 @@
         (should-not (get-text-property
                      (1- (point)) 'ekp-buffer--display))))))
 
+(ert-deftest ekp-buffer-test-live-native-append-bridge-respects-setting ()
+  "Native live append is optional and falls back to the Elisp engine."
+  (skip-unless
+   (and (fboundp #'ekp-c-module-load)
+        (ignore-errors (ekp-c-module-load))
+        (bound-and-true-p ekp-c-module-loaded)))
+  (let (disabled-lines enabled-lines)
+    (dolist (enabled '(nil t))
+      (let ((ekp-use-c-module nil)
+            (ekp-auto-justify-native-append enabled)
+            (calls 0))
+        (ekp-buffer-test--with-mode "alpha beta gamma delt" 20
+          (let ((original (symbol-function 'ekp-c-break-with-arrays)))
+            (cl-letf (((symbol-function 'ekp-c-break-with-arrays)
+                       (lambda (&rest arguments)
+                         (cl-incf calls)
+                         (apply original arguments))))
+              (goto-char (point-max))
+              (ekp-buffer-test--type-string
+               "a long continuation with more words")))
+          (if enabled
+              (progn
+                (should (> calls 0))
+                (setq enabled-lines (ekp-buffer-test--display-lines)))
+            (should (= calls 0))
+            (setq disabled-lines (ekp-buffer-test--display-lines))))))
+    (should (equal enabled-lines disabled-lines))))
+
 (ert-deftest ekp-buffer-test-live-backward-wrap-crossing-stays-local ()
   "Deleting into the previous native row keeps the live transaction local."
   (let ((text

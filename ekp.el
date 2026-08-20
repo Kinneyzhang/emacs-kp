@@ -142,6 +142,9 @@ Set to nil to force pure Elisp implementation."
   :type 'boolean
   :group 'ekp)
 
+(defvar ekp--allow-native-live-append nil
+  "Non-nil when auto live append may use a loaded native DP module.")
+
 ;;;; Glue Parameters
 ;; Glue = flexible space between boxes (Knuth-Plass terminology)
 ;; lws = Latin Word Space, mws = Mixed (Latin-CJK), cws = CJK
@@ -1791,6 +1794,17 @@ POLICY-ANALYSIS is a precomputed result from `ekp--analyze-policies'."
                     (cl-position ?\s old :from-end t :end (1+ tail))))
           (1+ space))))))
 
+(defun ekp--para-has-box-type-p (para type)
+  "Return non-nil when PARA has a box with TYPE at either edge."
+  (seq-some
+   (lambda (box-type)
+     (if (eq type 'cjk)
+         (or (memq (car box-type) '(cjk cjk-open cjk-close))
+             (memq (cdr box-type) '(cjk cjk-open cjk-close)))
+       (or (eq type (car box-type))
+           (eq type (cdr box-type)))))
+   (append (ekp-para-boxes-types para) nil)))
+
 (defun ekp--append-stable-box-count (offsets cutoff)
   "Return the box index in OFFSETS beginning at CUTOFF."
   (let ((position (1- (length offsets)))
@@ -1971,18 +1985,26 @@ Return nil when the tokenizer prefix cannot be reused exactly."
   (let* ((old (ekp-para-string para))
          (cutoff (and (> (length old) 0)
                       (ekp--append-cutoff old string)))
+         (tail (and cutoff (substring string cutoff)))
+         (latin-font
+          (and tail
+               (if (ekp--para-has-box-type-p para 'latin)
+                   (ekp-para-latin-font para)
+                 (ekp-latin-font tail))))
+         (cjk-font
+          (and tail
+               (if (ekp--para-has-box-type-p para 'cjk)
+                   (ekp-para-cjk-font para)
+                 (ekp-cjk-font tail))))
          (fonts-stable
           (and cutoff
-               (equal (ekp-para-latin-font para)
-                      (ekp-latin-font string))
-               (equal (ekp-para-cjk-font para)
-                      (ekp-cjk-font string))))
+               (equal (ekp-para-latin-font para) latin-font)
+               (equal (ekp-para-cjk-font para) cjk-font)))
          (old-offsets (ekp-para-box-offsets-memo para))
          (stable (and fonts-stable old-offsets
                       (ekp--append-stable-box-count old-offsets cutoff))))
     (when (and stable (> stable 0))
-      (let* ((tail (substring string cutoff))
-             (split (ekp--split-with-hyphen tail))
+      (let* ((split (ekp--split-with-hyphen tail))
              (tail-boxes (car split))
              (boxes (ekp--append-prefix-vector
                      (ekp-para-boxes para) stable tail-boxes))
@@ -2787,15 +2809,29 @@ HYPHEN-COUNT)."
   "Get cached DP result from PARA for LINE-PIXEL, or nil."
   (gethash (ekp--dp-key line-pixel) (ekp-para-dp-cache para)))
 
+(defun ekp--c-module-ready-p ()
+  "Return non-nil when the loaded C module exposes the DP entry point."
+  (and (boundp 'ekp-c-module-loaded)
+       ekp-c-module-loaded
+       (fboundp 'ekp-c-break-with-arrays)))
+
 (defun ekp--c-available-p ()
-  "Return non-nil when the C module can be used for DP."
+  "Return non-nil when the C module can be used for ordinary DP."
   (and ekp-use-c-module
-       (boundp 'ekp-c-module-loaded) ekp-c-module-loaded
-       (fboundp 'ekp-c-break-with-arrays)
+       (ekp--c-module-ready-p)
        ;; looseness and parshape need the (position × line-count) DP,
        ;; Elisp only; first-line indent is a scalar the C engine takes
        (= ekp-looseness 0)
        (not ekp-parshape)))
+
+(defun ekp--c-append-available-p ()
+  "Return non-nil when live append may use the native 1D DP path."
+  (and (= ekp-looseness 0)
+       (not ekp-parshape)
+       (or (ekp--c-available-p)
+           (and ekp--allow-native-live-append
+                (bound-and-true-p ekp-auto-justify-native-append)
+                (ekp--c-module-ready-p)))))
 
 (defun ekp--c-sync-params ()
   "Push current K-P penalty settings to the C module."
@@ -2819,8 +2855,10 @@ HYPHEN-COUNT)."
         (ekp--dp-cache-elisp para line-pixel))))
 
 (defun ekp--dp-cache-append (para previous stable line-pixel)
-  "Compute PARA at LINE-PIXEL reusing PREVIOUS states through STABLE."
-  (if (ekp--c-available-p)
+  "Compute PARA at LINE-PIXEL reusing PREVIOUS states through STABLE.
+Automatic live append may use the loaded native 1D DP even when the
+ordinary full-layout engine is explicitly set to Elisp."
+  (if (ekp--c-append-available-p)
       (ekp--dp-cache-via-c para line-pixel)
     (let* ((old (ekp--dp-get-cached previous line-pixel))
            (state (and old (plist-get old :state)))

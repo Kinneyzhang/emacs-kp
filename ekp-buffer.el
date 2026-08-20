@@ -58,6 +58,14 @@
   "Seconds before retrying a live layout deferred by IME composition."
   :type 'number)
 
+(defcustom ekp-auto-justify-native-append t
+  "Use the loaded native module for automatic live append DP.
+This affects only the already prepared live append path.  Explicit string
+layout and full buffer layout still obey `ekp-use-c-module' directly; when
+the native module is unavailable, live append falls back to Elisp."
+  :type 'boolean
+  :group 'ekp-buffer)
+
 (defcustom ekp-auto-justify-paragraph-limit 2048
   "Maximum hard-paragraph characters planned automatically.
 Longer paragraphs stay natural so enabling the mode, pasting, and
@@ -1490,6 +1498,9 @@ Optional CONTEXT supplies a precomputed policy context."
                (equal (cadr key) (cadr old-key)))
       (let* ((context (ekp-buffer--policy-context width))
              (planning-text (ekp-buffer--planning-text text context))
+             (ekp--allow-native-live-append
+              (and ekp-auto-justify-native-append
+                   (bound-and-true-p ekp-c-module-loaded)))
              (plan (ekp-buffer--with-policy-context context
                      (ekp-layout-plan-append
                       old-plan planning-text width))))

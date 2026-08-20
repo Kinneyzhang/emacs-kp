@@ -85,6 +85,13 @@ is surfaced as a backend contract failure. If the module on disk is older
 than the Elisp code expects, loading refuses with a message asking you to
 rebuild.
 
+Automatic live append has a separate `ekp-auto-justify-native-append`
+switch, enabled by default. When a compatible module is already loaded,
+auto-mode may use it for the prepared append DP even if
+`ekp-use-c-module` is nil; full string/buffer layout still follows
+`ekp-use-c-module`. Set the new switch to nil to force pure-Elisp live
+append, or when the module is unavailable it falls back automatically.
+
 ## Interactive Use (buffer & region)
 
 `ekp-buffer.el` turns the string API into buffer-level commands:
