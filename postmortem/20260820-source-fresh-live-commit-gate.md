@@ -40,6 +40,16 @@ The finer attribution separates the latest source-fresh append p95 into
 Elisp `append_dp` remains 55.970 ms; C `append_dp` remains 1.015 ms. This is
 why a C-only change cannot close the locked gate.
 
+## Rejected experiment
+
+An append-only strict-DP specialization was prototyped and gated against the
+existing general strict-reuse result. It required duplicating roughly 160
+lines of transition logic, and the first parity run returned `nil`; it was
+not benchmarked or connected to `ekp--dp-cache-append`. The experiment was
+fully discarded. Maintaining a second transition kernel would create rule
+drift, so the next attempt must optimize a shared kernel or change the data
+structure/ownership boundary under a new architecture decision.
+
 ## Consequences
 
 - `issue028` is closed as an evaluator-integrity defect.
