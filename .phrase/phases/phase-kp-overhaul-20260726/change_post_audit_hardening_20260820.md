@@ -76,7 +76,7 @@
   spend about 9.753 ms in append preparation and 5.663 ms in plan assembly.
   The report remains red, raw JSONL is nonempty, and the wrapper itself now
   passes the same matrix without argument errors.
-- **Commit:** Pending measurement commit.
+- **Commit:** `01001b9`.
 
 ## Verification
 
