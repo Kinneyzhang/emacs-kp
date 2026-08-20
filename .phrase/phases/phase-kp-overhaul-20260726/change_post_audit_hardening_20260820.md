@@ -78,16 +78,35 @@
   passes the same matrix without argument errors.
 - **Commit:** `01001b9`.
 
+## 2026-08-20 — Implement user-selected native live-append backend
+
+- **Modify** `ekp-buffer.el` and `ekp.el` to let prepared automatic live
+  append use the loaded C 1D DP when `ekp-auto-justify-native-append` is
+  non-nil, without changing ordinary full-layout dispatch or the 15-field C
+  ABI. Native-unavailable and option-disabled paths remain Elisp.
+- **Add** `adr_native_live_append_backend_20260820.md`, bilingual README
+  guidance, evaluator backend metadata, and a public buffer regression proving
+  the setting toggles the bridge.
+- **Verification:** native bridge/parity regression 1/1 and source-first ERT
+  296/296 pass. In the bounded all-width, 2/4/8/16-row, GC-excluded
+  source-fresh round, the candidate width-80 C p95/p99 was
+  14.190/16.495 ms and the Elisp-configured live path (native append backend)
+  was 13.484/14.334 ms. Layout parity, zero-work, GC, conflict, and width
+  non-regression checks passed; the C p99 remains just above the locked
+  16 ms target, so `issue018/task030` stays open.
+- **Commit:** `3d3dda6`.
+
 ## Verification
 
-- Source-first normal ERT: 295/295.
-- Source-first seeded random ERT: 295/295, including all nine GUI verifier
+- Source-first normal ERT: 296/296.
+- Source-first seeded random ERT: 296/296, including all nine GUI verifier
   tests previously omitted by the name filter.
 - Per-test isolated ERT: 294/294 process runs logged `0 unexpected`; the
   later batch-position test is covered by focused isolated C ERT.
 - C focused ERT: 15/15; C portable build warning-clean; source fuzz:
   300/300 with zero failures; checkdoc, release, dictionary, and shell gates
   pass.
-- Corrected narrowed source evaluator: parity, zero-work, GC, conflicts, and
-  width non-regression pass, but source candidate p99 remains above 16 ms;
-  the performance issue is intentionally not closed.
+- Corrected source evaluator: parity, zero-work, GC, conflicts, and width
+  non-regression pass. The bounded all-width/row source round still reports
+  C p99 16.495 ms at width 80, so the performance issue is intentionally not
+  closed.

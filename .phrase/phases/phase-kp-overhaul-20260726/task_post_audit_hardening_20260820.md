@@ -63,3 +63,12 @@
     is 9.753/5.663 ms for both engines, while Elisp append-DP is 55.970 ms
     and C append-DP is 1.015 ms. The evaluator wrapper collision was fixed and
     the same source matrix passes the harness without argument errors.
+  - User-selected architecture option 2 is implemented as
+    `ekp-auto-justify-native-append`: loaded C DP is used only for prepared
+    auto live append, while full/string `ekp-use-c-module=nil` remains pure
+    Elisp and unavailable native modules fall back exactly. The source
+    append-DP p95 drops from roughly 56 ms to roughly 2.1 ms in the bounded
+    all-width/row run; preparation and assembly remain the active budget
+    owners. Width-80 C candidate p95/p99 is 14.190/16.495 ms, so the locked
+    16 ms gate remains open rather than being marked complete on a noisy
+    single-round result.

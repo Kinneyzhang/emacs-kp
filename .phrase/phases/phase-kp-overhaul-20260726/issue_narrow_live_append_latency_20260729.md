@@ -2,13 +2,16 @@
 
 ## issue018 [ ] Unique live appends miss the frame budget at very narrow widths
 
-- **Status:** Exact incremental implementation verified; the locked
-  source-instrumented gate remains open.
+- **Status:** Native live-append backend implemented and verified; the locked
+  source-fresh gate remains open for preparation/assembly latency.
 - **Summary:** Stable transactions removed per-key whole-hard-line planning,
-  and task030 now incrementally extends paragraph preparation, Elisp DP
-  state, and layout lines only at structural row crossings. Byte-compiled
-  production paths are within the 16 ms frame budget; the deliberately
-  source-loaded, fully instrumented evaluator still exceeds it.
+  and task030 incrementally extends paragraph preparation, DP state, and
+  layout lines only at structural row crossings. The user-selected
+  `ekp-auto-justify-native-append` backend now uses the loaded C 1D DP for
+  prepared live appends even when full layout is configured for Elisp.
+  Byte-compiled production paths are within the 16 ms frame budget; the
+  source-fresh evaluator still exceeds it in Elisp-owned preparation and plan
+  assembly.
 - **Environment:** Emacs 30.2 on macOS, C backend 1.6, benchmark width
   fixed at 80 px, `gc-cons-threshold` bound to
   `most-positive-fixnum` so mutator work is measured without GC pauses.
@@ -70,14 +73,25 @@
   pure-Elisp DP from a safe reachable state, reuses common layout lines, and
   reconstructs only the live dirty source island. Unsupported contexts take
   the unchanged full path. C int32 validation now performs one extraction.
+- **Native backend update (2026-08-20):** `ekp-auto-justify-native-append`
+  now routes prepared 1D live append DP through the loaded C module even when
+  full layout uses Elisp. The option can be disabled for a pure-Elisp live
+  path, and unavailable modules fall back exactly. In a bounded source-fresh
+  all-width, 2/4/8/16-row, GC-excluded round, width-80 candidate append-DP
+  p95/p99 was 2.051/3.127 ms for C and 2.495/3.406 ms for the Elisp-configured
+  live path. Total p95/p99 was 14.190/16.495 ms and 13.484/14.334 ms,
+  respectively; preparation and assembly remain the active budget owners and
+  the C p99 is still just above 16 ms.
 - **Verification:** Exact baseline/C/Elisp hashes and append-chain
   equivalence pass across 64/80/96/128/160 px, 2/4/8/16-row fixtures,
-  default/excluded GC, unsafe fallbacks, and randomized chains. Normal and
-  random-order ERT pass 199/199; 300 fuzz cases, warning-clean production/C
-  compilation, 9/9 C tests, release checks, and reviewed temporal GUI
-  evidence pass.
+  default/excluded GC, unsafe fallbacks, and randomized chains. Current
+  source-first normal and random-order ERT pass 296/296; the native bridge
+  parity regression passes 1/1; 300 fuzz cases, warning-clean production/C
+  compilation, C contract tests, release/dictionary checks, and reviewed
+  temporal GUI evidence pass. The bounded source-fresh performance round
+  remains red only on the C p99 absolute target.
 - **User Confirmation:** Pending; the formal source-instrumented performance
   target also remains open.
 - **Resolved At:** Unresolved.
 - **Resolved By:** Pending.
-- **Commit:** Pending.
+- **Commit:** `3d3dda6` (native backend); performance gate remains open.
