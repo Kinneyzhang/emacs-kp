@@ -1,5 +1,23 @@
 # Tasks: Post-Audit Hardening 2026-08-20
 
+- task044 [x] Restore Emacs 31.1 WERROR compilation by replacing obsolete
+  single-binding `if-let`/`when-let` forms with behavior-identical
+  `if-let*`/`when-let*` forms in production and the live evaluator.
+  - Source: `issue029` and the C1a nine-repository strict-compile gate.
+  - Validation: root `make`; Emacs 31.1 WERROR production and changed-tool
+    compilation; normal/random ERT 296/296; C build and 300-case fuzz;
+    release, local 49-entry dictionary manifest/hash, checkdoc, and diff gates.
+    The network-backed fixed-upstream dictionary fetch was explicitly excluded
+    by the user and is not claimed as evidence.
+
+- task043 [x] Restore the Emacs 31 fresh-source baseline without weakening
+  cache-ownership or marker-noninheritance contracts. Keep policy fixtures
+  mutable and multibyte, and install EKP marker properties in the global
+  `text-property-default-nonsticky` default used by real buffers.
+  - Source: Emacs 31 fresh-source failures in the M0a baseline.
+  - Validation: focused ERT 3/3, normal and seeded-random ERT 296/296,
+    source-load, release, and 49-entry dictionary gates.
+
 - task037 [x] Validate public buffer widths before mutation and make rejected
   `ekp-justify-region` requests failure-atomic. Add red tests for zero,
   negative, non-integer, and projection-preservation cases.

@@ -1790,8 +1790,8 @@ POLICY-ANALYSIS is a precomputed result from `ekp--analyze-policies'."
       (while (and (>= tail 0) (= (aref old tail) ?\s))
         (setq tail (1- tail)))
       (when (>= tail 0)
-        (when-let ((space
-                    (cl-position ?\s old :from-end t :end (1+ tail))))
+        (when-let* ((space
+                     (cl-position ?\s old :from-end t :end (1+ tail))))
           (1+ space))))))
 
 (defun ekp--para-has-box-type-p (para type)
@@ -3606,11 +3606,19 @@ Only property-free, context-stable 1D layouts take this fast path."
   '(ekp-glue ekp-soft-break ekp-soft-hyphen ekp-hidden ekp-justified)
   "Text properties owned by the lossless render/inversion protocol.")
 
+(defun ekp--make-text-property-default-nonsticky (property)
+  "Make PROPERTY nonsticky by default in every buffer."
+  (let ((defaults (copy-tree
+                   (default-toplevel-value
+                    'text-property-default-nonsticky))))
+    (setf (alist-get property defaults) t)
+    (set-default-toplevel-value 'text-property-default-nonsticky defaults)))
+
 ;; Text typed next to a marker character must never inherit the
 ;; marker: a self-inserted char inheriting `ekp-glue' would be treated
 ;; as a synthesized space by the next unjustification and deleted.
 (dolist (prop ekp--layout-marker-properties)
-  (setf (alist-get prop text-property-default-nonsticky) t))
+  (ekp--make-text-property-default-nonsticky prop))
 
 (defun ekp--hide-string (string)
   "Return STRING marked `ekp-hidden' and displayed as nothing."

@@ -1,5 +1,38 @@
 # Change: Post-Audit Hardening 2026-08-20
 
+## 2026-09-01 — Restore Emacs 31.1 strict byte compilation
+
+- **Modify** `ekp.el`, `ekp-utils.el`, and `ekp-hyphen.el` by replacing six
+  obsolete single-binding `if-let`/`when-let` forms with the behavior-identical
+  starred variants.
+- **Modify** `tests/ekp-live-commit-evaluator.el` in the same mechanical way so
+  maintained performance tooling is strict-compile clean too.
+- **Add** `issue029` and close `task044` with exact environment and evidence.
+- **Behavior/Risk:** no data flow, branch, public API, layout, hyphenation,
+  font, module-path, or evaluator behavior changes.
+- **Evidence:** root `make`; Emacs 31.1 WERROR production and changed-tool
+  compilation; normal and seed-20260901 random ERT 296/296; C build; 300-case
+  parity fuzz; release invariants; local 49-entry dictionary manifest/hash;
+  checkdoc; and diff-check. The user explicitly excluded the network-backed
+  fixed-upstream dictionary fetch, so it is not claimed.
+
+## 2026-08-31 — Restore the Emacs 31 fresh-source baseline
+
+- **Modify** `ekp.el` and `ekp-buffer.el` so layout and projection marker
+  properties update the toplevel default of Emacs 31's automatically
+  buffer-local `text-property-default-nonsticky`; new and existing buffers
+  that have no explicit override now inherit the nonsticky protocol.
+- **Modify** `tests/ekp-tests.el` and `tests/ekp-buffer-tests.el` so policy
+  ownership fixtures remain mutable multibyte strings while mutating ASCII
+  code points that Emacs 31 permits in place. The tests still prove that
+  cache keys own the original policy values.
+- **Behavior/Risk:** no layout algorithm or public policy changes. This fixes
+  marker noninheritance in real buffers and removes an Emacs 31-only fixture
+  mutation error.
+- **Evidence:** focused ERT 3/3; source-first normal and seed-20260831 random
+  ERT 296/296; source load, release invariants, 49-entry dictionary manifest,
+  and pinned dictionary update checks pass.
+
 ## 2026-08-20 — Lock follow-up goals and task boundaries
 
 - **Add** `plan_post_audit_hardening_20260820.md` with the evidence-backed

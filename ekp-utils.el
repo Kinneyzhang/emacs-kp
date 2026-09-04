@@ -122,7 +122,7 @@ Use the blank glyph of STRING's Latin font; for a monospace font
 that width is the space's own advance."
   ;; font is monospace, use the pixel of blank
   ;; as word spacing pixel
-  (if-let ((font-family (ekp-monospace-p string)))
+  (if-let* ((font-family (ekp-monospace-p string)))
       (ekp--measured-width
        (propertize " " 'face `(:family ,font-family)))
     (let* ((letter (ekp-get-latin-letter string))
@@ -134,14 +134,14 @@ that width is the space's own advance."
 (defun ekp-latin-font (string)
   "Return the font family used for STRING's Latin letters.
 Fall back to the default face family when STRING has no Latin letter."
-  (if-let ((letter (ekp-get-latin-letter string)))
+  (if-let* ((letter (ekp-get-latin-letter string)))
       (ekp-font-family letter)
     (face-attribute 'default :family)))
 
 (defun ekp-cjk-font (string)
   "Return the font family used for STRING's CJK characters.
 Fall back to the family of a sample CJK glyph when STRING has none."
-  (if-let ((letter (ekp-get-cjk-letter string)))
+  (if-let* ((letter (ekp-get-cjk-letter string)))
       (ekp-font-family letter)
     (ekp-font-family "牛")))
 
@@ -344,7 +344,7 @@ by merging boxes."
 
 (defun ekp-c-module-dir ()
   "Return the C module directory."
-  (when-let ((root-dir (ekp-root-dir)))
+  (when-let* ((root-dir (ekp-root-dir)))
     (expand-file-name "ekp_c" root-dir)))
 
 (defun ekp-c-module-file ()

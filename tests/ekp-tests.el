@@ -2052,7 +2052,13 @@ module is bypassed automatically (it has no looseness support)."
                  '(ekp-glue ekp-soft-break ekp-soft-hyphen ekp-hidden
                    ekp-justified)))
   (dolist (property ekp--layout-marker-properties)
-    (should (eq (alist-get property text-property-default-nonsticky) t))))
+    (should
+     (eq (alist-get property
+                    (default-value 'text-property-default-nonsticky))
+         t))
+    (with-temp-buffer
+      (should
+       (eq (alist-get property text-property-default-nonsticky) t)))))
 
 (ert-deftest ekp-test-layout-plan-maps-source-gaps-and-breaks ()
   "The semantic plan must retain source offsets for every visual decision."
@@ -2813,8 +2819,8 @@ returned the stale looseness-0 layout for the same (string, width)."
   "Policy-analysis cache keys must own mutable public policy strings."
   (ekp-tests--with-clean-state
    (let* ((ekp-use-c-module nil)
-          (suffix (copy-sequence "uX"))
-          (line-start-extra (copy-sequence "《"))
+          (suffix (copy-sequence (string-as-multibyte "uX")))
+          (line-start-extra (copy-sequence "《X"))
           (ekp-number-unit-suffixes (list suffix))
           (ekp-token-break-policies '((number-unit . no-break)))
           (ekp-kinsoku-profile 'custom)
@@ -2823,6 +2829,8 @@ returned the stale looseness-0 layout for the same (string, width)."
           (width 16)
           cache-key first-plan)
      (setq first-plan (ekp-layout-plan text width))
+     (should (multibyte-string-p suffix))
+     (should (multibyte-string-p line-start-extra))
      (should
       (seq-some
        (lambda (interval)
@@ -2835,13 +2843,13 @@ returned the stale looseness-0 layout for the same (string, width)."
      (should cache-key)
      (should (seq-some (lambda (string) (equal string "uX"))
                        (ekp-tests--strings-in-tree cache-key)))
-     (should (seq-some (lambda (string) (equal string "《"))
+     (should (seq-some (lambda (string) (equal string "《X"))
                        (ekp-tests--strings-in-tree cache-key)))
      (store-substring suffix 1 "Y")
-     (store-substring line-start-extra 0 "》")
+     (store-substring line-start-extra 1 "Y")
      (should (seq-some (lambda (string) (equal string "uX"))
                        (ekp-tests--strings-in-tree cache-key)))
-     (should (seq-some (lambda (string) (equal string "《"))
+     (should (seq-some (lambda (string) (equal string "《X"))
                        (ekp-tests--strings-in-tree cache-key)))
      (let ((changed-plan (ekp-layout-plan text width)))
        (should-not

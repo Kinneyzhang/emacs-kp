@@ -71,19 +71,19 @@
 
 (defun ekp-live-commit-evaluator--env-number (name fallback)
   "Return numeric environment variable NAME, or FALLBACK."
-  (if-let ((value (getenv name)))
+  (if-let* ((value (getenv name)))
       (string-to-number value)
     fallback))
 
 (defun ekp-live-commit-evaluator--env-numbers (name fallback)
   "Return comma-separated numeric environment variable NAME, or FALLBACK."
-  (if-let ((value (getenv name)))
+  (if-let* ((value (getenv name)))
       (mapcar #'string-to-number (split-string value "," t "[ \t]+"))
     fallback))
 
 (defun ekp-live-commit-evaluator--env-strings (name fallback)
   "Return comma-separated string environment variable NAME, or FALLBACK."
-  (if-let ((value (getenv name)))
+  (if-let* ((value (getenv name)))
       (split-string value "," t "[ \t]+")
     fallback))
 
