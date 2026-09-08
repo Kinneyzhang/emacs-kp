@@ -169,7 +169,7 @@ LANGUAGE identifies the dictionary in that condition."
                         (lambda (m) (string (string-to-number
                                              (match-string 1 m) 16)))
                         line))
-            (when-let ((parsed (ekp-hyphen--parse-pattern line)))
+            (when-let* ((parsed (ekp-hyphen--parse-pattern line)))
               (puthash (car parsed) (cdr parsed) patterns)
               (setq maxlen (max maxlen (length (car parsed))))))))
         (forward-line 1)))
@@ -227,7 +227,7 @@ by default the dictionary's own LEFTHYPHENMIN/RIGHTHYPHENMIN apply
   (let ((path (or (and lang (ekp-hyphen--resolve-lang lang)) file)))
     (unless path
       (signal 'ekp-hyphen-dictionary-not-found (list lang)))
-    (when-let ((count (gethash path ekp-hyphen--unsupported-cache)))
+    (when-let* ((count (gethash path ekp-hyphen--unsupported-cache)))
       (signal 'ekp-hyphen-unsupported-pattern
               (list (or lang path) path count)))
     (let ((h (or (gethash path ekp-hyphen--cache)

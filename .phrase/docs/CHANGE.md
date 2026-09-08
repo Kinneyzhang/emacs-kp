@@ -2,6 +2,13 @@
 
 ## phase-kp-overhaul-20260726
 
+- 2026-09-01 restore Emacs 31.1 strict byte compilation without behavior
+  changes (`task044`, `issue029`):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_post_audit_hardening_20260820.md`
+- 2026-08-31 restore the Emacs 31 fresh-source baseline while preserving
+  multibyte policy ownership and real-buffer marker noninheritance
+  (`task043`):
+  `.phrase/phases/phase-kp-overhaul-20260726/change_post_audit_hardening_20260820.md`
 - 2026-08-20 plan and implement post-audit hardening (`task037`–`task042`,
   `task030` source-fresh evaluator continuation; `issue022`–`issue028`):
   `.phrase/phases/phase-kp-overhaul-20260726/change_post_audit_hardening_20260820.md`

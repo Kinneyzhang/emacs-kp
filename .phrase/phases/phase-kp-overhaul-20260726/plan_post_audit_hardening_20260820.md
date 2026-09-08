@@ -80,3 +80,15 @@ Stop only when all tasks in this plan have current issue/task evidence,
 closed issues have user-visible or contract-level verification, `issue018`
 is either genuinely closed by its locked gate or explicitly remains open with
 fresh measurements, and the complete diff is committed and reviewed.
+
+## 2026-09-01 Emacs 31 strict-compile follow-up
+
+- `task044` / `issue029` replace the six remaining single-binding
+  `if-let`/`when-let` forms in production and the three forms in the live
+  evaluator with their semantically identical starred variants.
+- No layout, hyphenation, font-selection, module-path, or evaluator behavior
+  may change. Existing ERT coverage locks those paths; Emacs 31.1 WERROR byte
+  compilation is the regression gate for the compatibility defect itself.
+- Closure requires root integration compilation, strict production and changed
+  test-tool compilation, the complete normal and seeded-random ERT suites, C
+  build/parity fuzz, release/dictionary checks, checkdoc, and diff-check.

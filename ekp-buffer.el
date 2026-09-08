@@ -253,7 +253,7 @@ caps the narrowest live window at N pixels."
   "Unicode whitespace that cannot use the ASCII-space projection path.")
 
 (dolist (property ekp-buffer--owned-properties)
-  (setf (alist-get property text-property-default-nonsticky) t))
+  (ekp--make-text-property-default-nonsticky property))
 
 ;;; Setup
 

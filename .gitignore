@@ -5,3 +5,4 @@ archive
 *.o
 *.elc
 AGENTS.md
+!AGENTS.md

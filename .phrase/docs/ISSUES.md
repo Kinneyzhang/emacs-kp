@@ -28,3 +28,4 @@
 - issue026 [ ] [Showcase loses automatic inline policy and test runners can false-green.](../phases/phase-kp-overhaul-20260726/issue_showcase_test_freshness_20260820.md)
 - issue027 [x] [Manual integrations remain installed with no projection owner.](../phases/phase-kp-overhaul-20260726/issue_integration_no_projection_20260820.md)
 - issue028 [x] [Locked live evaluator can measure stale candidate bytecode.](../phases/phase-kp-overhaul-20260726/issue_live_evaluator_source_freshness_20260820.md)
+- issue029 [x] [Emacs 31.1 WERROR rejects obsolete single-binding let macros.](../phases/phase-kp-overhaul-20260726/issue_emacs31_strict_compile_20260901.md)
