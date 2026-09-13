@@ -11,7 +11,7 @@ import sys
 import tempfile
 from urllib.parse import unquote
 
-POLICY_VERSION = 3
+POLICY_VERSION = 4
 DOC_NAMES = {'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'CHANGELOG.zh-CN.md',
              'AGENTS.md', 'docs/manual.md', 'docs/manual.zh-CN.md',
              'docs/architecture.md', 'docs/architecture.zh-CN.md'}
@@ -70,16 +70,8 @@ def check(root, files=None):
             fail(f, 'generated artifact must not be tracked')
         if len(parts)==1 and f.endswith('.el') and any(x in f for x in ['benchmark','-tests','-demo','-showcase']):
             fail(f, 'development code belongs in tests, benchmarks or examples')
-        if f.startswith('tests/') and not f.startswith('tests/fixtures/') and not f.endswith('.el'):
-            fail(f, 'tests/ contains plugin ERT Lisp; tools belong in scripts/ and data in tests/fixtures/')
-        if f.startswith('benchmarks/') and not f.endswith('.el'):
-            fail(f, 'benchmarks/ contains Lisp workloads; runners belong in scripts/')
-        if f.endswith(('.py', '.sh')) and not f.startswith(('scripts/', 'native/vendor/')):
-            fail(f, 'Python/Shell tools belong in scripts/')
-        if f.startswith('scripts/') and Path(f).name.endswith('-tests.el'):
-            fail(f, 'plugin ERT tests belong in tests/')
-        if f.startswith('scripts/') and Path(f).name.startswith('test_') and not f.startswith('scripts/tests/'):
-            fail(f, 'tool tests belong in scripts/tests/')
+        if f.startswith('scripts/') and (Path(f).name.endswith('-tests.el') or Path(f).name.startswith('test_')):
+            fail(f, 'correctness tests belong in tests/; tool tests belong in tests/tools/')
         if external or not f.endswith('.md'): continue
         text = (root / f).read_text()
         # Validate inline and reference-style Markdown links outside fenced code.
@@ -115,28 +107,28 @@ def check(root, files=None):
         for pattern in re.findall(r'\$\(wildcard ((?:examples|tests|scripts|benchmarks)/[^)]+)\)', text):
             if not list(root.glob(pattern)):fail('Makefile', f'empty source discovery: {pattern}')
     if not workspace:
-        manifest_path = root / 'scripts/acceptance.json'
+        manifest_path = root / 'tests/acceptance.json'
         if not manifest_path.is_file():
-            fail('scripts/acceptance.json', 'missing public acceptance inventory')
+            fail('tests/acceptance.json', 'missing public acceptance inventory')
         else:
             try:
                 manifest = json.loads(manifest_path.read_text())
                 cases = manifest['cases']
                 names = [c['name'] for c in cases]
                 if not cases or len(names) != len(set(names)):
-                    fail('scripts/acceptance.json', 'cases must be nonempty and unique')
+                    fail('tests/acceptance.json', 'cases must be nonempty and unique')
                 for case in cases:
                     file = root / case['file']
                     if not case.get('purpose'):
-                        fail('scripts/acceptance.json', 'each scenario needs an observable purpose')
+                        fail('tests/acceptance.json', 'each scenario needs an observable purpose')
                     if not file.is_file() or not re.search(
                             r'^\(ert-deftest ' + re.escape(case['name']) + r'(?=\s|\()',
                             file.read_text(), re.M):
-                        fail('scripts/acceptance.json', f"missing named scenario: {case['name']}")
+                        fail('tests/acceptance.json', f"missing named scenario: {case['name']}")
                 if not re.search(r'^check\s*:[^\n]*\bacceptance\b', makefile.read_text(), re.M):
                     fail('Makefile', 'check must include public acceptance scenarios')
             except (ValueError, KeyError, TypeError, OSError) as error:
-                fail('scripts/acceptance.json', f'invalid inventory: {error}')
+                fail('tests/acceptance.json', f'invalid inventory: {error}')
     return sorted(set(errors))
 
 

@@ -11,5 +11,5 @@ jobs:
       - name: Policy regression tests (workspace)
         run: |
           if [ -f workspace.json ]; then
-            python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+            python3 -m unittest discover -s tests/tools -p 'test_*.py'
           fi

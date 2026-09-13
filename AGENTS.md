@@ -8,12 +8,17 @@ contracts belong in the package manual, architecture document and executable tes
 ## Structure
 
 - Keep runtime Emacs Lisp files at the package root, with the package prefix.
-- Use `tests/` for plugin ERT `.el` tests and their Lisp support files; put data
-  in `tests/fixtures/`. Python/Shell tools and runners belong in `scripts/`,
-  and tests for those tools in `scripts/tests/`. Keep the acceptance manifest
-  at `scripts/acceptance.json`.
-- Use `examples/` for runnable examples, `benchmarks/` for maintained `.el` performance workloads,
-  `scripts/` for development/release tools, and `native/` for native implementations.
+- Organize by responsibility, not file extension. Use `tests/` for correctness
+  scenarios and their helpers, `tests/fixtures/` for data, and `tests/tools/`
+  for development-tool tests. Keep the acceptance inventory at `tests/acceptance.json`.
+- Use `benchmarks/` for performance workloads, dedicated measurement harnesses and
+  input data; use `scripts/` for build, release, environment and general runners.
+  Tests and benchmarks may use Lisp, Python, Shell or appropriate data formats.
+- Use `examples/` for runnable usage examples and `native/` for native implementations.
+  Native subprojects follow their language's own layout. Keep domain resources in
+  descriptive directories such as `dictionaries/`; do not create generic dumping grounds.
+- Share directory meanings and command interfaces across repositories. Create only
+  the directories a repository needs; do not impose identical empty skeletons.
 - Create directories only when they contain maintained files. Use lowercase kebab-case
   directory names. Preserve upstream resource names and license notices.
 - Follow `.editorconfig` for whitespace and encoding; preserve upstream resources.
@@ -52,7 +57,7 @@ contracts belong in the package manual, architecture document and executable tes
   helper names, data layouts and call order are not contracts. Remove obsolete
   version/phase tests; consolidate duplicate scenarios. Keep focused internal tests
   only when they materially protect a difficult algorithm or diagnosed defect.
-- `scripts/acceptance.json` names the maintained public scenarios and their purposes.
+- `tests/acceptance.json` names the maintained public scenarios and their purposes.
   `make check` runs structure validation, compilation and these acceptance cases.
   `make test` runs broader regressions when affected behavior warrants them; GUI
   appearance and performance require their separate acceptance targets.
