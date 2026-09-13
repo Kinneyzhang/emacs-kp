@@ -5,11 +5,11 @@
 ;; Performance benchmarks over the bundled sample texts.  Run:
 ;;
 ;;   # Pure Elisp engine
-;;   emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' \
+;;   emacs -Q --batch -L lisp --eval '(setq ekp-use-c-module nil)' \
 ;;         -l benchmarks/ekp-bench.el
 ;;
 ;;   # C module engine (build native first)
-;;   emacs -Q --batch -L . \
+;;   emacs -Q --batch -L lisp \
 ;;         --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
 ;;         -l benchmarks/ekp-bench.el
 ;;

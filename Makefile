@@ -1,17 +1,17 @@
 .DEFAULT_GOAL := check
 .NOTPARALLEL:
 EMACS ?= emacs
-SOURCES := ekp-utils.el ekp-hyphen.el ekp.el ekp-buffer.el
+SOURCES := lisp/ekp-utils.el lisp/ekp-hyphen.el lisp/ekp.el lisp/ekp-buffer.el
 .PHONY: compile test check clean native-build
 compile:
-	$(EMACS) -Q --batch -L . --eval '(setq load-prefer-newer t byte-compile-error-on-warn t)' -f batch-byte-compile $(SOURCES)
+	$(EMACS) -Q --batch -L lisp --eval '(setq load-prefer-newer t byte-compile-error-on-warn t)' -f batch-byte-compile $(SOURCES)
 test:
 	scripts/run-tests.sh "$(EMACS)"
 check: structure-check compile acceptance
 native-build:
 	$(MAKE) -C native PROFILE=portable
 clean:
-	rm -f *.elc tests/*.elc examples/*.elc benchmarks/*.elc
+	rm -f lisp/*.elc tests/*.elc examples/*.elc benchmarks/*.elc
 
 .PHONY: structure-check setup-hooks
 structure-check:

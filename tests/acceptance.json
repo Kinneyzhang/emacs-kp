@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "load_path": [
-    ".",
+    "lisp",
     "tests",
     "examples"
   ],

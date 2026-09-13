@@ -33,7 +33,7 @@
 ;;                           you whether measurement matches rendering
 ;;                           under your fonts/remappings.
 ;;
-;;   ${EMACS} -Q -L . -L tests -l tests/ekp-gui-verify.el \
+;;   ${EMACS} -Q -L lisp -L tests -l tests/ekp-gui-verify.el \
 ;;         -f ekp-gui-verify-matrix
 ;;                           runs the full matrix (plain, text-scale
 ;;                           up/down, face remap, narrow+scale) and

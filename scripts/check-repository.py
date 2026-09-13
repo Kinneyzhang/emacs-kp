@@ -11,11 +11,11 @@ import sys
 import tempfile
 from urllib.parse import unquote
 
-POLICY_VERSION = 4
+POLICY_VERSION = 5
 DOC_NAMES = {'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'CHANGELOG.zh-CN.md',
              'AGENTS.md', 'docs/manual.md', 'docs/manual.zh-CN.md',
              'docs/architecture.md', 'docs/architecture.zh-CN.md'}
-DIRS = {'tests', 'examples', 'benchmarks', 'scripts', 'docs', 'native',
+DIRS = {'lisp', 'tests', 'examples', 'benchmarks', 'scripts', 'docs', 'native',
         'dictionaries', 'design', '.github', '.gitea', '.githooks'}
 SKIP = {'.git', '__pycache__', 'target', '.omx', '.worktrees', '.claude'}
 SHARED = ('AGENTS.md', '.editorconfig', 'scripts/check-repository.py', 'scripts/run-acceptance.py', '.githooks/pre-commit', '.githooks/commit-msg', 'scripts/check-commit-message.py',
@@ -47,6 +47,9 @@ def check(root, files=None):
     for required in ['README.md', 'AGENTS.md', 'Makefile', 'scripts/check-repository.py',
                      '.githooks/pre-commit', '.githooks/commit-msg', 'scripts/check-commit-message.py', '.github/workflows/structure.yml']:
         if required not in files: fail(required, 'required maintained file is missing')
+    root_lisp = [f for f in files if '/' not in f and f.endswith('.el')]
+    if len(root_lisp) > 1 or (root_lisp and any(f.startswith('lisp/') for f in files)):
+        fail('lisp/', 'multi-file packages keep runtime Lisp together in lisp/; single-file packages may use the root')
     spellings = {}
     for f in files:
         parts = PurePosixPath(f).parts
@@ -95,7 +98,7 @@ def check(root, files=None):
         if not re.search(r'^check\s*:[^\n]*\bstructure-check\b', text, re.M):
             fail('Makefile', 'check must depend on structure-check')
         # Literal source paths in the root Makefile must exist, including phase leftovers.
-        for token in re.findall(r'(?<![\w/.-])(?:tests|scripts|examples|benchmarks)/[\w./*-]+\.(?:el|py|sh)', text):
+        for token in re.findall(r'(?<![\w/.-])(?:lisp|tests|scripts|examples|benchmarks)/[\w./*-]+\.(?:el|py|sh)', text):
             if '*' not in token and not (root/token).is_file():fail('Makefile', f'missing source: {token}')
         for directory in re.findall(r'(?:^|\s)-L ([\w./-]+)', text):
             if directory.startswith('../'):

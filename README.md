@@ -1,5 +1,9 @@
 # Emacs-KP: Knuth-Plass Line Breaking for Emacs
 
+Source layout: runtime code lives in `lisp/`; add that directory to `load-path`
+when using a checkout. Update older checkout configurations from the repository
+root to its `lisp/` subdirectory.
+
 [中文文档](README.zh-CN.md) | [Developer Guide](docs/architecture.md)
 
 Emacs-kp implements the Knuth-Plass optimal line breaking algorithm with
@@ -39,11 +43,11 @@ typesetting, entirely inside Emacs.
 
 ## Installation
 
-Clone the repository and add it to your `load-path` (the
-`dictionaries/` directory must sit next to the `.el` files):
+Clone the repository and add its `lisp/` directory to `load-path`.
+Keep `dictionaries/` and `native/` at the repository root:
 
 ```elisp
-(add-to-list 'load-path "/path/to/emacs-kp")
+(add-to-list 'load-path "/path/to/emacs-kp/lisp")
 (require 'ekp)
 (require 'ekp-buffer)   ; buffer/region commands
 ```

@@ -7,7 +7,10 @@ contracts belong in the package manual, architecture document and executable tes
 
 ## Structure
 
-- Keep runtime Emacs Lisp files at the package root, with the package prefix.
+- Keep multi-file package runtime Lisp in `lisp/`, with the package prefix.
+  A single-file package may keep its one runtime file at the root. Do not split
+  runtime files between both locations. Keep repository roots focused on navigation,
+  configuration and build entry points. Update load paths and release recipes together.
 - Organize by responsibility, not file extension. Use `tests/` for correctness
   scenarios and their helpers, `tests/fixtures/` for data, and `tests/tools/`
   for development-tool tests. Keep the acceptance inventory at `tests/acceptance.json`.

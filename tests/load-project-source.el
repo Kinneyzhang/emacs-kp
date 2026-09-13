@@ -10,10 +10,10 @@
 (let ((root (file-name-directory
              (directory-file-name
               (file-name-directory (or load-file-name buffer-file-name))))))
-  (dolist (file '("ekp-utils.el"
-                  "ekp-hyphen.el"
-                  "ekp.el"
-                  "ekp-buffer.el"
+  (dolist (file '("lisp/ekp-utils.el"
+                  "lisp/ekp-hyphen.el"
+                  "lisp/ekp.el"
+                  "lisp/ekp-buffer.el"
                   "examples/ekp-showcase.el"
                   "tests/ekp-gui-verify.el"
                   "tests/ekp-tests.el"

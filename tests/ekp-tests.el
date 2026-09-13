@@ -4,7 +4,7 @@
 
 ;; Automated test suite for emacs-kp.  All tests are batch-safe:
 ;;
-;;   emacs -Q --batch -L . -l tests/ekp-tests.el \
+;;   emacs -Q --batch -L lisp -l tests/ekp-tests.el \
 ;;         -f ert-run-tests-batch-and-exit
 ;;
 ;; In batch mode text is measured in character columns (1px per

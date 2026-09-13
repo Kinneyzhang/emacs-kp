@@ -473,8 +473,8 @@ make -C native PROFILE=portable      # release-portable default
 make -C native PROFILE=native        # local benchmark only
 make -C native PROFILE=debug         # symbols, no optimization
 make -C native PROFILE=sanitize      # ASan + UBSan
-emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' -l benchmarks/ekp-bench.el
-emacs -Q --batch -L . --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
+emacs -Q --batch -L lisp --eval '(setq ekp-use-c-module nil)' -l benchmarks/ekp-bench.el
+emacs -Q --batch -L lisp --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
       -l benchmarks/ekp-bench.el
 ```
 

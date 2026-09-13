@@ -108,7 +108,7 @@ install: $(MODULE)
 # Test with Emacs
 test: $(MODULE)
 	$(EMACS) -Q --batch \
-		-L . \
+		-L lisp \
 		--eval '(module-load (expand-file-name "./$(MODULE)"))' \
 		--eval '(message "ekp-c version: %s" (ekp-c-version))' \
 		--eval '(ekp-c-init)' \

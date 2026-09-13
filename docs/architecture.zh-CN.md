@@ -398,8 +398,8 @@ make -C native PROFILE=portable      # 默认可移植发布构建
 make -C native PROFILE=native        # 仅本机基准
 make -C native PROFILE=debug         # 调试符号,不优化
 make -C native PROFILE=sanitize      # ASan + UBSan
-emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' -l benchmarks/ekp-bench.el
-emacs -Q --batch -L . --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
+emacs -Q --batch -L lisp --eval '(setq ekp-use-c-module nil)' -l benchmarks/ekp-bench.el
+emacs -Q --batch -L lisp --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
       -l benchmarks/ekp-bench.el
 ```
 

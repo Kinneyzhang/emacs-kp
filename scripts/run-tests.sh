@@ -8,12 +8,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 case "$ORDER" in
   "")
-    exec "$EMACS" -Q --batch -L "$ROOT" -L "$ROOT/tests" \
+    exec "$EMACS" -Q --batch -L "$ROOT/lisp" -L "$ROOT/tests" \
          -l "$ROOT/tests/load-project-source.el" \
          -f ert-run-tests-batch-and-exit
     ;;
   --random-order)
-    exec "$EMACS" -Q --batch -L "$ROOT" -L "$ROOT/tests" \
+    exec "$EMACS" -Q --batch -L "$ROOT/lisp" -L "$ROOT/tests" \
          -l "$ROOT/tests/load-project-source.el" \
          -f ekp-tests-run-random-order
     ;;
