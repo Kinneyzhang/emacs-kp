@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run every EKP ERT test in a fresh Emacs process.
-# Usage: tests/run-tests-isolated.sh [path-to-emacs]
+# Usage: scripts/run-tests-isolated.sh [path-to-emacs]
 
 set -eu
 

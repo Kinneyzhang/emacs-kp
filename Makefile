@@ -6,7 +6,7 @@ SOURCES := ekp-utils.el ekp-hyphen.el ekp.el ekp-buffer.el
 compile:
 	$(EMACS) -Q --batch -L . --eval '(setq load-prefer-newer t byte-compile-error-on-warn t)' -f batch-byte-compile $(SOURCES)
 test:
-	tests/run-tests.sh "$(EMACS)"
+	scripts/run-tests.sh "$(EMACS)"
 check: structure-check compile acceptance
 native-build:
 	$(MAKE) -C native PROFILE=portable

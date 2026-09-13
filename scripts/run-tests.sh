@@ -1,6 +1,6 @@
 #!/bin/sh
 # Run the EKP test suite in batch mode.
-# Usage: tests/run-tests.sh [path-to-emacs] [--random-order]
+# Usage: scripts/run-tests.sh [path-to-emacs] [--random-order]
 
 EMACS="${1:-${EMACS:-emacs}}"
 ORDER="${2:-}"

@@ -8,7 +8,7 @@ import sys
 
 
 def command(root, emacs):
-    manifest = json.loads((root / 'tests/acceptance.json').read_text())
+    manifest = json.loads((root / 'scripts/acceptance.json').read_text())
     cases = manifest.get('cases', [])
     if not cases or len({c['name'] for c in cases}) != len(cases):
         raise ValueError('Acceptance cases must be nonempty and uniquely named')

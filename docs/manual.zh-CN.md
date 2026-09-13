@@ -285,7 +285,7 @@ emacs -Q -L /path/to/emacs-kp -l examples/ekp-showcase.el -f ekp-showcase
 ## 测试
 
 ```bash
-tests/run-tests.sh /path/to/emacs     # 全部支持 batch 的 ERT 测试集
+scripts/run-tests.sh /path/to/emacs     # 全部支持 batch 的 ERT 测试集
 
 # 完整的交互式 GUI 贴合矩阵
 emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \

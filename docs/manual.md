@@ -341,7 +341,7 @@ block, an inline no-break atom and NBSP-joined numbers.
 ## Testing
 
 ```bash
-tests/run-tests.sh /path/to/emacs     # batch-safe ERT suite
+scripts/run-tests.sh /path/to/emacs     # batch-safe ERT suite
 
 # Full interactive GUI fit matrix
 emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \

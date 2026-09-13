@@ -8,8 +8,11 @@ contracts belong in the package manual, architecture document and executable tes
 ## Structure
 
 - Keep runtime Emacs Lisp files at the package root, with the package prefix.
-- Use `tests/` for automated tests and `tests/fixtures/` for test data.
-- Use `examples/` for runnable examples, `benchmarks/` for performance workloads,
+- Use `tests/` for plugin ERT `.el` tests and their Lisp support files; put data
+  in `tests/fixtures/`. Python/Shell tools and runners belong in `scripts/`,
+  and tests for those tools in `scripts/tests/`. Keep the acceptance manifest
+  at `scripts/acceptance.json`.
+- Use `examples/` for runnable examples, `benchmarks/` for maintained `.el` performance workloads,
   `scripts/` for development/release tools, and `native/` for native implementations.
 - Create directories only when they contain maintained files. Use lowercase kebab-case
   directory names. Preserve upstream resource names and license notices.
@@ -49,7 +52,7 @@ contracts belong in the package manual, architecture document and executable tes
   helper names, data layouts and call order are not contracts. Remove obsolete
   version/phase tests; consolidate duplicate scenarios. Keep focused internal tests
   only when they materially protect a difficult algorithm or diagnosed defect.
-- `tests/acceptance.json` names the maintained public scenarios and their purposes.
+- `scripts/acceptance.json` names the maintained public scenarios and their purposes.
   `make check` runs structure validation, compilation and these acceptance cases.
   `make test` runs broader regressions when affected behavior warrants them; GUI
   appearance and performance require their separate acceptance targets.

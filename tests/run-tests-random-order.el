@@ -2,7 +2,7 @@
 
 ;;; Commentary:
 
-;; Loaded after the EKP test files by tests/run-tests.sh --random-order.
+;; Loaded after the EKP test files by scripts/run-tests.sh --random-order.
 ;; EKP_TEST_SEED selects a reproducible permutation.
 
 ;;; Code:

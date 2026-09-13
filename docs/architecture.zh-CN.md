@@ -380,8 +380,8 @@ fuzz 验证。
   错误。
 - `dictionaries/MANIFEST.tsv` 将 49 个条目固定到 LibreOffice 提交
   (另明确标记一个 legacy Basque 字节),记录 SHA-256、语法标记和许可
-  证据。`tests/check-dictionaries.sh` 做离线门禁,
-  `dictionaries/update.sh check` 在 macOS/Linux 对照固定上游字节。
+  证据。`scripts/check-dictionaries.sh` 做离线门禁,
+  `scripts/update-dictionaries.sh check` 在 macOS/Linux 对照固定上游字节。
 
 词盒按 `^[左标点]* (拉丁词) [右标点]*$` 匹配,因此被标点包裹的词
 (`(word)`、`word!`、`»word«`)仍可断词;标点粘在首/末音节盒上。
@@ -389,11 +389,11 @@ fuzz 验证。
 ## 9. 测试与基准
 
 ```bash
-tests/run-tests.sh [emacs]        # batch 可跑的 ERT 测试集
-tests/run-tests.sh [emacs] --random-order
-tests/run-tests-isolated.sh [emacs] # 每个 ERT 使用全新进程
-tests/check-dictionaries.sh           # 离线清单/校验值门禁
-dictionaries/update.sh check          # 核对固定上游字节
+scripts/run-tests.sh [emacs]        # batch 可跑的 ERT 测试集
+scripts/run-tests.sh [emacs] --random-order
+scripts/run-tests-isolated.sh [emacs] # 每个 ERT 使用全新进程
+scripts/check-dictionaries.sh           # 离线清单/校验值门禁
+scripts/update-dictionaries.sh check          # 核对固定上游字节
 make -C native PROFILE=portable      # 默认可移植发布构建
 make -C native PROFILE=native        # 仅本机基准
 make -C native PROFILE=debug         # 调试符号,不优化

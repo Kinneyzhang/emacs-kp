@@ -452,8 +452,8 @@ Liang's ordinary pattern algorithm:
   public formatter propagates it.
 - `dictionaries/MANIFEST.tsv` pins 49 inventory entries to one LibreOffice
   commit (plus one explicitly identified legacy Basque byte), their SHA-256,
-  syntax flag, and license evidence.  `tests/check-dictionaries.sh` is the
-  offline gate; `dictionaries/update.sh check` verifies normalized bytes
+  syntax flag, and license evidence.  `scripts/check-dictionaries.sh` is the
+  offline gate; `scripts/update-dictionaries.sh check` verifies normalized bytes
   against the upstream commit on macOS and Linux.
 
 Word boxes are matched against
@@ -464,11 +464,11 @@ punctuation stays glued to the first/last syllable box.
 ## 9. Testing & Benchmarks
 
 ```bash
-tests/run-tests.sh [emacs]        # batch-safe ERT suite
-tests/run-tests.sh [emacs] --random-order
-tests/run-tests-isolated.sh [emacs] # each ERT in a fresh process
-tests/check-dictionaries.sh           # offline inventory/checksum gate
-dictionaries/update.sh check          # verify pinned upstream bytes
+scripts/run-tests.sh [emacs]        # batch-safe ERT suite
+scripts/run-tests.sh [emacs] --random-order
+scripts/run-tests-isolated.sh [emacs] # each ERT in a fresh process
+scripts/check-dictionaries.sh           # offline inventory/checksum gate
+scripts/update-dictionaries.sh check          # verify pinned upstream bytes
 make -C native PROFILE=portable      # release-portable default
 make -C native PROFILE=native        # local benchmark only
 make -C native PROFILE=debug         # symbols, no optimization

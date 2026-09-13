@@ -5,7 +5,7 @@ set -eu
 
 UPSTREAM_URL=https://github.com/LibreOffice/dictionaries.git
 UPSTREAM_COMMIT=8fb8e794237cff49ec212023f96bcdb7d3fbf56c
-DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+DIR=$(CDPATH= cd -- "$(dirname "$0")/../dictionaries" && pwd)
 MANIFEST="$DIR/MANIFEST.tsv"
 MODE=${1:-check}
 OUTPUT=${2:-}
@@ -32,7 +32,7 @@ case "$MODE" in
     ;;
   export)
     test -n "$OUTPUT" ||
-      fail "usage: update.sh export OUTPUT_DIRECTORY"
+      fail "usage: update-dictionaries.sh export OUTPUT_DIRECTORY"
     if test -e "$OUTPUT"; then
       test -d "$OUTPUT" || fail "output exists and is not a directory"
       test -z "$(find "$OUTPUT" -mindepth 1 -print -quit)" ||
@@ -42,7 +42,7 @@ case "$MODE" in
     fi
     ;;
   *)
-    fail "usage: update.sh [check | export OUTPUT_DIRECTORY]"
+    fail "usage: update-dictionaries.sh [check | export OUTPUT_DIRECTORY]"
     ;;
 esac
 
