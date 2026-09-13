@@ -3,7 +3,7 @@
 本文档描述 `emacs-kp` 的实际内部架构、算法与 API,面向贡献者和高级用户。
 
 当前仓库健康度与后续工作的优先级见
-[2026-07-28 系统审计](./Docs/REPOSITORY_AUDIT_20260728.md)。
+[2026-07-28 系统审计](architecture.md)。
 
 ## 1. 处理管线
 
@@ -394,13 +394,13 @@ tests/run-tests.sh [emacs] --random-order
 tests/run-tests-isolated.sh [emacs] # 每个 ERT 使用全新进程
 tests/check-dictionaries.sh           # 离线清单/校验值门禁
 dictionaries/update.sh check          # 核对固定上游字节
-make -C ekp_c PROFILE=portable      # 默认可移植发布构建
-make -C ekp_c PROFILE=native        # 仅本机基准
-make -C ekp_c PROFILE=debug         # 调试符号,不优化
-make -C ekp_c PROFILE=sanitize      # ASan + UBSan
-emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' -l tests/ekp-bench.el
+make -C native PROFILE=portable      # 默认可移植发布构建
+make -C native PROFILE=native        # 仅本机基准
+make -C native PROFILE=debug         # 调试符号,不优化
+make -C native PROFILE=sanitize      # ASan + UBSan
+emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' -l benchmarks/ekp-bench.el
 emacs -Q --batch -L . --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
-      -l tests/ekp-bench.el
+      -l benchmarks/ekp-bench.el
 ```
 
 可用 `EKP_TEST_SEED` 复现或改变乱序。测试 fixture 会动态恢复其隔离的
@@ -418,7 +418,7 @@ argv 直接启动 make，不再构造 shell `cd` 命令。发布/CI 使用
 容、O(1) 前缀机制与暴力算法交叉验证、内置文本上的 Elisp/C 一致性、
 参数持久化/同步回归。
 
-基准结果(batch Emacs 30.2、Apple Silicon、`tests/text-zh.txt` ≈
+基准结果(batch Emacs 30.2、Apple Silicon、`tests/fixtures/text-zh.txt` ≈
 3.6KB 中文及各示例;3 次冷缓存取最小值)——"改造前"为重写前的实现
 (解释执行):
 
@@ -449,7 +449,7 @@ ekp-utils.el      分词器(盒子、避头尾)、带 batch/tty 回退的字体
 ekp-hyphen.el     Liang 断词 + 词典注册
 ekp-buffer.el     纯文本属性 buffer/region 投影、同步实时流动、窗口
                   lifecycle、复制过滤与诊断
-native/            C 动态模块(见 native/README.md)
+native/            C 动态模块(见 docs/architecture.md)
 dictionaries/     Hunspell 断词模式(来自 LibreOffice)
 tests/            ekp-tests.el、ekp-buffer-tests.el(ERT)、
                   ekp-fuzz.el(一致性 fuzz)、ekp-bench.el、

@@ -13,7 +13,7 @@
 (defun ekp-demo--file-content (file)
   (with-temp-buffer
     (insert-file-contents
-     (expand-file-name file (expand-file-name "tests" (ekp-root-dir))))
+     (expand-file-name file (expand-file-name "tests/fixtures" (ekp-root-dir))))
     (buffer-substring (point-min) (point-max))))
 
 (defun ekp-demo-propertize (string properties &optional start end)
@@ -44,7 +44,7 @@
     buffer))
 
 (defun ekp-demo-str (cjk latin &optional font)
-  "Load a test text (see tests/text-*.txt) with optional FONT face."
+  "Load a test text (see tests/fixtures/text-*.txt) with optional FONT face."
   (let ((file (concat "text"
                       (and cjk (concat "-" cjk))
                       (and latin (concat "-" latin))

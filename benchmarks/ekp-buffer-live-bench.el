@@ -4,7 +4,7 @@
 
 ;; Reproducible public-path latency measurements for `ekp-auto-justify-mode'.
 ;;
-;;   emacs -Q --batch -L . -L tests -l tests/ekp-buffer-live-bench.el
+;;   emacs -Q --batch -L . -L tests -l benchmarks/ekp-buffer-live-bench.el
 ;;
 ;; To benchmark the C backend, load it before this file.  Batch glyph
 ;; measurements are internally comparable but are not a replacement for

@@ -270,7 +270,7 @@ First tagged release.  Highlights of the work leading up to it:
   (`ekp-c-break-lines`, `ekp-c-hyphenate`, `ekp-c-load-hyphenator`,
   `ekp-c-set-spacing`, and the `ekp_paragraph.c` / `ekp_hyphen.c`
   sources) is removed.  It carried a heap overflow reachable from
-  Lisp.  Rebuild with `make -C ekp_c clean all`.
+  Lisp.  Rebuild with `make -C native clean all`.
 - `ekp-c-break-with-arrays` gains a 15th argument, `FIRST-LINE-WIDTH`,
   supporting first-line indent in C.
 - Thread pool sized to the machine's cores, created lazily; a full

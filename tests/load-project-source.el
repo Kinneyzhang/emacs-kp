@@ -14,7 +14,7 @@
                   "ekp-hyphen.el"
                   "ekp.el"
                   "ekp-buffer.el"
-                  "tests/ekp-showcase.el"
+                  "examples/ekp-showcase.el"
                   "tests/ekp-gui-verify.el"
                   "tests/ekp-tests.el"
                   "tests/ekp-buffer-tests.el"

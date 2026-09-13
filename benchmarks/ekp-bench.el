@@ -6,12 +6,12 @@
 ;;
 ;;   # Pure Elisp engine
 ;;   emacs -Q --batch -L . --eval '(setq ekp-use-c-module nil)' \
-;;         -l tests/ekp-bench.el
+;;         -l benchmarks/ekp-bench.el
 ;;
-;;   # C module engine (build ekp_c first)
+;;   # C module engine (build native first)
 ;;   emacs -Q --batch -L . \
 ;;         --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
-;;         -l tests/ekp-bench.el
+;;         -l benchmarks/ekp-bench.el
 ;;
 ;; In batch mode widths are measured in character columns, so the
 ;; numbers are engine-comparable but not identical to GUI timings.
@@ -24,7 +24,7 @@
 (defun ekp-bench--read (name)
   (with-temp-buffer
     (insert-file-contents
-     (expand-file-name name (expand-file-name "tests" (ekp-root-dir))))
+     (expand-file-name name (expand-file-name "tests/fixtures" (ekp-root-dir))))
     (buffer-string)))
 
 (defun ekp-bench-run (label thunk &optional n)

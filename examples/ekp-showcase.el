@@ -4,7 +4,7 @@
 
 ;; One self-contained interactive demo for everything ekp does.
 ;;
-;;   emacs -Q -L /path/to/emacs-kp -l tests/ekp-showcase.el -f ekp-showcase
+;;   emacs -Q -L /path/to/emacs-kp -l examples/ekp-showcase.el -f ekp-showcase
 ;;
 ;; or, with the package on `load-path':  M-x ekp-showcase
 ;;

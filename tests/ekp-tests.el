@@ -14,8 +14,8 @@
 ;; C module tests are skipped automatically when native/ekp.dylib (or
 ;; .so/.dll) has not been built.
 ;;
-;; Interactive demos live in tests/ekp-demo.el; benchmarks in
-;; tests/ekp-bench.el.
+;; Interactive demos live in examples/ekp-demo.el; benchmarks in
+;; benchmarks/ekp-bench.el.
 
 ;;; Code:
 
@@ -124,7 +124,7 @@ Used to verify no content is lost by justification."
                     (cons variable fresh))))))
 
 (defun ekp-tests--file (name)
-  (expand-file-name name (expand-file-name "tests" (ekp-root-dir))))
+  (expand-file-name name (expand-file-name "tests/fixtures" (ekp-root-dir))))
 
 (defun ekp-tests--file-content (name)
   (with-temp-buffer

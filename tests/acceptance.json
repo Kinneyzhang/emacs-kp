@@ -1,0 +1,41 @@
+{
+  "schema": 1,
+  "load_path": [
+    ".",
+    "tests",
+    "examples"
+  ],
+  "support": [],
+  "cases": [
+    {
+      "name": "ekp-buffer-test-layout-never-changes-source-characters",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "buffer test layout never changes source characters"
+    },
+    {
+      "name": "ekp-buffer-test-roundtrip-exact",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "buffer test roundtrip exact"
+    },
+    {
+      "name": "ekp-buffer-test-roundtrip-propertized",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "buffer test roundtrip propertized"
+    },
+    {
+      "name": "ekp-buffer-test-live-install-error-rolls-back-all-spans",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "buffer test live install error rolls back all spans"
+    },
+    {
+      "name": "ekp-buffer-test-mode-roundtrip",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "buffer test mode roundtrip"
+    },
+    {
+      "name": "ekp-buffer-test-save-writes-logical-text",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "buffer test save writes logical text"
+    }
+  ]
+}
