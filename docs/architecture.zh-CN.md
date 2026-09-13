@@ -388,70 +388,25 @@ fuzz 验证。
 
 ## 9. 测试与基准
 
-```bash
-scripts/run-tests.sh [emacs]        # batch 可跑的 ERT 测试集
-scripts/run-tests.sh [emacs] --random-order
-scripts/run-tests-isolated.sh [emacs] # 每个 ERT 使用全新进程
-scripts/check-dictionaries.sh           # 离线清单/校验值门禁
-scripts/update-dictionaries.sh check          # 核对固定上游字节
-make -C native PROFILE=portable      # 默认可移植发布构建
-make -C native PROFILE=native        # 仅本机基准
-make -C native PROFILE=debug         # 调试符号,不优化
-make -C native PROFILE=sanitize      # ASan + UBSan
-emacs -Q --batch -L lisp --eval '(setq ekp-use-c-module nil)' -l benchmarks/ekp-bench.el
-emacs -Q --batch -L lisp --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
-      -l benchmarks/ekp-bench.el
+仅测试根入口声明的公共 API 输入、输出、错误和生命周期。全部用例列在 `tests/acceptance.json`；性能工作负载放在 `benchmarks/`。
+
+```sh
+make test EMACS=/path/to/emacs
+make check EMACS=/path/to/emacs
+scripts/check-dictionaries.sh
+scripts/update-dictionaries.sh check
+make -C native PROFILE=portable
 ```
-
-可用 `EKP_TEST_SEED` 复现或改变乱序。测试 fixture 会动态恢复其隔离的
-全部 EKP 配置；分派类测试必须经过公开排版入口，不能只断言内部资格
-谓词。
-
-GUI 矩阵需显式加载 `tests/ekp-gui-verify.el`。任一行失败时，它先打印
-完整表格，再以状态码 1 退出；ERT 套件包含该边界的强制失败负控。
-
-`M-x ekp-c-module-build` 使用同一组四种 profile，并在 `native/` 中以
-argv 直接启动 make，不再构造 shell `cd` 命令。发布/CI 使用
-`portable`；`native` 仅用于将在同一机器运行的基准。
-
-核心被测不变式:渲染行宽 == 目标宽(像素级对齐)、任意宽度下不丢内
-容、O(1) 前缀机制与暴力算法交叉验证、内置文本上的 Elisp/C 一致性、
-参数持久化/同步回归。
-
-基准结果(batch Emacs 30.2、Apple Silicon、`tests/fixtures/text-zh.txt` ≈
-3.6KB 中文及各示例;3 次冷缓存取最小值)——"改造前"为重写前的实现
-(解释执行):
-
-| 场景                   | 改造前 (Elisp) | 改造后 (Elisp 解释) | 改造后 (Elisp 编译) | 改造后 (C) |
-|:-----------------------|---------------:|--------------------:|--------------------:|-----------:|
-| justify 中文 w=200     |        7547 ms |             1780 ms |               96 ms |      57 ms |
-| justify 中文 w=400     |        2928 ms |              815 ms |               71 ms |      57 ms |
-| justify 混排 w=300     |        5540 ms |             1275 ms |               53 ms |      23 ms |
-| range 中文 340–380     |       29696 ms |             8937 ms |              294 ms |      75 ms |
-| range 混排 280–320     |       68534 ms |            14552 ms |              480 ms |      34 ms |
-| 仅 DP,中文 w=400      |        2382 ms |              591 ms |               15 ms |     1.3 ms |
-
-("改造后 (C)" 列在字节编译的 Elisp 环境下测得。作为参照,重写前的
-C 模块在 justify-中文-200 / range-中文 / 仅-DP 上分别为 197 ms /
-430 ms / 25 ms——重写通过 para 级预建 glue 数组、para 缓存的 `eq'
-快路径和 O(1) 重建 rest/gap,把 C 路径也提速了 3–19 倍。)
-
-主要收益来源:前缀数组带来的 O(1) 行度量(旧内层每候选分配 O(n) 子
-序列,总计 O(n³))、两遍紧急策略(保持 DP 稀疏)、盒宽测量去重。
 
 ## 10. 文件地图
 
-```
-ekp.el            核心:para 结构、缓存、DP(1D + looseness)、
-                  glue 分配、渲染、公共 API
-ekp-utils.el      分词器(盒子、避头尾)、带 batch/tty 回退的字体
-                  检测、C 模块加载
-ekp-hyphen.el     Liang 断词 + 词典注册
-ekp-buffer.el     纯文本属性 buffer/region 投影、同步实时流动、窗口
-                  lifecycle、复制过滤与诊断
-native/            C 动态模块(见 docs/architecture.md)
-dictionaries/     Hunspell 断词模式(来自 LibreOffice)
-tests/            ekp-tests.el、ekp-buffer-tests.el(ERT)、
-                  ekp-fuzz.el(一致性 fuzz)、ekp-bench.el、
-                  ekp-demo.el、ekp-showcase.el、示例文本、run-tests.sh
+```text
+ekp.el          Package entry and supported API Commentary
+lisp/           Implementation modules
+tests/          Public API cases, inventory and fixtures
+benchmarks/     Performance workloads
+examples/       Runnable usage examples
+scripts/        Build and maintenance tools
+native/         C implementation
+dictionaries/   Hyphenation resources and legal notices
 ```

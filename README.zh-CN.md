@@ -91,4 +91,4 @@ Elisp。已启用模块若 signal,则作为后端契约错误直接呈现。若�
 
 [docs/architecture.zh-CN.md](docs/architecture.zh-CN.md) · [CHANGELOG.md](CHANGELOG.md)
 
-`make check` 运行规范检查、编译及 [tests/acceptance.json](tests/acceptance.json) 中的公共验收场景。`make test` 运行更全面的回归测试；GUI 与性能验收使用独立入口。验收清单依据对外契约选择，不按当前能否通过筛选。
+`make check` 运行规范检查、编译及 [tests/acceptance.json](tests/acceptance.json) 中的公共验收场景。`make test` 运行同一套公共 API 测试。清单涵盖全部保留的 Lisp 测试；内部实现测试直接删除。GUI 与性能验收使用独立入口。

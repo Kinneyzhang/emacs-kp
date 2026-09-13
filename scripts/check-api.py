@@ -8,7 +8,7 @@ import sys
 import subprocess
 
 API = re.compile(r'^;; (Function|Macro|Variable|Hook|Error|Component): ([^\s()]+)(.*)$', re.M)
-DEFINITION = re.compile(r'\((?:defun|cl-defun|defmacro|cl-defmacro|defsubst|defvar|defconst|defcustom|defvar-local|define-minor-mode|define-derived-mode|etaf-ui--define-component|etaf-define-component)\s+([^\s()]+)')
+DEFINITION = re.compile(r"(?<!['`])\((?:defun|cl-defun|defmacro|cl-defmacro|defsubst|defvar|defconst|defcustom|defvar-local|define-minor-mode|define-derived-mode|etaf-ui--define-component|etaf-define-component)\s+([^\s()]+)")
 
 
 def tokens(source):
@@ -111,9 +111,11 @@ def package(root):
     if len(entries) != 1: raise ValueError(f'{root}: expected one root entry')
     entry = entries[0]
     files = [entry] + sorted((root/'lisp').glob('*.el'))
+    diagnostic_files = [p for d in ('scripts', 'benchmarks', 'examples') for p in (root/d).rglob('*.el')]
     defined = set(); features = set()
-    for p in files:
+    for p in files + diagnostic_files:
         text = p.read_text()
+        text = re.sub(r'"(?:\\.|[^"\\])*"|;[^\n]*', lambda m: ' ' * len(m[0]), text)
         defined.update(sym for sym in DEFINITION.findall(text) if not sym.startswith(','))
         defined.difference_update(re.findall(r"\(defvar\s+([^\s()]+)\s*\)", text))
         defined.update(re.findall(r"\((?:define-error|defalias|defvaralias)\s+'([^\s()]+)", text))
@@ -137,26 +139,27 @@ def check(packages, selected=None):
     for name, pkg in packages.items():
         if selected and name not in selected: continue
         errors.extend(pkg['errors'])
-        files = pkg['files'] + sorted((pkg['root']/'examples').rglob('*.el'))
+        tests = sorted(p for p in (pkg['root']/'tests').rglob('*.el') if 'fixtures' not in p.relative_to(pkg['root']).parts)
+        files = pkg['files'] + sorted((pkg['root']/'examples').rglob('*.el')) + tests
         for file in files:
             source = file.read_text()
             for symbol in set(tokens(source)):
                 provider = owners.get(symbol)
-                if provider and provider != name and symbol not in packages[provider]['api']:
+                if provider and (provider != name or file in tests) and symbol not in packages[provider]['api']:
                     errors.append(f'{file}: {symbol} is internal to {provider}; use its root entry API')
             for literal in re.findall(r'\(intern(?:-soft)?\s+"([^"\\]+)"', source):
                 provider = owners.get(literal)
-                if provider and provider != name and literal not in packages[provider]['api']:
+                if provider and (provider != name or file in tests) and literal not in packages[provider]['api']:
                     errors.append(f'{file}: reflective reference to internal {provider} symbol {literal}')
             for library in re.findall(r'\((?:load|load-file)\s+"([^"\\]+)"', source):
                 for provider, contract in packages.items():
-                    if provider == name: continue
+                    if provider == name and file not in tests: continue
                     internal = contract['features'] - {contract['entry'].stem}
                     if Path(library).stem in internal:
                         errors.append(f'{file}: direct load of internal {provider} library {library}')
             for feature in re.findall(r"\(require\s+'([^\s()]+)", source):
                 provider = feature_owners.get(feature)
-                if provider and provider != name and feature != packages[provider]['entry'].stem:
+                if provider and (provider != name or file in tests) and feature != packages[provider]['entry'].stem:
                     errors.append(f'{file}: require {packages[provider]["entry"].stem}, not internal feature {feature}')
     return sorted(set(errors))
 
@@ -194,7 +197,7 @@ def main():
             current = pending.pop()
             contract = packages[current]
             references = set()
-            for file in contract['files'] + sorted((contract['root']/'examples').rglob('*.el')):
+            for file in contract['files'] + [p for d in ('examples', 'tests') for p in (contract['root']/d).rglob('*.el') if 'fixtures' not in p.relative_to(contract['root']).parts]:
                 references.update(tokens(file.read_text()))
             dependencies = set()
             for symbol in references:

@@ -83,7 +83,7 @@ OBJS := $(SRCS:.c=.o)
 MODULE := ekp.$(MODULE_EXT)
 
 # Targets
-.PHONY: all clean install test
+.PHONY: all clean install
 
 all: $(MODULE)
 
@@ -104,17 +104,6 @@ install: $(MODULE)
 	@mkdir -p $(DESTDIR)
 	cp $(MODULE) $(DESTDIR)/
 	@echo "Installed to $(DESTDIR)/$(MODULE)"
-
-# Test with Emacs
-test: $(MODULE)
-	$(EMACS) -Q --batch \
-		-L . -L lisp \
-		--eval '(module-load (expand-file-name "./$(MODULE)"))' \
-		--eval '(message "ekp-c version: %s" (ekp-c-version))' \
-		--eval '(ekp-c-init)' \
-		--eval '(message "ekp-c initialized with %d threads" (ekp-c-thread-count))' \
-		--eval '(ekp-c-cleanup)' \
-		--eval '(message "Test passed!")'
 
 # Show compiler info
 info:

@@ -463,82 +463,28 @@ punctuation stays glued to the first/last syllable box.
 
 ## 9. Testing & Benchmarks
 
-```bash
-scripts/run-tests.sh [emacs]        # batch-safe ERT suite
-scripts/run-tests.sh [emacs] --random-order
-scripts/run-tests-isolated.sh [emacs] # each ERT in a fresh process
-scripts/check-dictionaries.sh           # offline inventory/checksum gate
-scripts/update-dictionaries.sh check          # verify pinned upstream bytes
-make -C native PROFILE=portable      # release-portable default
-make -C native PROFILE=native        # local benchmark only
-make -C native PROFILE=debug         # symbols, no optimization
-make -C native PROFILE=sanitize      # ASan + UBSan
-emacs -Q --batch -L lisp --eval '(setq ekp-use-c-module nil)' -l benchmarks/ekp-bench.el
-emacs -Q --batch -L lisp --eval '(progn (require (quote ekp)) (ekp-c-module-load))' \
-      -l benchmarks/ekp-bench.el
+Test inputs, outputs, errors and lifecycle through APIs declared by the root entry. `tests/acceptance.json` inventories every maintained case. Performance workloads live in `benchmarks/`.
+
+```sh
+make test EMACS=/path/to/emacs
+make check EMACS=/path/to/emacs
+scripts/check-dictionaries.sh
+scripts/update-dictionaries.sh check
+make -C native PROFILE=portable
 ```
-
-Set `EKP_TEST_SEED` to reproduce or vary the permuted-order run. Test
-fixtures dynamically restore all EKP configuration they isolate; tests that
-exercise dispatch must use the public formatter rather than only an internal
-eligibility predicate.
-
-The GUI matrix is loaded explicitly from `tests/ekp-gui-verify.el`. It
-returns status 1 after printing the table when any row fails; the ERT suite
-contains a forced-failure control for this boundary.
-
-`M-x ekp-c-module-build` uses the same four profile names and invokes make
-as an argv process in `native/`; it never constructs a shell `cd` command.
-Release/CI artifacts use `portable`. Use `native` only for measurements on
-the machine that will run the module.
-
-Key invariants under test: rendered line width == target (pixel-exact
-justification), no content loss at any width, brute-force cross-checks
-of the O(1) prefix machinery, Elisp/C parity on the bundled texts, and
-parameter persistence/sync regressions.
-
-Benchmark results (batch Emacs 30.2, Apple Silicon M-series,
-`tests/fixtures/text-zh.txt` ≈ 3.6 KB Chinese + samples; min of 3 cold-cache
-runs) — before is the pre-rewrite implementation, interpreted:
-
-| Case                     | Before (Elisp) | After (Elisp, interpreted) | After (Elisp, compiled) | After (C) |
-|:-------------------------|---------------:|---------------------------:|------------------------:|----------:|
-| justify zh w=200         |        7547 ms |                    1780 ms |                   96 ms |     57 ms |
-| justify zh w=400         |        2928 ms |                     815 ms |                   71 ms |     57 ms |
-| justify mixed w=300      |        5540 ms |                    1275 ms |                   53 ms |     23 ms |
-| range-justify zh 340–380 |       29696 ms |                    8937 ms |                  294 ms |     75 ms |
-| range-justify mix 280–320|       68534 ms |                   14552 ms |                  480 ms |     34 ms |
-| DP only, zh w=400        |        2382 ms |                     591 ms |                   15 ms |    1.3 ms |
-
-("After (C)" columns measured with byte-compiled Elisp around the C
-calls.  For reference, the pre-rewrite C module measured 197 ms /
-430 ms / 25 ms on justify-zh-200 / range-zh / DP-only — the rewrite
-also sped up the C path 3–19× via prebuilt per-para glue arrays, an
-`eq' fast path in the para cache, and O(1) rest/gap reconstruction.)
-
-The dominant wins: O(1) line metrics via prefix arrays (the old inner
-loop allocated O(n) subsequences per candidate, O(n³) total), the
-two-pass emergency strategy (keeps the DP sparse), box-measurement
-deduplication, and per-para glue arrays reused across C calls.
 
 ## 10. File Map
 
+```text
+ekp.el          Package entry and supported API Commentary
+lisp/           Implementation modules
+tests/          Public API cases, inventory and fixtures
+benchmarks/     Performance workloads
+examples/       Runnable usage examples
+scripts/        Build and maintenance tools
+native/         C implementation
+dictionaries/   Hyphenation resources and legal notices
 ```
-ekp.el            Core: para struct, caching, DP (1D + looseness),
-                  glue distribution, rendering, public API
-ekp-utils.el      Tokenizer (boxes, kinsoku), font detection with
-                  batch/tty fallbacks, C module loading
-ekp-hyphen.el     Liang hyphenation + dictionary registry
-ekp-buffer.el     Text-property-only buffer/region projection, synchronous
-                  live flow, window lifecycle, copy filtering, diagnostics
-native/            C dynamic module (see docs/architecture.md)
-dictionaries/     Hunspell hyphenation patterns (from LibreOffice)
-tests/            ekp-tests.el, ekp-buffer-tests.el (ERT),
-                  ekp-fuzz.el (parity fuzz), ekp-bench.el,
-                  ekp-demo.el, ekp-showcase.el, sample texts,
-                  run-tests.sh
-```
-
 
 ## Native module
 

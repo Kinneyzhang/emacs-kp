@@ -313,8 +313,6 @@ the point.)
   fringes, so justified lines fit the real display.  If lines ever
   look truncated or short in an exotic setup, run `M-x ekp-diagnose`
   in that buffer — it reports whether measurement matches rendering.
-  The full fit matrix is a developer tool in `tests/ekp-gui-verify.el`;
-  load that file before invoking `M-x ekp-gui-verify`.
 - One font is assumed per Latin/CJK script per paragraph when computing
   spacing defaults; mixed-font paragraphs work but spacing defaults come
   from the first font found.
@@ -340,18 +338,12 @@ block, an inline no-break atom and NBSP-joined numbers.
 
 ## Testing
 
-```bash
-scripts/run-tests.sh /path/to/emacs     # batch-safe ERT suite
-
-# Full interactive GUI fit matrix
-emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \
-  -l /path/to/emacs-kp/tests/ekp-gui-verify.el \
-  -f ekp-gui-verify-matrix
+```sh
+make test EMACS=/path/to/emacs
+make check EMACS=/path/to/emacs
 ```
 
-The matrix prints every row and exits with status 1 if any fit check fails,
-so the same command can gate local release automation. The verifier is a
-developer tool under `tests/`; it is not loaded by `(require 'ekp)`.
+All maintained tests verify observable behavior through public APIs; see `tests/acceptance.json` for the complete inventory.
 
 ## Credits
 

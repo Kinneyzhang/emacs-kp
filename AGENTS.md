@@ -68,17 +68,21 @@ contracts belong in the package manual, architecture document and executable tes
   in the same change. Use stable behavior-based names, not development-phase labels.
 - Put behavioral regressions in tests. Do not require documents to enumerate every
   source file or retired command. Test public examples and integration contracts.
-- Test observable public inputs, outputs, errors, rollback and lifecycle. Internal
-  helper names, data layouts and call order are not contracts. Remove obsolete
-  version/phase tests; consolidate duplicate scenarios. Keep focused internal tests
-  only when they materially protect a difficult algorithm or diagnosed defect.
-- `tests/acceptance.json` names the maintained public scenarios and their purposes.
-  `make check` runs structure/API boundary validation, compilation, these acceptance
-  cases and a fresh Emacs check that every entry declaration is available and
-  written function/macro signatures match their source definitions.
-  `make test` runs broader regressions when affected behavior warrants them; GUI
-  appearance and performance require their separate acceptance targets.
-  Never select acceptance cases merely because they currently pass.
+- Keep only public API behavior tests: observable inputs, outputs, errors,
+  rollback and lifecycle through interfaces declared by the package entry.
+  Delete tests of private helpers, internal structures, source text, implementation
+  call counts and retired versions. Do not repair or preserve those tests.
+  Test fixtures and helper functions must also use public package interfaces;
+  indirection, reflection and fault injection do not grant private access.
+  Do not promote an internal symbol to public API merely to retain its tests.
+- `tests/acceptance.json` inventories every maintained Lisp correctness scenario,
+  with an observable purpose. `make test` runs this public suite; `make check`
+  adds structure/API boundary validation, compilation and fresh entry binding
+  and source signature validation. Do not retain a separate internal-test suite.
+  Delete native internal unit-test modules too; validate native behavior through
+  supported package APIs. Preserve upstream vendor sources.
+  Development tools may test their supported command/input/output contracts.
+  GUI appearance and performance use their separate acceptance targets.
 - Run `make structure-check` and the affected tests while developing; run `make check`
   before declaring a package change complete. Workspace changes also run
   `python3 scripts/workspace.py check` and affected consumer checks.
@@ -90,10 +94,8 @@ contracts belong in the package manual, architecture document and executable tes
   `make api-check` in batch Emacs, fetching
   missing provider checkouts. Local checks use sibling sources; CI uses provider
   default branches. `workspace.json` records the tested combination of revisions.
-  The cross-package gate covers runtime and runnable examples. Development-only
-  fault injection/profiling may inspect internals to diagnose a specific defect;
-  those details must not become consumer APIs or acceptance requirements. Prefer
-  public observations and remove duplicated source-shape assertions.
+  The boundary gate covers runtime, runnable examples and Lisp tests/helpers.
+  Tests may not reference internal APIs of either their own package or a provider.
   Static checks cover direct references; code review must also reject dynamically
   constructed private calls. These checks do not constitute Lisp access control.
 - Never weaken a check, add an exclusion or skip a test just to make a failure green.

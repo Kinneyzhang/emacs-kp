@@ -261,9 +261,7 @@ Silicon 测得;方法见 docs/architecture.zh-CN.md:
 - 测量会跟随当前 buffer 的 face 重映射(`text-scale-mode`、主题等),
   并在无 fringe 的窗口里为截断指示符预留一列,排版行贴合真实显示。
   若在特殊配置下仍出现截断或偏短,在该 buffer 里执行
-  `M-x ekp-diagnose`——它会报告测量与渲染是否一致。完整贴合矩阵是
-  `tests/ekp-gui-verify.el` 中的开发工具;执行
-  `M-x ekp-gui-verify` 前须先加载该文件。
+  `M-x ekp-diagnose`——它会报告测量与渲染是否一致。
 - 计算默认间距时假定每段落的拉丁/CJK 各使用一种字体;混合字体段落可以
   工作,但默认间距取自找到的第一个字体。
 - `ekp-pixel-range-justify` 用三分搜索加局部扫描最小化平均 demerits;
@@ -284,18 +282,12 @@ emacs -Q -L /path/to/emacs-kp -l examples/ekp-showcase.el -f ekp-showcase
 
 ## 测试
 
-```bash
-scripts/run-tests.sh /path/to/emacs     # 全部支持 batch 的 ERT 测试集
-
-# 完整的交互式 GUI 贴合矩阵
-emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \
-  -l /path/to/emacs-kp/tests/ekp-gui-verify.el \
-  -f ekp-gui-verify-matrix
+```sh
+make test EMACS=/path/to/emacs
+make check EMACS=/path/to/emacs
 ```
 
-矩阵会打印全部行；任一贴合检查失败时以状态码 1 退出，因此同一命令可
-作为本地发布门禁。验证器是 `tests/` 下的开发工具，
-`(require 'ekp)` 不会加载它。
+全部保留的测试通过公共 API 验证可观察行为，清单见 `tests/acceptance.json`。
 
 ## 致谢
 

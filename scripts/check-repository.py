@@ -12,7 +12,7 @@ import sys
 import tempfile
 from urllib.parse import unquote
 
-POLICY_VERSION = 6
+POLICY_VERSION = 7
 DOC_NAMES = {'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'CHANGELOG.zh-CN.md',
              'AGENTS.md', 'docs/manual.md', 'docs/manual.zh-CN.md',
              'docs/architecture.md', 'docs/architecture.zh-CN.md'}
@@ -68,6 +68,9 @@ def check(root, files=None):
                 '.gitattributes', '.editorconfig', 'workspace.json',
                 'release-dependencies.json'} and not f.endswith('.el'):
             fail(f, 'unapproved root file; use the designated source/tool/data directory')
+        if f.startswith('native/') and f.endswith('.rs') and 'vendor' not in parts:
+            if re.search(r'#\s*\[\s*(?:test\s*\]|cfg\s*\(\s*test\s*\))', (root / f).read_text()):
+                fail(f, 'delete native internal unit tests; validate through public package APIs')
         # Preserve upstream dictionary/vendor licensing and resource names.
         external = parts[0] == 'dictionaries' or f.startswith('native/vendor/')
         if f.endswith('.md') and f not in DOC_NAMES and not external:
@@ -131,6 +134,12 @@ def check(root, files=None):
                 manifest = json.loads(manifest_path.read_text())
                 cases = manifest['cases']
                 names = [c['name'] for c in cases]
+                declared_tests = set()
+                for source in (root/'tests').rglob('*.el'):
+                    if 'fixtures' not in source.relative_to(root).parts:
+                        declared_tests.update(re.findall(r'^\(ert-deftest ([^\s()]+)', source.read_text(), re.M))
+                if declared_tests != set(names):
+                    fail('tests/acceptance.json', 'inventory must cover exactly all public Lisp tests')
                 if not cases or len(names) != len(set(names)):
                     fail('tests/acceptance.json', 'cases must be nonempty and unique')
                 for case in cases:

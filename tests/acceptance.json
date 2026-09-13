@@ -3,39 +3,306 @@
   "load_path": [
     ".",
     "tests",
-    "examples"
+    "../ebox",
+    "../ebox-playground",
+    "../ecss",
+    "../etaf",
+    "../etaf-db",
+    "../etaf-playground",
+    "../etaf-ui",
+    "../tp"
   ],
   "support": [],
   "cases": [
     {
       "name": "ekp-buffer-test-layout-never-changes-source-characters",
       "file": "tests/ekp-buffer-tests.el",
-      "purpose": "buffer test layout never changes source characters"
+      "purpose": "Layout changes display properties, never the logical character stream."
+    },
+    {
+      "name": "ekp-buffer-test-overlong-no-break-preserves-atom",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "A rigid overflow atom remains intact in the public projection."
+    },
+    {
+      "name": "ekp-buffer-test-projection-fires-no-external-change-hooks",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Projection installation and removal are silent to external change hooks."
+    },
+    {
+      "name": "ekp-buffer-test-ascii-glue-combines-space-and-min-width",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Existing ASCII spaces use `space-width' plus an exact `min-width' floor."
+    },
+    {
+      "name": "ekp-buffer-test-cjk-zero-source-glue-uses-min-width",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "CJK glue pads an existing grapheme and inserts no source space."
+    },
+    {
+      "name": "ekp-buffer-test-hyphen-and-break-are-display-only",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "A discretionary hyphen and newline live in `display', not source text."
+    },
+    {
+      "name": "ekp-buffer-test-indentation-uses-line-prefix",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "First-line indentation is a `line-prefix' projection."
     },
     {
       "name": "ekp-buffer-test-roundtrip-exact",
       "file": "tests/ekp-buffer-tests.el",
-      "purpose": "buffer test roundtrip exact"
+      "purpose": "justify + unjustify restores text and properties exactly."
     },
     {
       "name": "ekp-buffer-test-roundtrip-propertized",
       "file": "tests/ekp-buffer-tests.el",
-      "purpose": "buffer test roundtrip propertized"
+      "purpose": "Roundtrip preserves user text properties."
     },
     {
-      "name": "ekp-buffer-test-live-install-error-rolls-back-all-spans",
+      "name": "ekp-buffer-test-hard-newlines-preserved",
       "file": "tests/ekp-buffer-tests.el",
-      "purpose": "buffer test live install error rolls back all spans"
+      "purpose": "Hard newline count survives justification."
     },
     {
-      "name": "ekp-buffer-test-mode-roundtrip",
+      "name": "ekp-buffer-test-justified-marked",
       "file": "tests/ekp-buffer-tests.el",
-      "purpose": "buffer test mode roundtrip"
+      "purpose": "Justified region carries the ekp-justified width property."
+    },
+    {
+      "name": "ekp-buffer-test-rejustify-idempotent",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Justifying at a new width equals a fresh justification at that width."
+    },
+    {
+      "name": "ekp-buffer-test-edit-then-unjustify",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Text typed into a justified buffer survives unjustification."
+    },
+    {
+      "name": "ekp-buffer-test-point-stable",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Point returns to its logical position after a roundtrip."
+    },
+    {
+      "name": "ekp-buffer-test-inactive-mark-stays-inactive",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Reprojection preserves an existing inactive mark without selecting text."
+    },
+    {
+      "name": "ekp-buffer-test-active-region-stays-active",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Reprojection preserves an intentional active region."
+    },
+    {
+      "name": "ekp-buffer-test-verbatim-paragraph-skipped",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "A code-block paragraph stays byte-identical; prose around it justifies."
+    },
+    {
+      "name": "ekp-buffer-test-skip-faces",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Paragraphs wearing a skip face stay verbatim."
+    },
+    {
+      "name": "ekp-buffer-test-org-inline-code-face-does-not-skip-paragraph",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "An Org inline-code face must not make prose stay native-wrapped."
+    },
+    {
+      "name": "ekp-buffer-test-org-block-face-stays-verbatim",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "An Org block face still protects its own paragraph verbatim."
+    },
+    {
+      "name": "ekp-buffer-test-inline-protection-has-no-single-cjk-lines",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "A narrow public layout must not publish isolated CJK rows near inline code."
+    },
+    {
+      "name": "ekp-buffer-test-skip-predicate",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "The paragraph predicate is the general escape hatch."
+    },
+    {
+      "name": "ekp-buffer-test-indent-roundtrip",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "First-line indent spacers vanish exactly on unjustify."
+    },
+    {
+      "name": "ekp-buffer-test-typed-char-inherits-no-marker",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Text typed beside a projection never inherits stale layout properties."
     },
     {
       "name": "ekp-buffer-test-save-writes-logical-text",
       "file": "tests/ekp-buffer-tests.el",
-      "purpose": "buffer test save writes logical text"
+      "purpose": "Saving a justified file buffer writes the logical text to disk, keeps the buffer justified, and leaves it unmodified."
+    },
+    {
+      "name": "ekp-buffer-test-failed-save-preserves-layout",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "A filesystem save failure must not leave the buffer unformatted."
+    },
+    {
+      "name": "ekp-buffer-test-interrupted-save-preserves-layout",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "A quit during writing must not leave the buffer unformatted."
+    },
+    {
+      "name": "ekp-buffer-test-encoding-save-failure-is-retryable",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "An encoding failure must preserve layout and allow a clean retry."
+    },
+    {
+      "name": "ekp-buffer-test-justify-preserves-unmodified",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Pure re-layout must not flip `buffer-modified-p'."
+    },
+    {
+      "name": "ekp-buffer-test-kill-ring-gets-logical-text",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Copying projected text strips EKP properties from logical characters."
+    },
+    {
+      "name": "ekp-buffer-test-copy-filter-composes-and-restores",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "EKP must preserve an existing buffer-local substring filter."
+    },
+    {
+      "name": "ekp-buffer-test-kill-filter-composes-delete",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Composed filtering must preserve DELETE and prior-filter semantics."
+    },
+    {
+      "name": "ekp-buffer-test-restores-inherited-copy-filter",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Final unjustify must reveal an inherited substring filter again."
+    },
+    {
+      "name": "ekp-buffer-test-isearch-sees-logical-text",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Search sees logical text directly without suspending the projection."
+    },
+    {
+      "name": "ekp-buffer-test-field-paragraph-skipped",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Paragraphs containing field or read-only text stay verbatim."
+    },
+    {
+      "name": "ekp-buffer-test-read-only-command-barfs",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Interactive justify on a read-only buffer signals, not corrupts."
+    },
+    {
+      "name": "ekp-buffer-test-no-break-public-commands",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Interactive no-break commands affect the public formatter and report scope."
+    },
+    {
+      "name": "ekp-buffer-test-verbatim-public-commands",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Interactive verbatim commands protect the real region formatter."
+    },
+    {
+      "name": "ekp-buffer-test-protection-workflows-discoverable",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "Mode help and menu expose the existing protection workflows."
+    },
+    {
+      "name": "ekp-buffer-test-justify-buffer-roundtrip",
+      "file": "tests/ekp-buffer-tests.el",
+      "purpose": "ekp-justify-buffer / ekp-unjustify-buffer cover the whole buffer."
+    },
+    {
+      "name": "ekp-c-test-module-build-rejects-unknown-profile",
+      "file": "tests/ekp-c-tests.el",
+      "purpose": "Unknown build profiles fail before starting a process."
+    },
+    {
+      "name": "ekp-test-hyphen-lang-fallback",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Short language codes resolve to a dictionary."
+    },
+    {
+      "name": "ekp-test-hyphen-alternative-languages-fail-closed",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Replacement-pattern dictionaries must not degrade to plain Liang breaks. The golden forms are libhyphen outputs; EKP cannot safely emit them until its DP represents break-specific replacement widths."
+    },
+    {
+      "name": "ekp-test-alignment-ragged-right",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Ragged-right: lines fit, interior spacing stays at ideal."
+    },
+    {
+      "name": "ekp-test-alignment-ragged-left",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Ragged-left: every line is pushed flush to the right edge."
+    },
+    {
+      "name": "ekp-test-alignment-center",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Center: leftover splits evenly between the two edges."
+    },
+    {
+      "name": "ekp-test-first-line-indent",
+      "file": "tests/ekp-tests.el",
+      "purpose": "First line carries an indent spacer; all lines fill the measure."
+    },
+    {
+      "name": "ekp-test-parshape",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Per-line (INDENT . WIDTH) specs shape the paragraph."
+    },
+    {
+      "name": "ekp-test-protrusion-hangs-line-end-punct",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Protrusion lets line-final fullwidth punctuation hang past the edge."
+    },
+    {
+      "name": "ekp-test-protrusion-off-is-flush",
+      "file": "tests/ekp-tests.el",
+      "purpose": "With protrusion off (default), no line exceeds the target width."
+    },
+    {
+      "name": "ekp-test-no-break-span-atomic",
+      "file": "tests/ekp-tests.el",
+      "purpose": "An ekp-no-break span never splits, stretches, or hyphenates."
+    },
+    {
+      "name": "ekp-test-no-break-overlong-atom",
+      "file": "tests/ekp-tests.el",
+      "purpose": "An atom wider than the line becomes a single emergency line."
+    },
+    {
+      "name": "ekp-test-no-break-suppresses-hyphenation",
+      "file": "tests/ekp-tests.el",
+      "purpose": "No soft hyphen appears inside a no-break span."
+    },
+    {
+      "name": "ekp-test-nbsp-and-word-joiner",
+      "file": "tests/ekp-tests.el",
+      "purpose": "NBSP and WORD JOINER keep their neighbors on the same line."
+    },
+    {
+      "name": "ekp-test-kinsoku-rendered-output",
+      "file": "tests/ekp-tests.el",
+      "purpose": "No rendered line starts with a closer or ends with an opener."
+    },
+    {
+      "name": "ekp-test-break-policy-public-defaults",
+      "file": "tests/ekp-tests.el",
+      "purpose": "The selected policy variables expose the approved public defaults."
+    },
+    {
+      "name": "ekp-test-dp-cache-looseness-isolation",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Results cached at one looseness must not serve another. Regression: after justifying at looseness 0, changing `ekp-looseness' returned the stale looseness-0 layout for the same (string, width)."
+    },
+    {
+      "name": "ekp-test-style-change-invalidates-fast-path",
+      "file": "tests/ekp-tests.el",
+      "purpose": "Changing a style variable must invalidate the same-string fast path. Regression: with the same string object, (setq ekp-alignment ...) kept returning the paragraph resolved under the previous style."
     }
   ]
 }

@@ -104,7 +104,7 @@ After cloning, run `make setup-hooks`. Before submitting a change, run `make che
 
 [docs/architecture.md](docs/architecture.md) · [CHANGELOG.md](CHANGELOG.md)
 
-`make check` runs structure checks, compilation and the public acceptance scenarios listed in [tests/acceptance.json](tests/acceptance.json). `make test` runs the broader regression suite; GUI and performance checks remain explicit targets. The acceptance inventory is selected by user-visible contracts, not by current pass/fail status.
+`make check` runs structure checks, compilation and the public acceptance scenarios listed in [tests/acceptance.json](tests/acceptance.json). `make test` runs the same public API suite. The inventory covers every maintained Lisp test; private implementation tests are deleted. GUI and performance checks use separate targets.
 
 ## Source layout migration
 
