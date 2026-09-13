@@ -26,7 +26,7 @@ A justification call flows through five stages:
    │                 pixel widths, glue types, prefix-sum arrays
    │                 → cached `ekp-para` struct
    ▼
- ④ Break (DP)        ekp--dp-run-1d / C module     (ekp.el / ekp_c/)
+ ④ Break (DP)        ekp--dp-run-1d / C module     (ekp.el / native/)
    │                 Knuth-Plass dynamic program → break positions
    ▼
  ⑤ Render            ekp-line-glues, ekp--pixel-justify
@@ -110,7 +110,7 @@ start `i` it scans end positions `k` until the line's minimum width
 exceeds the target.  A break at `k` is valid when
 `min ≤ target ≤ max`, or for the last line when `ideal ≤ target`.
 
-**Demerits** (per line, matching `ekp_c/ekp_kp.c` exactly):
+**Demerits** (per line, matching `native/ekp_kp.c` exactly):
 
 ```
 demerits = (line-penalty + badness)²
@@ -384,7 +384,7 @@ engines never disagree.
 
 ## 7. C Module Integration
 
-The C module (`ekp_c/`, version 1.6) runs only stage ④.  Elisp remains
+The C module (`native/`, version 1.6) runs only stage ④.  Elisp remains
 the source of truth for all font-dependent data.
 
 - `ekp-c-break-with-arrays` (15 args): the para's prefix arrays, glue
@@ -488,7 +488,7 @@ returns status 1 after printing the table when any row fails; the ERT suite
 contains a forced-failure control for this boundary.
 
 `M-x ekp-c-module-build` uses the same four profile names and invokes make
-as an argv process in `ekp_c/`; it never constructs a shell `cd` command.
+as an argv process in `native/`; it never constructs a shell `cd` command.
 Release/CI artifacts use `portable`. Use `native` only for measurements on
 the machine that will run the module.
 
@@ -531,7 +531,7 @@ ekp-utils.el      Tokenizer (boxes, kinsoku), font detection with
 ekp-hyphen.el     Liang hyphenation + dictionary registry
 ekp-buffer.el     Text-property-only buffer/region projection, synchronous
                   live flow, window lifecycle, copy filtering, diagnostics
-ekp_c/            C dynamic module (see ekp_c/README.md)
+native/            C dynamic module (see native/README.md)
 dictionaries/     Hunspell hyphenation patterns (from LibreOffice)
 tests/            ekp-tests.el, ekp-buffer-tests.el (ERT),
                   ekp-fuzz.el (parity fuzz), ekp-bench.el,

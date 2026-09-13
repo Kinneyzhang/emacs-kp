@@ -34,7 +34,7 @@ dictionaries/update.sh check
 
 - **The two engines must produce byte-identical output.** Any change
   to the demerits or line-metric formulas must touch both
-  `ekp--dp-run-1d` (Elisp) and `dp_process_position` (`ekp_c/ekp_kp.c`),
+  `ekp--dp-run-1d` (Elisp) and `dp_process_position` (`native/ekp_kp.c`),
   and the fuzz suite must stay at 300/300.
 - **The two renderers have different rights.** The string renderer's
   physical marker vocabulary (`ekp-glue`, `ekp-soft-break`,

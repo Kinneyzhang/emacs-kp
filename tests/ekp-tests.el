@@ -11,7 +11,7 @@
 ;; column, 2px per CJK char), which exercises the full pipeline
 ;; deterministically without a window system.
 ;;
-;; C module tests are skipped automatically when ekp_c/ekp.dylib (or
+;; C module tests are skipped automatically when native/ekp.dylib (or
 ;; .so/.dll) has not been built.
 ;;
 ;; Interactive demos live in tests/ekp-demo.el; benchmarks in

@@ -27,7 +27,7 @@ This static gate does not prove a remote workflow or published artifact.
    `[X.Y.Z] - YYYY-MM-DD` section and set `Version: X.Y.Z` in `ekp.el`.
 2. If the C API changed, bump both `ekp-c-module-required-version` in
    `ekp-utils.el` and `EKP_VERSION_MAJOR`/`EKP_VERSION_MINOR` in
-   `ekp_c/ekp_module.h`.  Update the C version in user and developer docs.
+   `native/ekp_module.h`.  Update the C version in user and developer docs.
 3. Run:
 
    ```sh

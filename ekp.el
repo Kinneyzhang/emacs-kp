@@ -42,7 +42,7 @@
 (require 'ekp-utils)
 (require 'ekp-hyphen)
 
-;; Defined by the dynamic module (ekp_c/ekp.dylib | .so | .dll)
+;; Defined by the dynamic module (native/ekp.dylib | .so | .dll)
 (declare-function ekp-c-set-penalties "ext:ekp")
 (declare-function ekp-c-break-with-arrays "ext:ekp")
 (declare-function ekp-c-break-batch "ext:ekp")

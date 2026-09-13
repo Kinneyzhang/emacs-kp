@@ -24,7 +24,7 @@
    │             像素宽度、glue 类型、前缀和数组
    │             → 缓存为 `ekp-para` 结构
    ▼
- ④ 断行(DP)    ekp--dp-run-1d / C 模块       (ekp.el / ekp_c/)
+ ④ 断行(DP)    ekp--dp-run-1d / C 模块       (ekp.el / native/)
    │             Knuth-Plass 动态规划 → 断点序列
    ▼
  ⑤ 渲染          ekp-line-glues, ekp--pixel-justify
@@ -98,7 +98,7 @@ width   = raw − space-w  (若盒 k−1 处断词,再加连字符宽)
 直到行的最小宽度超过目标。断点合法条件:`min ≤ 目标 ≤ max`,或末行
 `ideal ≤ 目标`。
 
-**Demerits**(每行,与 `ekp_c/ekp_kp.c` 完全一致):
+**Demerits**(每行,与 `native/ekp_kp.c` 完全一致):
 
 ```
 demerits = (line-penalty + badness)²
@@ -323,7 +323,7 @@ builder。输入从 1,000 增到 8,000 字符时,基于片段的 tokenizer 增�
 
 ## 7. C 模块集成
 
-C 模块(`ekp_c/`,版本 1.6)只执行阶段 ④。所有字体相关数据以 Elisp
+C 模块(`native/`,版本 1.6)只执行阶段 ④。所有字体相关数据以 Elisp
 为唯一事实来源。
 
 - `ekp-c-break-with-arrays`(15 参数):para 的前缀数组、glue 数组、
@@ -410,7 +410,7 @@ emacs -Q --batch -L . --eval '(progn (require (quote ekp)) (ekp-c-module-load))'
 GUI 矩阵需显式加载 `tests/ekp-gui-verify.el`。任一行失败时，它先打印
 完整表格，再以状态码 1 退出；ERT 套件包含该边界的强制失败负控。
 
-`M-x ekp-c-module-build` 使用同一组四种 profile，并在 `ekp_c/` 中以
+`M-x ekp-c-module-build` 使用同一组四种 profile，并在 `native/` 中以
 argv 直接启动 make，不再构造 shell `cd` 命令。发布/CI 使用
 `portable`；`native` 仅用于将在同一机器运行的基准。
 
@@ -449,7 +449,7 @@ ekp-utils.el      分词器(盒子、避头尾)、带 batch/tty 回退的字体
 ekp-hyphen.el     Liang 断词 + 词典注册
 ekp-buffer.el     纯文本属性 buffer/region 投影、同步实时流动、窗口
                   lifecycle、复制过滤与诊断
-ekp_c/            C 动态模块(见 ekp_c/README.md)
+native/            C 动态模块(见 native/README.md)
 dictionaries/     Hunspell 断词模式(来自 LibreOffice)
 tests/            ekp-tests.el、ekp-buffer-tests.el(ERT)、
                   ekp-fuzz.el(一致性 fuzz)、ekp-bench.el、

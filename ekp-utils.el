@@ -334,7 +334,7 @@ by merging boxes."
 ;;; C Module Support
 ;; Parallel C implementation using pthreads
 
-;; Defined by the dynamic module (ekp_c/ekp.dylib | .so | .dll)
+;; Defined by the dynamic module (native/ekp.dylib | .so | .dll)
 (declare-function ekp-c-init "ext:ekp")
 (declare-function ekp-c-version "ext:ekp")
 (declare-function ekp-c-thread-count "ext:ekp")
@@ -345,7 +345,7 @@ by merging boxes."
 (defun ekp-c-module-dir ()
   "Return the C module directory."
   (when-let* ((root-dir (ekp-root-dir)))
-    (expand-file-name "ekp_c" root-dir)))
+    (expand-file-name "native" root-dir)))
 
 (defun ekp-c-module-file ()
   "Return path to compiled C module."
@@ -395,12 +395,12 @@ Refuses to enable a module older than
                 (progn
                   (setq ekp-c-module-loaded nil)
                   (message "ekp-c module version %s is too old (need %s+). \
-Run 'make' in ekp_c/ to rebuild; falling back to Elisp."
+Run 'make' in native/ to rebuild; falling back to Elisp."
                            (ekp-c-version) ekp-c-module-required-version))
               (setq ekp-c-module-loaded t)
               (message "ekp-c module loaded (version %s, %d threads)"
                        (ekp-c-version) (ekp-c-thread-count)))))
-      (message "C module not found. Run 'make' in ekp_c/ directory."))))
+      (message "C module not found. Run 'make' in native/ directory."))))
 
 ;;;###autoload
 (defun ekp-c-module-build (&optional profile)
@@ -421,7 +421,7 @@ the default is `portable'."
                         (expand-file-name "Makefile" module-dir)))
          (make (executable-find "make")))
     (unless (and makefile (file-exists-p makefile))
-      (user-error "Makefile not found in ekp_c/ directory"))
+      (user-error "Makefile not found in native/ directory"))
     (unless make
       (user-error "The make executable is not available"))
     (let* ((default-directory (file-name-as-directory module-dir))

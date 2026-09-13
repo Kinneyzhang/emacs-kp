@@ -16,7 +16,7 @@ removing the measured end-to-end owners.
 ## Architecture
 
 ```
-ekp_c/
+native/
 ├── ekp_module.h      # Core data structures and API declarations
 ├── ekp.c             # Emacs module entry point (emacs_module_init)
 ├── ekp_kp.c          # Knuth-Plass DP + two-pass emergency strategy
