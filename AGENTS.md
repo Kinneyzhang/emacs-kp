@@ -70,3 +70,39 @@ contracts belong in the package manual, architecture document and executable tes
 - If a new document or directory does not fit this policy, first simplify the design.
   Necessary policy changes must update the workspace source, shared checker and its
   regression tests together, then synchronize every package.
+
+## Git history and delivery
+
+- Commit promptly after a coherent change has been validated, before starting an
+  unrelated change and before ending a completed task. A commit is one explainable,
+  independently reviewable and revertible change, not one function or a fixed count
+  of files/lines. Keep its code, regression coverage and documentation together.
+  Split unrelated fixes, formatting, moves and features; keep necessary path/caller
+  updates together so each commit remains usable for `git bisect`.
+- Inspect `git status`, the diff and staged diff before committing. Stage only the
+  current change; never include another person's unfinished work or generated files.
+  Run affected checks and `make check` before committing a completed package change.
+  Report failures honestly; do not create a passing-looking checkpoint by hiding them.
+- Use Conventional Commits: `type(scope): concrete imperative English summary`.
+  Scope is optional; types are feat, fix, docs, refactor, perf, test, build, ci,
+  chore and revert. The project limits titles to 72 characters. Avoid generic
+  titles such as "update files". After a blank line, explain the problem and resulting
+  behavior or reason; include `Validation:` with actual commands/results (or why a
+  check was not run). Breaking changes require both `!` and a `BREAKING CHANGE:`
+  footer explaining impact and migration. Edit generated merge/revert messages to
+  follow this contract. The commit-msg hook checks format, not factual accuracy.
+- Commit provider changes before consumers in cross-repository work. Mention relevant
+  provider commit hashes in consumer messages when an interface dependency changes.
+  At an integrated checkpoint, update workspace.json to the verified child revisions
+  and record the checks; never describe uncommitted trees as a reproducible checkpoint.
+- Preserve useful checkpoints. Do not amend published commits, force-push, rewrite
+  shared history or squash distinct changes without explicit authorization. Prefer a
+  focused fix or revert. Use log, blame, diff and bisect when locating regressions;
+  mark pre-existing untestable revisions as skipped rather than bad in a bisect.
+- Local commits and remote publication are separate actions. Unless the user has
+  authorized automatic pushing, push only when explicitly requested. When authorized,
+  push verified commits to the current branch's configured upstream, after fetching
+  and inspecting divergence. Do not infer a destination when no upstream exists, or
+  push other remotes, branches or tags implicitly. Resolve divergence without force.
+  Report local commit and push status separately; never claim an unpushed commit is
+  backed up remotely. Do not bypass the shared hooks to finish a task.

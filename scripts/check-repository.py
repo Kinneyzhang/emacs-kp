@@ -11,14 +11,14 @@ import sys
 import tempfile
 from urllib.parse import unquote
 
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 DOC_NAMES = {'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'CHANGELOG.zh-CN.md',
              'AGENTS.md', 'docs/manual.md', 'docs/manual.zh-CN.md',
              'docs/architecture.md', 'docs/architecture.zh-CN.md'}
 DIRS = {'tests', 'examples', 'benchmarks', 'scripts', 'docs', 'native',
         'dictionaries', 'design', '.github', '.gitea', '.githooks'}
 SKIP = {'.git', '__pycache__', 'target', '.omx', '.worktrees', '.claude'}
-SHARED = ('AGENTS.md', '.editorconfig', 'scripts/check-repository.py', 'scripts/run-acceptance.py', '.githooks/pre-commit',
+SHARED = ('AGENTS.md', '.editorconfig', 'scripts/check-repository.py', 'scripts/run-acceptance.py', '.githooks/pre-commit', '.githooks/commit-msg', 'scripts/check-commit-message.py',
           '.github/workflows/structure.yml')
 
 
@@ -45,7 +45,7 @@ def check(root, files=None):
     allowed_dirs = DIRS | (set(__import__('json').loads((root / 'workspace.json').read_text())['repositories']) if workspace else set())
     def fail(path, message): errors.append(f'{path}: {message}')
     for required in ['README.md', 'AGENTS.md', 'Makefile', 'scripts/check-repository.py',
-                     '.githooks/pre-commit', '.github/workflows/structure.yml']:
+                     '.githooks/pre-commit', '.githooks/commit-msg', 'scripts/check-commit-message.py', '.github/workflows/structure.yml']:
         if required not in files: fail(required, 'required maintained file is missing')
     spellings = {}
     for f in files:
