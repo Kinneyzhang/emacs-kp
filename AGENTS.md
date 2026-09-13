@@ -107,10 +107,14 @@ contracts belong in the package manual, architecture document and executable tes
   shared history or squash distinct changes without explicit authorization. Prefer a
   focused fix or revert. Use log, blame, diff and bisect when locating regressions;
   mark pre-existing untestable revisions as skipped rather than bad in a bisect.
-- Local commits and remote publication are separate actions. Unless the user has
-  authorized automatic pushing, push only when explicitly requested. When authorized,
-  push verified commits to the current branch's configured upstream, after fetching
-  and inspecting divergence. Do not infer a destination when no upstream exists, or
-  push other remotes, branches or tags implicitly. Resolve divergence without force.
+- The user authorizes automatic upstream pushes: after completing a coherent group
+  of validated commits, fetch and inspect divergence, then push the current branch
+  to its configured upstream without asking again. Keep local commits timely while
+  work is in progress; push at validated delivery checkpoints, not on every save.
+  Required acceptance gates must pass; disclose known pre-existing broader failures.
+- Do not infer a destination when no upstream exists, or push other remotes, branches
+  or tags implicitly. Resolve divergence without force or rewriting shared history.
+  If authentication, connectivity or missing upstream prevents delivery, retain local
+  commits and report the specific blocker. Never substitute a different remote.
   Report local commit and push status separately; never claim an unpushed commit is
   backed up remotely. Do not bypass the shared hooks to finish a task.
