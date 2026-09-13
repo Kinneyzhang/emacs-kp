@@ -24,6 +24,9 @@ def command(root, emacs):
     args = [emacs, '-Q', '--batch']
     for path in manifest.get('load_path', ['.']):args += ['-L', str(root / path)]
     args += ['--eval', '(setq load-prefer-newer t native-comp-jit-compilation nil)']
+    entries = list(root.glob('*.el'))
+    if len(entries) != 1:raise ValueError('Expected one package entry at the repository root')
+    args += ['-l', str(entries[0])]
     for file in files:args += ['-l', str(root / file)]
     # ert-get-test fails if any named scenario disappears; no regex can pass with zero cases.
     symbols = ' '.join(names)

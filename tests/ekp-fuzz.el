@@ -1,6 +1,6 @@
 ;;; ekp-fuzz.el --- property-based stress test for ekp -*- lexical-binding: t; -*-
 
-(require 'ekp)
+(require 'ekp-layout)
 (require 'cl-lib)
 
 (ekp-c-module-load)

@@ -1,7 +1,7 @@
 # Emacs-KP: Knuth-Plass 排版算法 Emacs 实现
 
-源码布局：运行时代码位于 `lisp/`；从源码使用时，将该目录加入 `load-path`。
-升级旧 checkout 配置时，将原来的仓库加载路径改为其 `lisp/` 子目录。
+源码布局：将仓库根目录加入 `load-path`，然后 require 与包同名的入口。
+入口 Commentary 列出公共 API 及用法；内部实现位于 `lisp/`。
 
 [English Documentation](README.md) | [开发者指南](docs/architecture.zh-CN.md)
 
@@ -40,9 +40,9 @@ Emacs-kp 在 Emacs 内部完整实现了 Knuth-Plass 最优断行算法,支持�
 克隆仓库并将 `lisp/` 加入 `load-path`；`dictionaries/` 与 `native/` 保留在仓库根目录：
 
 ```elisp
-(add-to-list 'load-path "/path/to/emacs-kp/lisp")
+(add-to-list 'load-path "/path/to/emacs-kp")
 (require 'ekp)
-(require 'ekp-buffer)   ; buffer/region 命令
+(require 'ekp)   ; buffer/region 命令
 ```
 
 强烈建议字节编译——编译后 Elisp 引擎约快 10 倍。

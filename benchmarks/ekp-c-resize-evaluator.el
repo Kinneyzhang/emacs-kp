@@ -199,7 +199,7 @@
 
 (defun ekp-c-resize-evaluator--measure-round ()
   "Measure one C round and return a JSON-compatible record."
-  (require 'ekp)
+  (require 'ekp-layout)
   (require 'ekp-buffer)
   (require 'ekp-showcase)
   (ekp-c-module-load)

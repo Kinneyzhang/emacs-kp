@@ -6,7 +6,7 @@
 `ekp-buffer.el` turns the string API into buffer-level commands:
 
 ```elisp
-(require 'ekp-buffer)
+(require 'ekp)
 ```
 
 - `M-x ekp-justify-region` — justify the region to the window text
@@ -351,7 +351,7 @@ emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \
 
 The matrix prints every row and exits with status 1 if any fit check fails,
 so the same command can gate local release automation. The verifier is a
-developer tool under `tests/`; it is not loaded by `(require 'ekp-buffer)`.
+developer tool under `tests/`; it is not loaded by `(require 'ekp)`.
 
 ## Credits
 

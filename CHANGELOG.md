@@ -6,6 +6,14 @@ project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Expose the package entry at the repository root, document supported APIs in
+  its Commentary and retain implementations under `lisp/`. Source consumers add
+  the repository root to `load-path` and require the package entry; internal
+  feature imports are unsupported. Archives retain this same directory layout.
+
+
 ### Fixed
 
 - Malformed non-nil C backend results no longer fall back to Elisp. Nil whole
@@ -96,8 +104,8 @@ project aims to follow [Semantic Versioning](https://semver.org/).
   paragraphs remain naturally editable; `ekp-refill-paragraph` is the
   explicit unbounded quality pass.
 - **Breaking:** the editor integration module is now `ekp-buffer.el` and
-  provides `ekp-buffer`; replace `(require 'ekp-region)` with
-  `(require 'ekp-buffer)`. Module-owned configuration names now use the
+  provides `ekp-buffer`; replace `(require 'ekp)` with
+  `(require 'ekp)`. Module-owned configuration names now use the
   `ekp-buffer-` prefix. Public commands whose names describe an actual
   region or buffer operand are unchanged.
 - The bundled dictionary inventory is now 49 reproducible entries with a

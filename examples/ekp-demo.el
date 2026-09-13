@@ -8,7 +8,7 @@
 
 ;;; Code:
 
-(require 'ekp)
+(require 'ekp-layout)
 
 (defun ekp-demo--file-content (file)
   (with-temp-buffer

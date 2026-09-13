@@ -9,7 +9,7 @@
 
 (require 'ert)
 (require 'cl-lib)
-(require 'ekp)
+(require 'ekp-layout)
 
 (declare-function ekp-c-break-batch "ext:ekp")
 (declare-function ekp-c-break-with-arrays "ext:ekp")

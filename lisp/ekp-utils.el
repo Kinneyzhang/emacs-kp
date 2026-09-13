@@ -29,13 +29,10 @@
   "Path to this file, for locating module directories.")
 
 (defun ekp-root-dir ()
-  "Return the package resource root in a checkout or installed archive.
-Checkouts keep sources in lisp/; package archives install Lisp at their root."
+  "Return the resource root above the implementation directory."
   (when ekp-utils--load-file
-    (let ((directory (file-name-directory ekp-utils--load-file)))
-      (if (equal (file-name-nondirectory (directory-file-name directory)) "lisp")
-          (file-name-as-directory (expand-file-name ".." directory))
-        directory))))
+    (file-name-as-directory
+     (expand-file-name ".." (file-name-directory ekp-utils--load-file)))))
 
 ;;;; Font Detection
 

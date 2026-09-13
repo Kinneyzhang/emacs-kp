@@ -37,7 +37,7 @@
 
 (require 'cl-lib)
 (require 'easymenu)
-(require 'ekp)
+(require 'ekp-layout)
 
 (defvar ekp-auto-justify-mode)
 

@@ -21,7 +21,7 @@
 
 (require 'ert)
 (require 'cl-lib)
-(require 'ekp)
+(require 'ekp-layout)
 
 ;;;; Fixtures
 

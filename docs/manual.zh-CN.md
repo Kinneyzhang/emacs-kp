@@ -6,7 +6,7 @@
 `ekp-buffer.el` 把字符串 API 变成 buffer 级命令:
 
 ```elisp
-(require 'ekp-buffer)
+(require 'ekp)
 ```
 
 - `M-x ekp-justify-region` — 把选区排版到窗口文本宽度(数字前缀参数
@@ -295,7 +295,7 @@ emacs -Q -L /path/to/emacs-kp -L /path/to/emacs-kp/tests \
 
 矩阵会打印全部行；任一贴合检查失败时以状态码 1 退出，因此同一命令可
 作为本地发布门禁。验证器是 `tests/` 下的开发工具，
-`(require 'ekp-buffer)` 不会加载它。
+`(require 'ekp)` 不会加载它。
 
 ## 致谢
 

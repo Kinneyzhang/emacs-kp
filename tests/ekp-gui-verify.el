@@ -46,7 +46,7 @@
 
 ;;; Code:
 
-(require 'ekp)
+(require 'ekp-layout)
 (require 'ekp-buffer)
 (require 'ekp-showcase)
 (require 'ert)

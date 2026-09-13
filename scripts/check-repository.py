@@ -2,6 +2,7 @@
 """Validate repository organization in a checkout or the exact Git index."""
 from __future__ import annotations
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -11,14 +12,14 @@ import sys
 import tempfile
 from urllib.parse import unquote
 
-POLICY_VERSION = 5
+POLICY_VERSION = 6
 DOC_NAMES = {'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'CHANGELOG.zh-CN.md',
              'AGENTS.md', 'docs/manual.md', 'docs/manual.zh-CN.md',
              'docs/architecture.md', 'docs/architecture.zh-CN.md'}
 DIRS = {'lisp', 'tests', 'examples', 'benchmarks', 'scripts', 'docs', 'native',
         'dictionaries', 'design', '.github', '.gitea', '.githooks'}
 SKIP = {'.git', '__pycache__', 'target', '.omx', '.worktrees', '.claude'}
-SHARED = ('AGENTS.md', '.editorconfig', 'scripts/check-repository.py', 'scripts/run-acceptance.py', '.githooks/pre-commit', '.githooks/commit-msg', 'scripts/check-commit-message.py',
+SHARED = ('scripts/check-api.py', 'scripts/check-api.el', 'scripts/api-workspace.json', 'AGENTS.md', '.editorconfig', 'scripts/check-repository.py', 'scripts/run-acceptance.py', '.githooks/pre-commit', '.githooks/commit-msg', 'scripts/check-commit-message.py',
           '.github/workflows/structure.yml')
 
 
@@ -45,11 +46,15 @@ def check(root, files=None):
     allowed_dirs = DIRS | (set(__import__('json').loads((root / 'workspace.json').read_text())['repositories']) if workspace else set())
     def fail(path, message): errors.append(f'{path}: {message}')
     for required in ['README.md', 'AGENTS.md', 'Makefile', 'scripts/check-repository.py',
-                     '.githooks/pre-commit', '.githooks/commit-msg', 'scripts/check-commit-message.py', '.github/workflows/structure.yml']:
+                     '.githooks/pre-commit', '.githooks/commit-msg', 'scripts/check-commit-message.py', '.github/workflows/structure.yml',
+                     'scripts/check-api.py', 'scripts/check-api.el', 'scripts/api-workspace.json']:
         if required not in files: fail(required, 'required maintained file is missing')
     root_lisp = [f for f in files if '/' not in f and f.endswith('.el')]
-    if len(root_lisp) > 1 or (root_lisp and any(f.startswith('lisp/') for f in files)):
-        fail('lisp/', 'multi-file packages keep runtime Lisp together in lisp/; single-file packages may use the root')
+    if not workspace and len(root_lisp) != 1:
+        fail('entry', 'packages require exactly one root entry; implementations belong in lisp/')
+    for entry in root_lisp:
+        if 'lisp/' + entry in files:
+            fail(entry, 'entry must not be duplicated under lisp/')
     spellings = {}
     for f in files:
         parts = PurePosixPath(f).parts
@@ -110,6 +115,14 @@ def check(root, files=None):
         for pattern in re.findall(r'\$\(wildcard ((?:examples|tests|scripts|benchmarks)/[^)]+)\)', text):
             if not list(root.glob(pattern)):fail('Makefile', f'empty source discovery: {pattern}')
     if not workspace:
+        if makefile.exists() and not re.search(r'^check\s*:[^\n]*\bapi-check\b', makefile.read_text(), re.M):
+            fail('Makefile', 'check must include fresh entry API validation')
+        api_tool = root / 'scripts/check-api.py'
+        if api_tool.exists() and len(root_lisp) == 1:
+            spec = importlib.util.spec_from_file_location('api_policy', api_tool)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            errors.extend(module.declarations(root / root_lisp[0])[1])
         manifest_path = root / 'tests/acceptance.json'
         if not manifest_path.is_file():
             fail('tests/acceptance.json', 'missing public acceptance inventory')
@@ -148,8 +161,18 @@ def main():
             snapshot = Path(directory)
             files = sorted(str(p.relative_to(snapshot)) for p in snapshot.rglob('*') if p.is_file())
             errors = check(snapshot, files)
+            if not errors and not (snapshot / 'workspace.json').exists():
+                result = subprocess.run([sys.executable, str(snapshot/'scripts/check-api.py'),
+                                         '--root', str(snapshot), '--providers-dir', str(args.root.resolve().parent)],
+                                        capture_output=True, text=True)
+                if result.returncode: errors.append(result.stderr.strip())
     else:
         errors = check(args.root)
+        if not errors:
+            mode = '--workspace' if (args.root/'workspace.json').exists() else '--root'
+            result = subprocess.run([sys.executable, str(args.root/'scripts/check-api.py'),
+                                     mode, str(args.root.resolve())], capture_output=True, text=True)
+            if result.returncode: errors.append(result.stderr.strip())
     if errors:
         print('\n'.join(errors), file=sys.stderr)
         return 1

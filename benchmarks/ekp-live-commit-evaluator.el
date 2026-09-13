@@ -421,7 +421,7 @@
 
 (defun ekp-live-commit-evaluator--measure-round ()
   "Measure one evaluator round and return a JSON-compatible record."
-  (require 'ekp)
+  (require 'ekp-layout)
   (require 'ekp-buffer)
   (ekp-c-module-load)
   (unless (ekp--c-available-p)

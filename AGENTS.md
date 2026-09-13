@@ -7,10 +7,14 @@ contracts belong in the package manual, architecture document and executable tes
 
 ## Structure
 
-- Keep multi-file package runtime Lisp in `lisp/`, with the package prefix.
-  A single-file package may keep its one runtime file at the root. Do not split
-  runtime files between both locations. Keep repository roots focused on navigation,
-  configuration and build entry points. Update load paths and release recipes together.
+- Each package has one root entry named after its provided package feature
+  (etaf-db uses etaf-sqlite.el). Keep package metadata, the public API Commentary
+  and implementation loading there. Multi-file implementations live in lisp/;
+  do not duplicate the entry, add forwarding wrappers or preserve obsolete paths.
+  Small single-file packages may implement their behavior in the root entry.
+- Checkout users add repository roots to load-path and require the package entry.
+  Consumers must not require a provider's internal module. Keep entry loading,
+  byte compilation, autoloads, resource paths and installation recipes aligned.
 - Organize by responsibility, not file extension. Use `tests/` for correctness
   scenarios and their helpers, `tests/fixtures/` for data, and `tests/tools/`
   for development-tool tests. Keep the acceptance inventory at `tests/acceptance.json`.
@@ -35,16 +39,24 @@ contracts belong in the package manual, architecture document and executable tes
 - `README.md`: purpose, installation, minimal example, documentation links and checks.
 - `CHANGELOG.md`: notable user-visible changes and migration instructions, grouped by
   version; follow Keep a Changelog. Do not fabricate releases or copy commit logs.
-- `docs/manual.md`: usage and public interface contracts, including integration APIs.
-  Separate task-oriented usage and interface reference into sections in this file.
+- `docs/manual.md`: task-oriented usage, integration workflows, lifecycle, errors
+  and runnable examples. Link to the entry Commentary for the supported API list.
 - `docs/architecture.md`: current ownership, dependency direction and invariants.
   Describe implemented behavior, not unaccepted proposals.
 - English uses the default name; Chinese translations use `.zh-CN.md` consistently.
   Keep existing translations aligned when their contract changes. Do not create empty
   translations or documents merely to fill a template. Legal notices are exempt.
-- Document each fact once. README links to details. Consumers link to the provider's
-  public contract instead of copying it. Function docstrings own precise signatures;
-  the manual owns workflows, lifetimes, errors, rollback and cross-module contracts.
+- The root entry's Commentary is the authoritative supported API inventory. Use
+  `;; Function: name (arguments)`, `Macro`, `Variable`, `Hook`, `Error` or `Component`,
+  followed by purpose, inputs/results and usage guidance. Document meaningful error
+  and lifecycle constraints; keep signatures and behavior aligned with docstrings.
+  Group related interfaces for reading. Do not maintain a second API variable/list
+  or repeat implementations in the entry. README and manuals link to this inventory.
+  Attach autoload declarations to Function/Macro records so package.el exposes the
+  same root entry without requiring users to configure internal directories.
+- Consumers require the provider's root feature and use only declared interfaces.
+  An unlisted symbol is internal even without `--`. Do not bypass this boundary
+  through dynamic symbol lookup, loading a private library or redefining its symbols.
 - Every package with integration APIs documents supported callers, inputs/outputs,
   ownership, lifecycle, failure semantics and a runnable example in its manual.
   Keep private implementation symbols out of consumer code.
@@ -61,7 +73,9 @@ contracts belong in the package manual, architecture document and executable tes
   version/phase tests; consolidate duplicate scenarios. Keep focused internal tests
   only when they materially protect a difficult algorithm or diagnosed defect.
 - `tests/acceptance.json` names the maintained public scenarios and their purposes.
-  `make check` runs structure validation, compilation and these acceptance cases.
+  `make check` runs structure/API boundary validation, compilation, these acceptance
+  cases and a fresh Emacs check that every entry declaration is available and
+  written function/macro signatures match their source definitions.
   `make test` runs broader regressions when affected behavior warrants them; GUI
   appearance and performance require their separate acceptance targets.
   Never select acceptance cases merely because they currently pass.
@@ -72,7 +86,16 @@ contracts belong in the package manual, architecture document and executable tes
   `setup-hooks`. `check` includes the structural gate. Serialize commands that clean
   and rebuild shared dependencies; parallel builds must not race over sibling outputs.
 - Run `make setup-hooks` after cloning. The pre-commit gate checks staged contents,
-  not merely the working tree. CI runs the same structural checker.
+  not merely the working tree. CI runs the same structural and API checker plus
+  `make api-check` in batch Emacs, fetching
+  missing provider checkouts. Local checks use sibling sources; CI uses provider
+  default branches. `workspace.json` records the tested combination of revisions.
+  The cross-package gate covers runtime and runnable examples. Development-only
+  fault injection/profiling may inspect internals to diagnose a specific defect;
+  those details must not become consumer APIs or acceptance requirements. Prefer
+  public observations and remove duplicated source-shape assertions.
+  Static checks cover direct references; code review must also reject dynamically
+  constructed private calls. These checks do not constitute Lisp access control.
 - Never weaken a check, add an exclusion or skip a test just to make a failure green.
   Update obsolete checks to the current contract and retain behavioral coverage.
 - If a new document or directory does not fit this policy, first simplify the design.

@@ -18,7 +18,7 @@
 
 ;;; Code:
 
-(require 'ekp)
+(require 'ekp-layout)
 (require 'benchmark)
 
 (defun ekp-bench--read (name)

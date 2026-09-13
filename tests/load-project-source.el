@@ -12,7 +12,8 @@
               (file-name-directory (or load-file-name buffer-file-name))))))
   (dolist (file '("lisp/ekp-utils.el"
                   "lisp/ekp-hyphen.el"
-                  "lisp/ekp.el"
+                  "lisp/ekp-layout.el"
+                  "ekp.el"
                   "lisp/ekp-buffer.el"
                   "examples/ekp-showcase.el"
                   "tests/ekp-gui-verify.el"

@@ -1,13 +1,11 @@
-;;; ekp.el --- Knuth-Plass line breaking with CJK support -*- lexical-binding: t; -*-
+;;; ekp-layout.el --- Knuth-Plass line breaking with CJK support -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2024-2026 Kinney Zhang
 
 ;; Author: Kinney Zhang <kinneyzhang666@gmail.com>
 ;; Maintainer: Kinney Zhang <kinneyzhang666@gmail.com>
-;; Version: 1.0.0
 ;; URL: https://github.com/Kinneyzhang/emacs-kp
 ;; Keywords: wp, text, typesetting, CJK
-;; Package-Requires: ((emacs "29.1"))
 
 ;; This file is NOT part of GNU Emacs.
 
@@ -3847,6 +3845,6 @@ Returns (justified-text . optimal-pixel)."
                       strings min-pixel max-pixel)))
     (cons (ekp-pixel-justify string best-pixel) best-pixel)))
 
-(provide 'ekp)
+(provide 'ekp-layout)
 
-;;; ekp.el ends here
+;;; ekp-layout.el ends here

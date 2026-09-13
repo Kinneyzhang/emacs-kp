@@ -1,0 +1,38 @@
+{
+  "ebox": {
+    "entry": "ebox",
+    "url": "git@gitea.gklazycat.heiyu.space:geekinney/ebox.git"
+  },
+  "ebox-playground": {
+    "entry": "ebox-playground",
+    "url": "git@gitea.gklazycat.heiyu.space:geekinney/ebox-playground.git"
+  },
+  "ecss": {
+    "entry": "ecss",
+    "url": "git@gitea.gklazycat.heiyu.space:geekinney/ecss.git"
+  },
+  "ekp": {
+    "entry": "ekp",
+    "url": "git@github.com:Kinneyzhang/emacs-kp.git"
+  },
+  "etaf": {
+    "entry": "etaf",
+    "url": "git@gitea.gklazycat.heiyu.space:geekinney/etaf.git"
+  },
+  "etaf-db": {
+    "entry": "etaf-sqlite",
+    "url": "git@gitea.gklazycat.heiyu.space:geekinney/etaf-db.git"
+  },
+  "etaf-playground": {
+    "entry": "etaf-playground",
+    "url": "git@gitea.gklazycat.heiyu.space:geekinney/etaf-playground.git"
+  },
+  "etaf-ui": {
+    "entry": "etaf-ui",
+    "url": "git@gitea.gklazycat.heiyu.space:geekinney/etaf-ui.git"
+  },
+  "tp": {
+    "entry": "tp",
+    "url": "git@gitea.gklazycat.heiyu.space:geekinney/tp.git"
+  }
+}

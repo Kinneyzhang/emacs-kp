@@ -7,9 +7,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Fetch API provider sources
+        run: |
+          if [ -f workspace.json ]; then
+            python3 scripts/check-api.py --workspace . --fetch-providers
+          else
+            python3 scripts/check-api.py --root . --fetch-providers --providers-dir ..
+          fi
       - run: python3 scripts/check-repository.py
       - name: Policy regression tests (workspace)
         run: |
           if [ -f workspace.json ]; then
             python3 -m unittest discover -s tests/tools -p 'test_*.py'
           fi
+      - name: Install batch Emacs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y emacs-nox
+      - name: Verify public entry bindings and signatures
+        run: make api-check
